@@ -31,7 +31,7 @@ a = 0
 for key in leaderboard:
     temp = re.split(':|]',key)
     steamid64 = int(temp[2]) + 76561197960265728
-    #link = requests.get(f'http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key=6E3DC6AB6D3C8143E77A681D63789BC2&steamids={steamid64}')
+
     #response = (link).json().get('response').get('players')
     #if link.status_code == 200 and len(response) > 1:
     #    link = response[0].get('profileurl')
