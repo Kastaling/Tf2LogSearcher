@@ -18,3 +18,4 @@ skipped_log_ids.json
 Untitled*
 __pycache__/
 *.pyc
+static/favicon.ico
