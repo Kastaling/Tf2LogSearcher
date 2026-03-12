@@ -86,31 +86,53 @@
       const el = document.getElementById('downloadProgress');
       if (!el) return;
       if (data.backfill_complete) {
-        el.textContent = 'Full backfill complete. New logs are added periodically. You can search across all logs we have. (100% complete)';
+        el.innerHTML = '';
+        el.appendChild(document.createTextNode('Full backfill complete. New logs are added periodically. You can search across all logs we have. ('));
+        const strong = document.createElement('strong');
+        strong.textContent = '100% complete';
+        el.appendChild(strong);
+        el.appendChild(document.createTextNode(')'));
         return;
       }
+      /** Each part is an array of segments: string (normal) or { b: string } (bold). */
       const parts = [];
-      if (data.total_files != null) parts.push(data.total_files + ' log(s)');
-      if (data.min_id != null && data.max_id != null) parts.push('range ' + data.min_id + '\u2013' + data.max_id);
-      if (data.remaining != null && data.remaining > 0) parts.push(data.remaining + ' remaining to log 1');
-      if (data.eta_human) parts.push('ETA ' + data.eta_human);
-      if (data.rate_logs_per_sec != null) parts.push('(' + data.rate_logs_per_sec + ' logs/s)');
-      if (data.updated_at) parts.push('Updated ' + formatUpdatedAt(data.updated_at));
+      if (data.total_files != null) parts.push([{ b: String(data.total_files) }, ' log(s)']);
+      if (data.min_id != null && data.max_id != null) parts.push(['Range (', { b: String(data.max_id) }, ' \u2013 ', { b: String(data.min_id) }, ')']);
+      if (data.remaining != null && data.remaining > 0) parts.push([{ b: String(data.remaining) }, ' remaining to log 1']);
+      if (data.eta_human) parts.push(['ETA ', { b: data.eta_human }]);
+      if (data.rate_logs_per_sec != null) parts.push(['(', { b: String(data.rate_logs_per_sec) }, ' logs/s)']);
+      if (data.updated_at) parts.push(['Updated ', { b: formatUpdatedAt(data.updated_at) }]);
       if (data.earliest_log_timestamp != null) {
         const earliestStr = formatEarliestLogDate(data.earliest_log_timestamp);
-        if (earliestStr) parts.push('Earliest log: ' + earliestStr);
+        if (earliestStr) parts.push(['Earliest log: ', { b: earliestStr }]);
       }
       if (data.logs_downloaded_since_last_update != null && typeof data.logs_downloaded_since_last_update === 'number') {
-        parts.push(data.logs_downloaded_since_last_update + ' logs this update');
+        parts.push([{ b: String(data.logs_downloaded_since_last_update) }, ' logs this update']);
       } else {
-        parts.push('Logs this update: N/A');
+        parts.push(['Logs this update: ', { b: 'N/A' }]);
       }
       if (data.max_id != null && data.max_id > 0) {
         const remaining = data.remaining != null ? data.remaining : 0;
         const pct = ((data.max_id - remaining) / data.max_id) * 100;
-        parts.push(pct.toFixed(2) + '% complete');
+        parts.push([{ b: pct.toFixed(2) + '%' }, ' complete']);
       }
-      el.textContent = parts.length ? parts.join(' \u00b7 ') : 'Progress not available yet.';
+      el.innerHTML = '';
+      if (parts.length === 0) {
+        el.textContent = 'Progress not available yet.';
+        return;
+      }
+      parts.forEach((part, i) => {
+        if (i > 0) el.appendChild(document.createTextNode(' \u00b7 '));
+        part.forEach(seg => {
+          if (typeof seg === 'string') {
+            el.appendChild(document.createTextNode(seg));
+          } else {
+            const strong = document.createElement('strong');
+            strong.textContent = seg.b;
+            el.appendChild(strong);
+          }
+        });
+      });
     }
 
     function formatUpdatedAt(isoString) {
