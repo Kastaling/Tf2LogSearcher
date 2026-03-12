@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<title> TF2 Log Searcher </title>
+<link href="favicon.ico" rel="icon" type="image/x-icon" />
+<h1 style="color: #5e9ca0;">Tf2 Logs.tf Advanced Searcher</h1>
+<h2 style="color: #2e6c80;">Chat Searcher:</h2>
+<p>Enter the SteamID64 (the long one that's just numbers) of the person whose logs you are searching. Then enter the word or phrase you would like to search for.</p>
+<p>Please do note that we do not currently have all the logs available on logs.tf downloaded. The furthest we go back is about late 2018. We are continuously downloading new logs and we will eventually reach the end though.</p>
+<p>If you are a brainlet, you can use <a href="https://steamid.io/" target="_blank">SteamID.io</a> to convert any SteamID to steamid64 </p>
+<form id="frm1" action="/Tf2LogSearcher/database/test.php" method="post">
+  SteamID64: <input type="text" name="steamid"><br>
+  Word: <input type="text" name="word"><br><br>
+  <input type="button" onclick="myFunction()" value="Submit">
+</form>
+<h2 style="color: #2e6c80;">Multi-party Log Searcher:</h2>
+<p>Enter the SteamID64(s) of the players whose matching logs you would like to display.</p>
+<p>Please do note that we do not currently have all the logs available on logs.tf downloaded. The furthest we go back is about late 2018. We are continuously downloading new logs and we will eventually reach the end though.</p>
+<p>If you are a brainlet, you can use <a href="https://steamid.io/" target="_blank">SteamID.io</a> to convert any SteamID to steamid64 </p>
+<form id="frm2" action="/Tf2LogSearcher/test/logmatcher.php" method="post">
+ <label for="steamids">Input SteamID64s here:<br></label>
+<textarea id="steamids" name="steamids" rows="4" cols="50" placeholder="Please input the SteamID64s here (separated by a space).">
+</textarea>
+  <input type="button" onclick="myFunction2()" value="Submit">
+</form>
+<h2 style="color: #2e6c80;">Stats Sorter:</h2>
+<p>Enter the SteamID64 of the player whose log stats you would like to sort through.</p>
+<p>Please do note that we do not currently have all the logs available on logs.tf downloaded. The furthest we go back is about late 2018. We are continuously downloading new logs and we will eventually reach the end though.</p>
+<p>If you are a brainlet, you can use <a href="https://steamid.io/" target="_blank">SteamID.io</a> to convert any SteamID to steamid64 </p>
+<form id="frm3" action="/Tf2LogSearcher/test/statssorter.php" method="post">
+  SteamID64: <input type="text" name="steamid"><br>
+Gamemode: <select id="gamemode" name="gamemode">
+  <option value="hl">Highlander</option>
+  <option value="7s">Prolander</option>
+  <option value="6s">6s</option>
+  <option value="ud">Ultiduo</option>
+</select><br>
+Class Selection:<br>
+<input type="checkbox" id="scout" name="scout" value="scout">
+<label for="scout"> Scout</label><br>
+<input type="checkbox" id="soldier" name="soldier" value="soldier">
+<label for="soldier"> Soldier</label><br>
+<input type="checkbox" id="pyro" name="pyro" value="pyro">
+<label for="pyro"> Pyro</label><br>
+<input type="checkbox" id="demoman" name="demoman" value="demoman">
+<label for="demo"> Demoman</label><br>
+<input type="checkbox" id="heavyweapons" name="heavyweapons" value="heavyweapons">
+<label for="Heavy"> Heavy</label><br>
+<input type="checkbox" id="engineer" name="engineer" value="engineer">
+<label for="engie"> Engineer</label><br>
+<input type="checkbox" id="medic" name="medic" value="medic">
+<label for="medic"> Medic</label><br>
+<input type="checkbox" id="sniper" name="sniper" value="sniper">
+<label for="sniper"> Sniper</label><br>
+<input type="checkbox" id="spy" name="spy" value="spy">
+<label for="spy"> Spy</label><br>
+  <input type="button" onclick="myFunction3()" value="Submit">
+</form>
+<h2 style="color: #2e6c80;">Word Leaderboard:</h2>
+<p>Enter the word you would like the leaderbaord for:</p>
+<form id="frm4" action="/Tf2LogSearcher/test/wordleaderboard.php" method="post">
+  Word: <input type="text" name="word"><br><br>
+  <input type="button" onclick="myFunction4()" value="Submit">
+</form>
+<script>
+function myFunction() {
+  document.getElementById("frm1").submit();
+}
+</script>
+<script>
+function myFunction2() {
+  document.getElementById("frm2").submit();
+}
+</script>
+<script>
+function myFunction3() {
+  document.getElementById("frm3").submit();
+}
+</script>
+<script>
+function myFunction4() {
+  document.getElementById("frm4").submit();
+}
+</script>
+<p>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;</p>
+<p>&nbsp;</p>
+<p>&nbsp;</p>
+<p>&nbsp;</p>
+<p>&nbsp;</p>
+<p>&nbsp;</p>
+<p>&nbsp;</p>
+<p>&nbsp;</p>
+<p>Contact Kastaling#7893 on Discord for any questions, comments, or concerns.</p>
+
+
+</body>
+</html>

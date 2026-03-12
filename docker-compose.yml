@@ -1,0 +1,31 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8027:8000"
+    environment:
+      - LOGS_DIR=/app/logs
+      - DOWNLOADER_STATE_DIR=/app/downloader_state
+      - REQUEST_LOG_PATH=/app/request_logs/request_log.csv
+    volumes:
+      - ./logs:/app/logs
+      - ./downloader_state:/app/downloader_state:ro
+      - ./request_logs:/app/request_logs
+    restart: unless-stopped
+
+  downloader:
+    build: .
+    command: ["python", "-m", "app.downloader"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOGS_DIR=/app/logs
+      - DOWNLOADER_STATE_DIR=/app/downloader_state
+      - DOWNLOAD_INTERVAL_SEC=3600
+      - REQUEST_DELAY_MS=300
+      - MAX_REQUESTS_BEFORE_BACKOFF=1500
+      - BACKOFF_SEC=60
+      - RETRY_ATTEMPTS=3
+    volumes:
+      - ./logs:/app/logs
+      - ./downloader_state:/app/downloader_state
+    restart: unless-stopped

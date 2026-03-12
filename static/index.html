@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8559919563649462"
+     crossorigin="anonymous"></script>
+  <meta charset="UTF-8">
+  <title>TF2 Log Searcher</title>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <style>
+    body { font-family: sans-serif; max-width: 800px; margin: 1rem auto; padding: 0 1rem; }
+    h1 { color: #5e9ca0; }
+    h2 { color: #2e6c80; }
+    form { margin-bottom: 2rem; }
+    input[type="text"], textarea, select { width: 100%; max-width: 400px; }
+    .results { margin-top: 1rem; white-space: pre-wrap; }
+    .error { color: #c00; }
+    .download-progress { margin: 1rem 0; padding: 0.75rem; background: #f0f8f8; border-radius: 4px; border: 1px solid #cce; }
+    a { color: #2e6c80; }
+    table.stats-table { border-collapse: collapse; width: 100%; }
+    table.stats-table th, table.stats-table td { border: 1px solid #ccc; padding: 0.35rem 0.5rem; text-align: left; }
+    table.stats-table th.sortable { cursor: pointer; user-select: none; }
+    table.stats-table th.sortable:hover { background: #e8f4f4; }
+    table.stats-table th.sorted-asc::after { content: ' \25b2'; font-size: 0.7em; opacity: 0.8; }
+    table.stats-table th.sorted-desc::after { content: ' \25bc'; font-size: 0.7em; opacity: 0.8; }
+  </style>
+</head>
+<body>
+  <h1>Tf2 Logs.tf Advanced Searcher</h1>
+
+  <h2>Chat Searcher</h2>
+  <p>Search for a word or phrase in a player's chat, or leave the word blank to see their full chat history. Use <a href="https://steamid.io/" target="_blank" rel="noopener noreferrer">SteamID.io</a> to convert any SteamID to SteamID64.</p>
+  <form id="frmChat">
+    <label>SteamID64: <input type="text" name="steamid" placeholder="17-digit number" required></label><br><br>
+    <label>Word or phrase (optional): <input type="text" name="word" placeholder="Leave empty for full chat history"></label><br><br>
+    <button type="submit">Submit</button>
+  </form>
+  <div id="chatResults" class="results"></div>
+
+  <h2>Multi-party Log Searcher</h2>
+  <p>Enter the SteamID64(s) of the players whose matching logs you want (space- or comma-separated).</p>
+  <form id="frmLogmatch">
+    <label>SteamID64s: <textarea name="steamids" rows="3" cols="50" placeholder="Separated by space or comma"></textarea></label><br><br>
+    <button type="submit">Submit</button>
+  </form>
+  <div id="logmatchResults" class="results"></div>
+
+  <h2>Stats Sorter</h2>
+  <p>Enter SteamID64, gamemode, and select classes to see stats.</p>
+  <form id="frmStats">
+    <label>SteamID64: <input type="text" name="steamid" required></label><br><br>
+    <label>Gamemode: <select name="gamemode">
+      <option value="hl">Highlander</option>
+      <option value="7s">Prolander</option>
+      <option value="6s">6s</option>
+      <option value="ud">Ultiduo</option>
+    </select></label><br><br>
+    Class selection:<br>
+    <label><input type="checkbox" name="classes" value="scout"> Scout</label>
+    <label><input type="checkbox" name="classes" value="soldier"> Soldier</label>
+    <label><input type="checkbox" name="classes" value="pyro"> Pyro</label>
+    <label><input type="checkbox" name="classes" value="demoman"> Demoman</label>
+    <label><input type="checkbox" name="classes" value="heavyweapons"> Heavy</label>
+    <label><input type="checkbox" name="classes" value="engineer"> Engineer</label>
+    <label><input type="checkbox" name="classes" value="medic"> Medic</label>
+    <label><input type="checkbox" name="classes" value="sniper"> Sniper</label>
+    <label><input type="checkbox" name="classes" value="spy"> Spy</label><br><br>
+    <button type="submit">Submit</button>
+  </form>
+  <div id="statsResults" class="results"></div>
+
+  <h2>Log library</h2>
+  <p>Progress is updated periodically.</p>
+  <div id="downloadProgress" class="download-progress" aria-live="polite">Loading…</div>
+
+  <p><small>We do not have all logs from logs.tf; coverage is continuously updated. Contact Kastaling on Discord for questions.</small></p>
+
+  <script>
+    const PROGRESS_POLL_MS = 5 * 60 * 1000;
+
+    function formData(form) {
+      const fd = new FormData(form);
+      return new URLSearchParams(fd).toString();
+    }
+
+    function renderProgress(data) {
+      const el = document.getElementById('downloadProgress');
+      if (!el) return;
+      if (data.backfill_complete) {
+        el.textContent = 'Full backfill complete. New logs are added periodically. You can search across all logs we have. (100% complete)';
+        return;
+      }
+      const parts = [];
+      if (data.total_files != null) parts.push(data.total_files + ' log(s)');
+      if (data.min_id != null && data.max_id != null) parts.push('range ' + data.min_id + '\u2013' + data.max_id);
+      if (data.remaining != null && data.remaining > 0) parts.push(data.remaining + ' remaining to log 1');
+      if (data.eta_human) parts.push('ETA ' + data.eta_human);
+      if (data.rate_logs_per_sec != null) parts.push('(' + data.rate_logs_per_sec + ' logs/s)');
+      if (data.updated_at) parts.push('Updated ' + formatUpdatedAt(data.updated_at));
+      if (data.earliest_log_timestamp != null) {
+        const earliestStr = formatEarliestLogDate(data.earliest_log_timestamp);
+        if (earliestStr) parts.push('Earliest log: ' + earliestStr);
+      }
+      if (data.max_id != null && data.max_id > 0) {
+        const remaining = data.remaining != null ? data.remaining : 0;
+        const pct = ((data.max_id - remaining) / data.max_id) * 100;
+        parts.push(pct.toFixed(2) + '% complete');
+      }
+      el.textContent = parts.length ? parts.join(' \u00b7 ') : 'Progress not available yet.';
+    }
+
+    function formatUpdatedAt(isoString) {
+      try {
+        const date = new Date(isoString);
+        if (Number.isNaN(date.getTime())) return isoString;
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        return new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short', timeZone: tz }).format(date);
+      } catch (_) {
+        return new Date(isoString + 'Z').toLocaleString(undefined, { timeZone: 'UTC' }) || isoString;
+      }
+    }
+
+    function formatEarliestLogDate(unixSeconds) {
+      if (unixSeconds == null || typeof unixSeconds !== 'number') return '';
+      const date = new Date(unixSeconds * 1000);
+      if (Number.isNaN(date.getTime())) return '';
+      try {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        return new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short', timeZone: tz }).format(date);
+      } catch (_) {
+        return date.toLocaleString(undefined, { timeZone: 'UTC' });
+      }
+    }
+
+    async function fetchProgress() {
+      try {
+        const r = await fetch('/api/download-progress');
+        const data = r.ok ? await r.json() : null;
+        const el = document.getElementById('downloadProgress');
+        if (!el) return data;
+        if (!r.ok || !data) {
+          el.textContent = 'Progress not available yet.';
+          return null;
+        }
+        renderProgress(data);
+        return data;
+      } catch (_) {
+        const el = document.getElementById('downloadProgress');
+        if (el) el.textContent = 'Progress not available yet.';
+        return null;
+      }
+    }
+
+    (function initProgress() {
+      fetchProgress().then(function(data) {
+        if (data && !data.backfill_complete) {
+          setInterval(fetchProgress, PROGRESS_POLL_MS);
+        }
+      });
+    })();
+
+    document.getElementById('frmChat').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const el = document.getElementById('chatResults');
+      var word = (form.word.value || '').trim();
+      var steamid = (form.steamid.value || '').trim();
+
+      if (!steamid) {
+        el.innerHTML = '<span class="error">Steam ID is required.</span>';
+        return;
+      }
+      if (!/^\d{17}$/.test(steamid)) {
+        el.innerHTML = '<span class="error">Steam ID must be a 17-digit SteamID64.</span>';
+        return;
+      }
+      if (word.length > 200) {
+        el.innerHTML = '<span class="error">Search word is too long.</span>';
+        return;
+      }
+
+      el.textContent = 'Searching...';
+      try {
+        const body = new URLSearchParams({ word: word, steamid: steamid });
+        const r = await fetch('/api/search/chat', { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        const data = await r.json();
+        if (!r.ok) {
+          el.innerHTML = '<span class="error">' + escapeHtml(data.error || r.status) + '</span>';
+          return;
+        }
+        var html = 'Total ' + data.total + ' occurrence(s).<br>';
+        (data.results || []).forEach(function(x) {
+          html += escapeHtml(x.alias) + ': ' + escapeHtml(x.msg) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
+        });
+        el.innerHTML = html || 'No matches.';
+      } catch (err) {
+        el.innerHTML = '<span class="error">' + escapeHtml(err.message) + '</span>';
+      }
+    });
+
+    document.getElementById('frmLogmatch').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const el = document.getElementById('logmatchResults');
+      el.textContent = 'Searching...';
+      try {
+        const body = formData(e.target);
+        const r = await fetch('/api/search/logmatch', { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        const data = await r.json();
+        if (!r.ok) { el.innerHTML = '<span class="error">' + (data.error || r.status) + '</span>'; return; }
+        let html = 'Total ' + data.total + ' matching log(s).<br>';
+        (data.results || []).forEach(x => { html += x.title + '<br>' + x.map + '<br>' + x.date + '<br><a href="' + x.url + '" target="_blank">' + x.url + '</a><br><br>'; });
+        el.innerHTML = html || 'No matches.';
+      } catch (err) { el.innerHTML = '<span class="error">' + err.message + '</span>'; }
+    });
+
+    document.getElementById('frmStats').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const classes = Array.from(form.querySelectorAll('input[name="classes"]:checked')).map(c => c.value).join(',');
+      const el = document.getElementById('statsResults');
+      el.textContent = 'Searching...';
+      try {
+        const body = new URLSearchParams({ steamid: form.steamid.value, gamemode: form.gamemode.value, classes });
+        const r = await fetch('/api/search/stats', { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        const data = await r.json();
+        if (!r.ok) { el.innerHTML = '<span class="error">' + (data.error || r.status) + '</span>'; return; }
+        const rows = data.rows || [];
+        if (rows.length === 0) { el.textContent = 'No rows.'; return; }
+        renderStatsTable(el, rows);
+      } catch (err) { el.innerHTML = '<span class="error">' + err.message + '</span>'; }
+    });
+
+    function escapeHtml(str) {
+      if (str == null) return '';
+      const s = String(str);
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function parseStatsDate(str) {
+      if (!str || typeof str !== 'string') return NaN;
+      const parts = str.trim().split(/\s+/);
+      if (parts.length < 4) return NaN;
+      const datePart = parts[parts.length - 1];
+      const dateBits = datePart.split('/').map(Number);
+      if (dateBits.length !== 3) return NaN;
+      const [m, d, y] = dateBits;
+      if (!y || !m || !d) return NaN;
+      const timePart = parts[0];
+      const ampm = (parts[1] || '').toUpperCase();
+      const timeBits = timePart.split(':').map(Number);
+      let hour = timeBits[0] || 0;
+      const min = timeBits[1] || 0;
+      const sec = timeBits[2] || 0;
+      if (ampm === 'PM' && hour < 12) hour += 12;
+      if (ampm === 'AM' && hour === 12) hour = 0;
+      return new Date(y, m - 1, d, hour, min, sec).getTime();
+    }
+
+    var statsSortCol = null;
+    var statsSortDir = 1;
+
+    var STATS_COLUMNS = [
+      { key: 'alias', label: 'Alias', type: 'text' },
+      { key: 'character', label: 'Class', type: 'text' },
+      { key: 'kills', label: 'K', type: 'number' },
+      { key: 'assists', label: 'A', type: 'number' },
+      { key: 'deaths', label: 'D', type: 'number' },
+      { key: 'kdr', label: 'KDR', type: 'number' },
+      { key: 'kadr', label: 'KADR', type: 'number' },
+      { key: 'dpm', label: 'DPM', type: 'number' },
+      { key: 'dmg', label: 'Dmg', type: 'number' },
+      { key: 'headshots_hit', label: 'HS', type: 'number' },
+      { key: 'backstabs', label: 'BS', type: 'number' },
+      { key: 'map', label: 'Map', type: 'text' },
+      { key: 'date', label: 'Date', type: 'date' },
+      { key: 'url', label: 'Log', type: 'text' }
+    ];
+
+    function getSortValue(row, key, type) {
+      const v = row[key];
+      if (type === 'number') {
+        const n = Number(v);
+        return Number.isNaN(n) ? -Infinity : n;
+      }
+      if (type === 'date') {
+        const t = parseStatsDate(v);
+        return Number.isNaN(t) ? 0 : t;
+      }
+      return v != null ? String(v).toLowerCase() : '';
+    }
+
+    function renderStatsTable(container, rows) {
+      if (rows !== container._statsRows) {
+        container._statsRows = rows;
+        statsSortCol = null;
+        statsSortDir = 1;
+      }
+      var originalRows = container._statsRows;
+      var sortCol = statsSortCol;
+      var sortDir = statsSortDir;
+      var sortedRows = originalRows.slice();
+      var colDef = STATS_COLUMNS.find(function(c) { return c.key === sortCol; });
+      if (colDef) {
+        sortedRows.sort(function(a, b) {
+          var va = getSortValue(a, sortCol, colDef.type);
+          var vb = getSortValue(b, sortCol, colDef.type);
+          if (colDef.type === 'text') {
+            if (va < vb) return -sortDir;
+            if (va > vb) return sortDir;
+            return 0;
+          }
+          if (va < vb) return -sortDir;
+          if (va > vb) return sortDir;
+          return 0;
+        });
+      }
+
+      var thead = '<tr>';
+      STATS_COLUMNS.forEach(function(c) {
+        var cls = 'sortable';
+        if (c.key === sortCol) cls += sortDir === 1 ? ' sorted-asc' : ' sorted-desc';
+        thead += '<th class="' + cls + '" data-col="' + escapeHtml(c.key) + '" scope="col">' + escapeHtml(c.label) + '</th>';
+      });
+      thead += '</tr>';
+
+      var tbody = '';
+      sortedRows.forEach(function(x) {
+        tbody += '<tr><td>' + escapeHtml(x.alias) + '</td><td>' + escapeHtml(x.character) + '</td><td>' + escapeHtml(x.kills) + '</td><td>' + escapeHtml(x.assists) + '</td><td>' + escapeHtml(x.deaths) + '</td><td>' + escapeHtml(x.kdr) + '</td><td>' + escapeHtml(x.kadr) + '</td><td>' + escapeHtml(x.dpm) + '</td><td>' + escapeHtml(x.dmg) + '</td><td>' + escapeHtml(x.headshots_hit) + '</td><td>' + escapeHtml(x.backstabs) + '</td><td>' + escapeHtml(x.map) + '</td><td>' + escapeHtml(x.date) + '</td><td><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">Link</a></td></tr>';
+      });
+
+      container.innerHTML = '<table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table>';
+      container._statsRows = originalRows;
+
+      container.querySelectorAll('th.sortable').forEach(function(th) {
+        th.addEventListener('click', function() {
+          var col = th.getAttribute('data-col');
+          if (!col) return;
+          if (statsSortCol === col) {
+            statsSortDir = statsSortDir === 1 ? -1 : 1;
+          } else {
+            statsSortCol = col;
+            statsSortDir = 1;
+          }
+          renderStatsTable(container, container._statsRows);
+        });
+      });
+    }
+  </script>
+</body>
+</html>
