@@ -16,3 +16,5 @@ skipped_log_ids.json
 *.log.tar.bz2
 *.log.tar.xz
 Untitled*
+__pycache__/
+*.pyc
