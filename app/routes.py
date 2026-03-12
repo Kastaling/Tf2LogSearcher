@@ -172,7 +172,7 @@ async def api_download_progress(request: Request):
     allowed = {
         "min_id", "max_id", "total_files",
         "remaining", "eta_human", "rate_logs_per_sec", "backfill_complete", "updated_at",
-        "earliest_log_timestamp",
+        "earliest_log_timestamp", "logs_downloaded_since_last_update",
     }
     out = {k: data[k] for k in allowed if k in data}
     return JSONResponse(out)

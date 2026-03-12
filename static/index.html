@@ -100,6 +100,11 @@
         const earliestStr = formatEarliestLogDate(data.earliest_log_timestamp);
         if (earliestStr) parts.push('Earliest log: ' + earliestStr);
       }
+      if (data.logs_downloaded_since_last_update != null && typeof data.logs_downloaded_since_last_update === 'number') {
+        parts.push(data.logs_downloaded_since_last_update + ' logs this update');
+      } else {
+        parts.push('Logs this update: N/A');
+      }
       if (data.max_id != null && data.max_id > 0) {
         const remaining = data.remaining != null ? data.remaining : 0;
         const pct = ((data.max_id - remaining) / data.max_id) * 100;
