@@ -100,7 +100,15 @@
       if (data.min_id != null && data.max_id != null) parts.push(['Range (', { b: String(data.max_id) }, ' \u2013 ', { b: String(data.min_id) }, ')']);
       if (data.remaining != null && data.remaining > 0) parts.push([{ b: String(data.remaining) }, ' remaining to log 1']);
       if (data.eta_human) parts.push(['ETA ', { b: data.eta_human }]);
-      if (data.rate_logs_per_sec != null) parts.push(['(', { b: String(data.rate_logs_per_sec) }, ' logs/s)']);
+      if (data.rate_logs_per_sec != null || data.rate_logs_per_sec_aggregated != null) {
+        if (data.rate_logs_per_sec_aggregated != null && data.rate_logs_per_sec != null) {
+          parts.push(['(', { b: String(data.rate_logs_per_sec) }, ' logs/s, avg ', { b: String(data.rate_logs_per_sec_aggregated) }, ')']);
+        } else if (data.rate_logs_per_sec_aggregated != null) {
+          parts.push(['(', { b: String(data.rate_logs_per_sec_aggregated) }, ' logs/s avg)']);
+        } else {
+          parts.push(['(', { b: String(data.rate_logs_per_sec) }, ' logs/s)']);
+        }
+      }
       if (data.updated_at) parts.push(['Updated ', { b: formatUpdatedAt(data.updated_at) }]);
       if (data.earliest_log_timestamp != null) {
         const earliestStr = formatEarliestLogDate(data.earliest_log_timestamp);

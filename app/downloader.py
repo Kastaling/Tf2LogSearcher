@@ -24,8 +24,10 @@ logger = logging.getLogger(__name__)
 STATE_FILE = "downloader_state.json"
 SKIP_FILE = "skipped_log_ids.json"
 LIMIT = 1000
-# Number of recent writes to use for download rate (ETA)
+# Number of recent writes to use for download rate (ETA fallback)
 RECENT_WRITES_SIZE = 100
+# Minimum seconds since process start before using aggregated rate for ETA
+MIN_ELAPSED_FOR_AGGREGATED_SEC = 60.0
 
 
 def _human_bytes(n: int) -> str:
@@ -90,10 +92,26 @@ def _format_eta(recent_writes: list[tuple[float, int]], min_id: int | None) -> s
     if elapsed <= 0:
         return "N/A"
     rate = len(recent_writes) / elapsed
-    if rate <= 0:
+    return _format_eta_from_rate(rate, remaining)
+
+
+def _format_eta_from_rate(rate: float | None, remaining: int) -> str:
+    """Compute ETA string from an explicit rate (logs/s) and remaining count. Used for aggregated or recent rate."""
+    if remaining <= 0:
+        return "Complete"
+    if rate is None or rate <= 0:
         return "N/A"
-    eta_sec = remaining / rate
-    return _human_duration(eta_sec)
+    return _human_duration(remaining / rate)
+
+
+def _aggregated_rate_logs_per_sec(session_start_time: float, session_downloads: int) -> float | None:
+    """Session-based rate (logs/s) since process start. Returns None until MIN_ELAPSED_FOR_AGGREGATED_SEC and at least one download."""
+    if session_start_time <= 0 or session_downloads <= 0:
+        return None
+    elapsed = time.time() - session_start_time
+    if elapsed < MIN_ELAPSED_FOR_AGGREGATED_SEC:
+        return None
+    return session_downloads / elapsed
 
 
 def _log_stats_and_eta(logs_dir: Path, recent_writes: list[tuple[float, int]]) -> None:
@@ -169,10 +187,13 @@ def _write_progress_if_due(
     recent_writes: list[tuple[float, int]],
     last_progress_write_ref: list[float],
     downloads_since_progress_ref: list[int],
+    session_start_time_ref: list[float],
+    session_downloads_ref: list[int],
 ) -> None:
     """
     Write progress.json for the web UI at most every PROGRESS_UPDATE_INTERVAL_SEC.
     Uses atomic write (temp file + rename). All payload values are server-controlled (no user input).
+    ETA uses aggregated session rate when available (after MIN_ELAPSED_FOR_AGGREGATED_SEC), else recent-window rate.
     """
     now = time.time()
     if last_progress_write_ref[0] > 0 and (now - last_progress_write_ref[0]) < PROGRESS_UPDATE_INTERVAL_SEC:
@@ -180,8 +201,17 @@ def _write_progress_if_due(
     total_bytes, count, min_id, max_id = _log_dir_stats(logs_dir)
     remaining = max(0, min_id - 1) if min_id is not None else 0
     backfill_complete = min_id is not None and min_id <= 1
-    rate = _rate_logs_per_sec(recent_writes)
-    eta_str = _format_eta(recent_writes, min_id)
+    recent_rate = _rate_logs_per_sec(recent_writes)
+    aggregated_rate = _aggregated_rate_logs_per_sec(session_start_time_ref[0], session_downloads_ref[0])
+    preferred_rate = aggregated_rate if aggregated_rate is not None else recent_rate
+    if min_id is None:
+        eta_str = "N/A (no logs yet)"
+    elif remaining == 0:
+        eta_str = "Complete"
+    else:
+        eta_str = _format_eta_from_rate(preferred_rate, remaining)
+        if eta_str == "N/A" and recent_rate is not None:
+            eta_str = _format_eta_from_rate(recent_rate, remaining)
     earliest_ts = _earliest_log_timestamp(logs_dir, min_id)
     logs_this_update = downloads_since_progress_ref[0]
     downloads_since_progress_ref[0] = 0  # reset for next interval
@@ -193,7 +223,8 @@ def _write_progress_if_due(
         "total_bytes_human": _human_bytes(total_bytes),
         "remaining": remaining,
         "eta_human": eta_str,
-        "rate_logs_per_sec": round(rate, 2) if rate is not None else None,
+        "rate_logs_per_sec": round(recent_rate, 2) if recent_rate is not None else None,
+        "rate_logs_per_sec_aggregated": round(aggregated_rate, 2) if aggregated_rate is not None else None,
         "backfill_complete": backfill_complete,
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "earliest_log_timestamp": earliest_ts,
@@ -312,7 +343,7 @@ def fetch_log_json_with_retry(log_id: int):
     return None, False
 
 
-def run_catch_up_newest(logs_dir: Path, state_dir: Path, skipped: set[int], request_count_ref: list[int], recent_writes: list[tuple[float, int]], last_progress_write_ref: list[float], downloads_since_progress_ref: list[int]) -> int:
+def run_catch_up_newest(logs_dir: Path, state_dir: Path, skipped: set[int], request_count_ref: list[int], recent_writes: list[tuple[float, int]], last_progress_write_ref: list[float], downloads_since_progress_ref: list[int], session_start_time_ref: list[float], session_downloads_ref: list[int]) -> int:
     """Phase 1: Fetch offset=0 (newest logs). Download any we don't have. Does not change next_offset."""
     logger.info("Phase 1: Checking offset=0 for NEW logs (catch up newest first)")
     logs = fetch_log_list(0, LIMIT)
@@ -343,6 +374,7 @@ def run_catch_up_newest(logs_dir: Path, state_dir: Path, skipped: set[int], requ
             size_bytes = path.stat().st_size
             recent_writes.append((time.time(), log_id))
             downloads_since_progress_ref[0] += 1
+            session_downloads_ref[0] += 1
             if len(recent_writes) > RECENT_WRITES_SIZE:
                 del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
             downloaded += 1
@@ -353,12 +385,12 @@ def run_catch_up_newest(logs_dir: Path, state_dir: Path, skipped: set[int], requ
             logger.info("Skipped log %s (failed or invalid)", log_id)
     logger.info("Phase 1 done: downloaded %s new log(s) from offset 0", downloaded)
     _log_stats_and_eta(logs_dir, recent_writes)
-    _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, downloads_since_progress_ref)
+    _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, downloads_since_progress_ref, session_start_time_ref, session_downloads_ref)
     return downloaded
 
 
 def run_backfill_from_offset(
-    logs_dir: Path, state_dir: Path, skipped: set[int], next_offset: int, request_count_ref: list[int], recent_writes: list[tuple[float, int]], last_progress_write_ref: list[float], downloads_since_progress_ref: list[int]
+    logs_dir: Path, state_dir: Path, skipped: set[int], next_offset: int, request_count_ref: list[int], recent_writes: list[tuple[float, int]], last_progress_write_ref: list[float], downloads_since_progress_ref: list[int], session_start_time_ref: list[float], session_downloads_ref: list[int]
 ) -> int:
     """Phase 2: Continue from next_offset toward older logs (work toward 1st/oldest log). Returns new next_offset."""
     logger.info("Phase 2: Continuing backfill from offset=%s toward oldest logs", next_offset)
@@ -368,7 +400,7 @@ def run_backfill_from_offset(
             logger.info("No more logs at offset %s (reached end of API)", next_offset)
             save_next_offset(state_dir, next_offset)
             _log_stats_and_eta(logs_dir, recent_writes)
-            _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, downloads_since_progress_ref)
+            _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, downloads_since_progress_ref, session_start_time_ref, session_downloads_ref)
             return next_offset
         logger.info("Got %s log IDs from API (offset %s)", len(logs), next_offset)
         downloaded = 0
@@ -399,6 +431,7 @@ def run_backfill_from_offset(
                 size_bytes = path.stat().st_size
                 recent_writes.append((time.time(), log_id))
                 downloads_since_progress_ref[0] += 1
+                session_downloads_ref[0] += 1
                 if len(recent_writes) > RECENT_WRITES_SIZE:
                     del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
                 downloaded += 1
@@ -411,7 +444,7 @@ def run_backfill_from_offset(
         next_offset += len(logs)
         save_next_offset(state_dir, next_offset)
         _log_stats_and_eta(logs_dir, recent_writes)
-        _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, downloads_since_progress_ref)
+        _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, downloads_since_progress_ref, session_start_time_ref, session_downloads_ref)
         logger.info("Page done: offset now %s | downloaded=%s skipped=%s already_had=%s", next_offset, downloaded, skipped_this_page, already_had)
         if len(logs) < LIMIT:
             break
@@ -421,16 +454,18 @@ def run_backfill_from_offset(
 def run_once(logs_dir: Path, state_dir: Path, skipped: set[int], next_offset: int) -> int:
     """Legacy helper: run backfill only (no Phase 1). Returns new next_offset."""
     request_count_ref = [0]
-    return run_backfill_from_offset(logs_dir, state_dir, skipped, next_offset, request_count_ref, [], [0.0], [0])
+    return run_backfill_from_offset(logs_dir, state_dir, skipped, next_offset, request_count_ref, [], [0.0], [0], [0.0], [0])
 
 
 def main() -> None:
     logs_dir = LOGS_DIR
     state_dir = DOWNLOADER_STATE_DIR
     logger.info("Downloader started. LOGS_DIR=%s (log files only) STATE_DIR=%s", logs_dir, state_dir)
-    recent_writes: list[tuple[float, int]] = []  # sliding window for ETA rate
+    recent_writes: list[tuple[float, int]] = []  # sliding window for ETA rate (fallback)
     last_progress_write_ref: list[float] = [0.0]  # last time we wrote progress.json
     downloads_since_progress_ref: list[int] = [0]  # count of logs written since last progress update
+    session_start_time_ref: list[float] = [time.time()]  # process start for aggregated ETA rate
+    session_downloads_ref: list[int] = [0]  # total logs written this run for aggregated ETA rate
     while True:
         skipped = load_skip_list(state_dir)
         next_offset = load_next_offset(state_dir, logs_dir)
@@ -438,9 +473,9 @@ def main() -> None:
         request_count_ref = [0]  # shared across Phase 1 and Phase 2 for backoff
         try:
             # Phase 1: always check offset=0 for new logs first (even if we're millions of logs behind)
-            run_catch_up_newest(logs_dir, state_dir, skipped, request_count_ref, recent_writes, last_progress_write_ref, downloads_since_progress_ref)
+            run_catch_up_newest(logs_dir, state_dir, skipped, request_count_ref, recent_writes, last_progress_write_ref, downloads_since_progress_ref, session_start_time_ref, session_downloads_ref)
             # Phase 2: continue backfill from saved offset toward oldest log
-            next_offset = run_backfill_from_offset(logs_dir, state_dir, skipped, next_offset, request_count_ref, recent_writes, last_progress_write_ref, downloads_since_progress_ref)
+            next_offset = run_backfill_from_offset(logs_dir, state_dir, skipped, next_offset, request_count_ref, recent_writes, last_progress_write_ref, downloads_since_progress_ref, session_start_time_ref, session_downloads_ref)
         except Exception as e:
             logger.exception("Run failed: %s", e)
         logger.info("Cycle complete. Sleeping %s s until next run.", DOWNLOAD_INTERVAL_SEC)
