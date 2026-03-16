@@ -1,6 +1,9 @@
 """Configuration from environment."""
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _str(name: str, default: str) -> str:
@@ -22,6 +25,13 @@ DOWNLOADER_STATE_DIR = Path(_str("DOWNLOADER_STATE_DIR", "/app/downloader_state"
 
 # logs.tf API base URL
 LOGS_TF_API_BASE = _str("LOGS_TF_API_BASE", "https://logs.tf").rstrip("/")
+
+# Steam Web API key (optional). Required for resolving vanity URLs/names. Never exposed to the frontend.
+STEAM_WEB_API_KEY = (os.environ.get("STEAM_WEB_API_KEY") or "").strip() or None
+if STEAM_WEB_API_KEY:
+    logger.info("Steam Web API key is set; vanity URL/name resolution enabled.")
+else:
+    logger.warning("STEAM_WEB_API_KEY not set; vanity URL/name resolution will be disabled. Set it in .env or server environment.")
 
 # Downloader: seconds between full cycles
 DOWNLOAD_INTERVAL_SEC = _int("DOWNLOAD_INTERVAL_SEC", 3600)

@@ -1,4 +1,7 @@
 """Tf2LogSearcher web application entry point."""
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 

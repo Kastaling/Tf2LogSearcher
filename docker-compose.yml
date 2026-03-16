@@ -3,6 +3,8 @@ services:
     build: .
     ports:
       - "8027:8000"
+    env_file:
+      - .env
     environment:
       - LOGS_DIR=/app/logs
       - DOWNLOADER_STATE_DIR=/app/downloader_state

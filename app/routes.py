@@ -8,9 +8,10 @@ from typing import Any
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 
-from app.config import LOGS_DIR, REQUEST_LOG_PATH, DOWNLOADER_STATE_DIR
+from app.config import LOGS_DIR, REQUEST_LOG_PATH, DOWNLOADER_STATE_DIR, STEAM_WEB_API_KEY
 from app.request_log import append_request_log
 from app.search.search import chat_search, stats_search, log_match
+from app.steam_resolver import resolve_to_steamid64
 
 CHAT_SEARCH_MAX_WORD_LENGTH = 200
 STEAMID64_LEN = 17
@@ -66,19 +67,14 @@ def _log_request(
 
 @router.post("/api/search/chat")
 async def api_search_chat(request: Request, word: str = Form(""), steamid: str = Form("")):
-    """Chat search: steamid64 required; word optional (empty = full chat history for that player)."""
+    """Chat search: Steam ID (any format) required; word optional. Resolves ID server-side; API key never sent to client."""
     start = time.perf_counter()
     word = (word or "").strip()
-    steamid = (steamid or "").strip()
+    steamid_input = (steamid or "").strip()
 
-    if not steamid:
+    if not steamid_input:
         return JSONResponse(
             {"results": [], "total": 0, "error": "Steam ID is required."},
-            status_code=400,
-        )
-    if len(steamid) != STEAMID64_LEN or not steamid.isdigit():
-        return JSONResponse(
-            {"results": [], "total": 0, "error": "Steam ID must be a 17-digit SteamID64."},
             status_code=400,
         )
     if len(word) > CHAT_SEARCH_MAX_WORD_LENGTH:
@@ -87,21 +83,30 @@ async def api_search_chat(request: Request, word: str = Form(""), steamid: str =
             status_code=400,
         )
 
+    steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+    if resolve_error is not None:
+        return JSONResponse(
+            {"results": [], "total": 0, "error": resolve_error},
+            status_code=400,
+        )
+    assert steamid64 is not None
+
     status_code = 200
     result_count = 0
     try:
-        results, result_count, searched_user_name = chat_search(word, steamid, LOGS_DIR)
+        results, result_count, searched_user_name = chat_search(word, steamid64, LOGS_DIR)
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/chat", status_code, duration_ms, result_count=result_count, word=word, steamid=steamid)
+        _log_request(request, "/api/search/chat", status_code, duration_ms, result_count=result_count, word=word, steamid=steamid64)
         return JSONResponse({
             "results": results,
             "total": result_count,
             "searched_user_name": searched_user_name,
+            "resolved_steamid64": steamid64,
         })
     except Exception as e:
         status_code = 500
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/chat", status_code, duration_ms, result_count=None, word=word, steamid=steamid)
+        _log_request(request, "/api/search/chat", status_code, duration_ms, result_count=None, word=word, steamid=steamid64)
         return JSONResponse({"results": [], "total": 0, "error": str(e)}, status_code=500)
 
 
@@ -112,40 +117,60 @@ async def api_search_stats(
     gamemode: str = Form("hl"),
     classes: str = Form(""),  # comma-separated
 ):
-    """Stats search: steamid, gamemode, classes."""
+    """Stats search: Steam ID (any format), gamemode, classes. Resolves ID server-side."""
     start = time.perf_counter()
+    steamid_input = (steamid or "").strip()
+    if not steamid_input:
+        return JSONResponse({"rows": [], "error": "Steam ID is required."}, status_code=400)
+    steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+    if resolve_error is not None:
+        return JSONResponse({"rows": [], "error": resolve_error}, status_code=400)
+    assert steamid64 is not None
+
     status_code = 200
     result_count = 0
     class_list = [c.strip() for c in classes.split(",") if c.strip()]
     try:
-        rows = stats_search(steamid, gamemode, class_list, LOGS_DIR)
+        rows = stats_search(steamid64, gamemode, class_list, LOGS_DIR)
         result_count = len(rows)
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/stats", status_code, duration_ms, result_count=result_count, steamid=steamid, gamemode=gamemode, classes=classes)
+        _log_request(request, "/api/search/stats", status_code, duration_ms, result_count=result_count, steamid=steamid64, gamemode=gamemode, classes=classes)
         return JSONResponse({"rows": rows})
     except Exception as e:
         status_code = 500
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/stats", status_code, duration_ms, steamid=steamid, gamemode=gamemode, classes=classes)
+        _log_request(request, "/api/search/stats", status_code, duration_ms, steamid=steamid64, gamemode=gamemode, classes=classes)
         return JSONResponse({"rows": [], "error": str(e)}, status_code=500)
 
 
 @router.post("/api/search/logmatch")
 async def api_search_logmatch(request: Request, steamids: str = Form("")):
-    """Log match: space- or comma-separated SteamID64s."""
+    """Log match: space- or comma-separated Steam IDs (any format). Each resolved server-side."""
     start = time.perf_counter()
+    raw_list = [s.strip() for s in steamids.replace(",", " ").split() if s.strip()]
+    if not raw_list:
+        return JSONResponse({"results": [], "total": 0, "error": "At least one Steam ID is required."}, status_code=400)
+    sid_list: list[str] = []
+    for i, raw in enumerate(raw_list):
+        steamid64, resolve_error = resolve_to_steamid64(raw, STEAM_WEB_API_KEY)
+        if resolve_error is not None:
+            return JSONResponse(
+                {"results": [], "total": 0, "error": f"Could not resolve Steam ID {i + 1}: {resolve_error}"},
+                status_code=400,
+            )
+        assert steamid64 is not None
+        sid_list.append(steamid64)
     status_code = 200
     result_count = 0
-    sid_list = [s.strip() for s in steamids.replace(",", " ").split() if s.strip()]
     try:
         results, result_count = log_match(sid_list, LOGS_DIR)
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/logmatch", status_code, duration_ms, result_count=result_count, steamids=steamids)
+        _log_request(request, "/api/search/logmatch", status_code, duration_ms, result_count=result_count, steamids=",".join(sid_list))
         return JSONResponse({"results": results, "total": result_count})
     except Exception as e:
         status_code = 500
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/logmatch", status_code, duration_ms, steamids=steamids)
+        _log_request(request, "/api/search/logmatch", status_code, duration_ms, steamids=",".join(sid_list))
         return JSONResponse({"results": [], "total": 0, "error": str(e)}, status_code=500)
 
 

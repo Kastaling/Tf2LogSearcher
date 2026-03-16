@@ -30,26 +30,26 @@
   <h1>Tf2 Logs.tf Advanced Searcher</h1>
 
   <h2>Chat Searcher</h2>
-  <p>Search for a word or phrase in a player's chat, or leave the word blank to see their full chat history. Use <a href="https://steamid.io/" target="_blank" rel="noopener noreferrer">SteamID.io</a> to convert any SteamID to SteamID64.</p>
+  <p>Search for a word or phrase in a player's chat, or leave the word blank to see their full chat history. You can enter SteamID64, profile URL, vanity URL, or vanity name.</p>
   <form id="frmChat">
-    <label>SteamID64: <input type="text" name="steamid" placeholder="17-digit number" required></label><br><br>
+    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label><br><br>
     <label>Word or phrase (optional): <input type="text" name="word" placeholder="Leave empty for full chat history"></label><br><br>
     <button type="submit">Submit</button>
   </form>
   <div id="chatResults" class="results"></div>
 
   <h2>Multi-party Log Searcher</h2>
-  <p>Enter the SteamID64(s) of the players whose matching logs you want (space- or comma-separated).</p>
+  <p>Enter Steam ID(s) in any format (profile URL, vanity name, or SteamID64), one per line or separated by space/comma.</p>
   <form id="frmLogmatch">
-    <label>SteamID64s: <textarea name="steamids" rows="3" cols="50" placeholder="Separated by space or comma"></textarea></label><br><br>
+    <label>Steam IDs: <textarea name="steamids" rows="3" cols="50" placeholder="Profile URLs, vanity names, or 17-digit IDs (space or comma separated)"></textarea></label><br><br>
     <button type="submit">Submit</button>
   </form>
   <div id="logmatchResults" class="results"></div>
 
   <h2>Stats Sorter</h2>
-  <p>Enter SteamID64, gamemode, and select classes to see stats.</p>
+  <p>Enter Steam ID (profile URL, vanity name, or SteamID64), gamemode, and select classes to see stats.</p>
   <form id="frmStats">
-    <label>SteamID64: <input type="text" name="steamid" required></label><br><br>
+    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label><br><br>
     <label>Gamemode: <select name="gamemode">
       <option value="hl">Highlander</option>
       <option value="7s">Prolander</option>
@@ -206,10 +206,6 @@
         el.innerHTML = '<span class="error">Steam ID is required.</span>';
         return;
       }
-      if (!/^\d{17}$/.test(steamid)) {
-        el.innerHTML = '<span class="error">Steam ID must be a 17-digit SteamID64.</span>';
-        return;
-      }
       if (word.length > 200) {
         el.innerHTML = '<span class="error">Search word is too long.</span>';
         return;
@@ -224,8 +220,9 @@
           el.innerHTML = '<span class="error">' + escapeHtml(data.error || r.status) + '</span>';
           return;
         }
-        var profileUrl = 'https://steamcommunity.com/profiles/' + escapeHtml(steamid);
-        var label = data.searched_user_name ? escapeHtml(data.searched_user_name) : profileUrl;
+        var resolved64 = data.resolved_steamid64 && /^\d{17}$/.test(String(data.resolved_steamid64)) ? String(data.resolved_steamid64) : null;
+        var profileUrl = resolved64 ? ('https://steamcommunity.com/profiles/' + resolved64) : ((steamid && /^\d{17}$/.test(steamid)) ? ('https://steamcommunity.com/profiles/' + steamid) : '#');
+        var label = data.searched_user_name ? escapeHtml(data.searched_user_name) : (profileUrl !== '#' ? profileUrl : escapeHtml(steamid));
         var html = 'Total ' + data.total + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a>.<br>';
         (data.results || []).forEach(function(x) {
           var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
