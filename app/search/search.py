@@ -26,13 +26,12 @@ def _player_count_filter(player_count: int, gamemode: str) -> bool:
     return False
 
 
-def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dict[str, Any]], int]:
+def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dict[str, Any]], int, str | None]:
     """
-    Search chat for a player. Returns (list of {log_id, alias, msg, url}, total_count).
+    Search chat for a player. Returns (results, total_count, searched_user_name).
 
-    Steam ID is required. Word is optional:
-    - With word: messages containing the word (any length).
-    - Without word: full chat history for that player, capped at CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID.
+    Results are dicts with log_id, alias, msg, url, team (Red|Blue from log's players).
+    searched_user_name is the alias from the most recent log with a hit, or None if no results.
     """
     logs_dir = Path(logs_dir)
     word = (word or "").strip()
@@ -57,6 +56,10 @@ def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dic
         chat = logtext.get("chat")
         if not chat:
             continue
+        players = logtext.get("players") or {}
+        player_info = players.get(steamid3) if isinstance(players, dict) else None
+        team_raw = player_info.get("team") if isinstance(player_info, dict) else None
+        team = "Red" if team_raw == "Red" else ("Blue" if team_raw == "Blue" else None)
         for msg in chat:
             if msg.get("steamid") != steamid3:
                 continue
@@ -69,8 +72,12 @@ def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dic
                 "alias": alias,
                 "msg": m,
                 "url": f"{LOGS_TF_URL_BASE}/{log_id}",
+                "team": team,
             })
-    return results, len(results)
+    searched_name = results[0]["alias"] if results else None
+    if searched_name is not None:
+        searched_name = searched_name.strip() or None
+    return results, len(results), searched_name
 
 
 def stats_search(

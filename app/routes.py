@@ -90,10 +90,14 @@ async def api_search_chat(request: Request, word: str = Form(""), steamid: str =
     status_code = 200
     result_count = 0
     try:
-        results, result_count = chat_search(word, steamid, LOGS_DIR)
+        results, result_count, searched_user_name = chat_search(word, steamid, LOGS_DIR)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/search/chat", status_code, duration_ms, result_count=result_count, word=word, steamid=steamid)
-        return JSONResponse({"results": results, "total": result_count})
+        return JSONResponse({
+            "results": results,
+            "total": result_count,
+            "searched_user_name": searched_user_name,
+        })
     except Exception as e:
         status_code = 500
         duration_ms = int((time.perf_counter() - start) * 1000)
