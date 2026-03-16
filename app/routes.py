@@ -5,12 +5,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request, Form
+from fastapi import APIRouter, Request, Form, Query
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 
 from app.config import LOGS_DIR, REQUEST_LOG_PATH, DOWNLOADER_STATE_DIR, STEAM_WEB_API_KEY
 from app.request_log import append_request_log
 from app.search.search import chat_search, stats_search, log_match
+from app.search_cache import get as cache_get, set_ as cache_set
 from app.steam_resolver import resolve_to_steamid64
 
 CHAT_SEARCH_MAX_WORD_LENGTH = 200
@@ -65,13 +66,9 @@ def _log_request(
         pass  # Do not fail the request if logging fails
 
 
-@router.post("/api/search/chat")
-async def api_search_chat(request: Request, word: str = Form(""), steamid: str = Form("")):
-    """Chat search: Steam ID (any format) required; word optional. Resolves ID server-side; API key never sent to client."""
+def _api_search_chat_impl(request: Request, word: str, steamid_input: str) -> JSONResponse:
+    """Shared implementation for POST and GET chat search. Returns JSONResponse."""
     start = time.perf_counter()
-    word = (word or "").strip()
-    steamid_input = (steamid or "").strip()
-
     if not steamid_input:
         return JSONResponse(
             {"results": [], "total": 0, "error": "Steam ID is required."},
@@ -91,18 +88,27 @@ async def api_search_chat(request: Request, word: str = Form(""), steamid: str =
         )
     assert steamid64 is not None
 
+    cache_key = (steamid64, word)
+    cached = cache_get("chat", cache_key)
+    if cached is not None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/search/chat", 200, duration_ms, result_count=cached.get("total", 0), word=word, steamid=steamid64)
+        return JSONResponse(cached)
+
     status_code = 200
     result_count = 0
     try:
-        results, result_count, searched_user_name = chat_search(word, steamid64, LOGS_DIR)
-        duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/chat", status_code, duration_ms, result_count=result_count, word=word, steamid=steamid64)
-        return JSONResponse({
+        results, result_count, searched_user_name, log_ids_used = chat_search(word, steamid64, LOGS_DIR)
+        payload = {
             "results": results,
             "total": result_count,
             "searched_user_name": searched_user_name,
             "resolved_steamid64": steamid64,
-        })
+        }
+        cache_set("chat", cache_key, payload, log_ids_used)
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/search/chat", status_code, duration_ms, result_count=result_count, word=word, steamid=steamid64)
+        return JSONResponse(payload)
     except Exception as e:
         status_code = 500
         duration_ms = int((time.perf_counter() - start) * 1000)
@@ -110,14 +116,20 @@ async def api_search_chat(request: Request, word: str = Form(""), steamid: str =
         return JSONResponse({"results": [], "total": 0, "error": str(e)}, status_code=500)
 
 
-@router.post("/api/search/stats")
-async def api_search_stats(
-    request: Request,
-    steamid: str = Form(""),
-    gamemode: str = Form("hl"),
-    classes: str = Form(""),  # comma-separated
-):
-    """Stats search: Steam ID (any format), gamemode, classes. Resolves ID server-side."""
+@router.post("/api/search/chat")
+async def api_search_chat(request: Request, word: str = Form(""), steamid: str = Form("")):
+    """Chat search: Steam ID (any format) required; word optional."""
+    return _api_search_chat_impl(request, (word or "").strip(), (steamid or "").strip())
+
+
+@router.get("/api/search/chat")
+async def api_search_chat_get(request: Request, word: str = Query(""), steamid: str = Query("")):
+    """GET variant for shareable links; same response as POST."""
+    return _api_search_chat_impl(request, (word or "").strip(), (steamid or "").strip())
+
+
+def _api_search_stats_impl(request: Request, steamid: str, gamemode: str, classes: str) -> JSONResponse:
+    """Shared impl for POST/GET stats search."""
     start = time.perf_counter()
     steamid_input = (steamid or "").strip()
     if not steamid_input:
@@ -126,28 +138,51 @@ async def api_search_stats(
     if resolve_error is not None:
         return JSONResponse({"rows": [], "error": resolve_error}, status_code=400)
     assert steamid64 is not None
-
-    status_code = 200
-    result_count = 0
-    class_list = [c.strip() for c in classes.split(",") if c.strip()]
+    class_list = [c.strip() for c in (classes or "").split(",") if c.strip()]
+    class_tuple = tuple(sorted(c.lower() for c in class_list if c))
+    cache_key = (steamid64, gamemode, class_tuple)
+    cached = cache_get("stats", cache_key)
+    if cached is not None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/search/stats", 200, duration_ms, result_count=len(cached.get("rows", [])), steamid=steamid64, gamemode=gamemode, classes=classes)
+        return JSONResponse(cached)
     try:
-        rows = stats_search(steamid64, gamemode, class_list, LOGS_DIR)
-        result_count = len(rows)
+        rows, log_ids_used = stats_search(steamid64, gamemode, class_list, LOGS_DIR)
+        payload = {"rows": rows}
+        cache_set("stats", cache_key, payload, log_ids_used)
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/stats", status_code, duration_ms, result_count=result_count, steamid=steamid64, gamemode=gamemode, classes=classes)
-        return JSONResponse({"rows": rows})
+        _log_request(request, "/api/search/stats", 200, duration_ms, result_count=len(rows), steamid=steamid64, gamemode=gamemode, classes=classes)
+        return JSONResponse(payload)
     except Exception as e:
-        status_code = 500
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/stats", status_code, duration_ms, steamid=steamid64, gamemode=gamemode, classes=classes)
+        _log_request(request, "/api/search/stats", 500, duration_ms, steamid=steamid64, gamemode=gamemode, classes=classes)
         return JSONResponse({"rows": [], "error": str(e)}, status_code=500)
 
 
-@router.post("/api/search/logmatch")
-async def api_search_logmatch(request: Request, steamids: str = Form("")):
-    """Log match: space- or comma-separated Steam IDs (any format). Each resolved server-side."""
+@router.post("/api/search/stats")
+async def api_search_stats(
+    request: Request,
+    steamid: str = Form(""),
+    gamemode: str = Form("hl"),
+    classes: str = Form(""),
+):
+    return _api_search_stats_impl(request, steamid or "", gamemode or "hl", classes or "")
+
+
+@router.get("/api/search/stats")
+async def api_search_stats_get(
+    request: Request,
+    steamid: str = Query(""),
+    gamemode: str = Query("hl"),
+    classes: str = Query(""),
+):
+    return _api_search_stats_impl(request, steamid or "", gamemode or "hl", classes or "")
+
+
+def _api_search_logmatch_impl(request: Request, steamids: str) -> JSONResponse:
+    """Shared impl for POST/GET logmatch search."""
     start = time.perf_counter()
-    raw_list = [s.strip() for s in steamids.replace(",", " ").split() if s.strip()]
+    raw_list = [s.strip() for s in (steamids or "").replace(",", " ").split() if s.strip()]
     if not raw_list:
         return JSONResponse({"results": [], "total": 0, "error": "At least one Steam ID is required."}, status_code=400)
     sid_list: list[str] = []
@@ -160,18 +195,37 @@ async def api_search_logmatch(request: Request, steamids: str = Form("")):
             )
         assert steamid64 is not None
         sid_list.append(steamid64)
+    sid_tuple = tuple(sorted(sid_list))
+    cached = cache_get("logmatch", (sid_tuple,))
+    if cached is not None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/search/logmatch", 200, duration_ms, result_count=cached.get("total", 0), steamids=",".join(sid_list))
+        return JSONResponse(cached)
+
     status_code = 200
     result_count = 0
     try:
-        results, result_count = log_match(sid_list, LOGS_DIR)
+        results, result_count, matching_log_ids = log_match(sid_list, LOGS_DIR)
+        payload = {"results": results, "total": result_count}
+        cache_set("logmatch", (sid_tuple,), payload, matching_log_ids)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/search/logmatch", status_code, duration_ms, result_count=result_count, steamids=",".join(sid_list))
-        return JSONResponse({"results": results, "total": result_count})
+        return JSONResponse(payload)
     except Exception as e:
         status_code = 500
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/search/logmatch", status_code, duration_ms, steamids=",".join(sid_list))
         return JSONResponse({"results": [], "total": 0, "error": str(e)}, status_code=500)
+
+
+@router.post("/api/search/logmatch")
+async def api_search_logmatch(request: Request, steamids: str = Form("")):
+    return _api_search_logmatch_impl(request, steamids or "")
+
+
+@router.get("/api/search/logmatch")
+async def api_search_logmatch_get(request: Request, steamids: str = Query("")):
+    return _api_search_logmatch_impl(request, steamids or "")
 
 
 def _progress_json_path() -> Path | None:
@@ -225,19 +279,28 @@ async def favicon():
 @router.get("/")
 async def index(request: Request):
     """Serve the main search page (HTML)."""
+    return await _serve_index(request, "/")
+
+
+@router.get("/results")
+async def results_page(request: Request):
+    """Serve the results page (same HTML; client reads URL params and fetches API)."""
+    return await _serve_index(request, "/results")
+
+
+async def _serve_index(request: Request, path: str):
+    """Serve static/index.html for / and /results."""
     start = time.perf_counter()
     try:
-        # Serve from static/index.html if present
         static_path = Path(__file__).resolve().parent.parent / "static" / "index.html"
         if static_path.exists():
             duration_ms = int((time.perf_counter() - start) * 1000)
-            _log_request(request, "/", 200, duration_ms)
+            _log_request(request, path, 200, duration_ms)
             return FileResponse(static_path, media_type="text/html")
-        # Placeholder until frontend is built
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/", 200, duration_ms)
+        _log_request(request, path, 200, duration_ms)
         return HTMLResponse("<html><body><h1>Tf2LogSearcher</h1><p>ok</p></body></html>")
     except Exception:
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/", 500, duration_ms)
+        _log_request(request, path, 500, duration_ms)
         raise

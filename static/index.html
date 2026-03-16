@@ -27,6 +27,7 @@
   </style>
 </head>
 <body>
+  <div id="homePage">
   <h1>Tf2 Logs.tf Advanced Searcher</h1>
 
   <h2>Chat Searcher</h2>
@@ -75,6 +76,12 @@
   <div id="downloadProgress" class="download-progress" aria-live="polite">Loading…</div>
 
   <p><small>We do not have all logs from logs.tf; coverage is continuously updated. Contact Kastaling on Discord for questions.</small></p>
+  </div>
+
+  <div id="resultsPage" style="display: none;">
+    <p><a href="/" id="resultsBackLink">← Back to search</a></p>
+    <div id="resultsContent" class="results"></div>
+  </div>
 
   <script>
     const PROGRESS_POLL_MS = 5 * 60 * 1000;
@@ -195,75 +202,58 @@
       });
     })();
 
-    document.getElementById('frmChat').addEventListener('submit', async (e) => {
+    function renderChatResult(el, data, steamidParam) {
+      var steamid = steamidParam || '';
+      var resolved64 = data.resolved_steamid64 && /^\d{17}$/.test(String(data.resolved_steamid64)) ? String(data.resolved_steamid64) : null;
+      var profileUrl = resolved64 ? ('https://steamcommunity.com/profiles/' + resolved64) : ((steamid && /^\d{17}$/.test(steamid)) ? ('https://steamcommunity.com/profiles/' + steamid) : '#');
+      var label = data.searched_user_name ? escapeHtml(data.searched_user_name) : (profileUrl !== '#' ? profileUrl : escapeHtml(steamid));
+      var html = 'Total ' + data.total + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a>.<br>';
+      (data.results || []).forEach(function(x) {
+        var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
+        html += '<span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + escapeHtml(x.msg) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
+      });
+      el.innerHTML = html || 'No matches.';
+    }
+
+    document.getElementById('frmChat').addEventListener('submit', function(e) {
       e.preventDefault();
       const form = e.target;
-      const el = document.getElementById('chatResults');
       var word = (form.word.value || '').trim();
       var steamid = (form.steamid.value || '').trim();
-
       if (!steamid) {
-        el.innerHTML = '<span class="error">Steam ID is required.</span>';
+        document.getElementById('chatResults').innerHTML = '<span class="error">Steam ID is required.</span>';
         return;
       }
       if (word.length > 200) {
-        el.innerHTML = '<span class="error">Search word is too long.</span>';
+        document.getElementById('chatResults').innerHTML = '<span class="error">Search word is too long.</span>';
         return;
       }
-
-      el.textContent = 'Searching...';
-      try {
-        const body = new URLSearchParams({ word: word, steamid: steamid });
-        const r = await fetch('/api/search/chat', { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-        const data = await r.json();
-        if (!r.ok) {
-          el.innerHTML = '<span class="error">' + escapeHtml(data.error || r.status) + '</span>';
-          return;
-        }
-        var resolved64 = data.resolved_steamid64 && /^\d{17}$/.test(String(data.resolved_steamid64)) ? String(data.resolved_steamid64) : null;
-        var profileUrl = resolved64 ? ('https://steamcommunity.com/profiles/' + resolved64) : ((steamid && /^\d{17}$/.test(steamid)) ? ('https://steamcommunity.com/profiles/' + steamid) : '#');
-        var label = data.searched_user_name ? escapeHtml(data.searched_user_name) : (profileUrl !== '#' ? profileUrl : escapeHtml(steamid));
-        var html = 'Total ' + data.total + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a>.<br>';
-        (data.results || []).forEach(function(x) {
-          var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
-          html += '<span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + escapeHtml(x.msg) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
-        });
-        el.innerHTML = html || 'No matches.';
-      } catch (err) {
-        el.innerHTML = '<span class="error">' + escapeHtml(err.message) + '</span>';
-      }
+      var params = new URLSearchParams({ mode: 'chat', steamid: steamid, word: word });
+      window.location.href = '/results?' + params.toString();
     });
 
-    document.getElementById('frmLogmatch').addEventListener('submit', async (e) => {
+    document.getElementById('frmLogmatch').addEventListener('submit', function(e) {
       e.preventDefault();
-      const el = document.getElementById('logmatchResults');
-      el.textContent = 'Searching...';
-      try {
-        const body = formData(e.target);
-        const r = await fetch('/api/search/logmatch', { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-        const data = await r.json();
-        if (!r.ok) { el.innerHTML = '<span class="error">' + (data.error || r.status) + '</span>'; return; }
-        let html = 'Total ' + data.total + ' matching log(s).<br>';
-        (data.results || []).forEach(x => { html += x.title + '<br>' + x.map + '<br>' + x.date + '<br><a href="' + x.url + '" target="_blank">' + x.url + '</a><br><br>'; });
-        el.innerHTML = html || 'No matches.';
-      } catch (err) { el.innerHTML = '<span class="error">' + err.message + '</span>'; }
+      var steamids = (e.target.steamids.value || '').trim();
+      if (!steamids) {
+        document.getElementById('logmatchResults').innerHTML = '<span class="error">At least one Steam ID is required.</span>';
+        return;
+      }
+      var params = new URLSearchParams({ mode: 'logmatch', steamids: steamids });
+      window.location.href = '/results?' + params.toString();
     });
 
-    document.getElementById('frmStats').addEventListener('submit', async (e) => {
+    document.getElementById('frmStats').addEventListener('submit', function(e) {
       e.preventDefault();
       const form = e.target;
-      const classes = Array.from(form.querySelectorAll('input[name="classes"]:checked')).map(c => c.value).join(',');
-      const el = document.getElementById('statsResults');
-      el.textContent = 'Searching...';
-      try {
-        const body = new URLSearchParams({ steamid: form.steamid.value, gamemode: form.gamemode.value, classes });
-        const r = await fetch('/api/search/stats', { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-        const data = await r.json();
-        if (!r.ok) { el.innerHTML = '<span class="error">' + (data.error || r.status) + '</span>'; return; }
-        const rows = data.rows || [];
-        if (rows.length === 0) { el.textContent = 'No rows.'; return; }
-        renderStatsTable(el, rows);
-      } catch (err) { el.innerHTML = '<span class="error">' + err.message + '</span>'; }
+      const classes = Array.from(form.querySelectorAll('input[name="classes"]:checked')).map(function(c) { return c.value; }).join(',');
+      var steamid = (form.steamid.value || '').trim();
+      if (!steamid) {
+        document.getElementById('statsResults').innerHTML = '<span class="error">Steam ID is required.</span>';
+        return;
+      }
+      var params = new URLSearchParams({ mode: 'stats', steamid: steamid, gamemode: form.gamemode.value || 'hl', classes: classes });
+      window.location.href = '/results?' + params.toString();
     });
 
     function escapeHtml(str) {
@@ -381,6 +371,66 @@
         });
       });
     }
+
+    function renderLogmatchResult(el, data) {
+      var html = 'Total ' + (data.total || 0) + ' matching log(s).<br>';
+      (data.results || []).forEach(function(x) {
+        html += escapeHtml(x.title) + '<br>' + escapeHtml(x.map) + '<br>' + escapeHtml(x.date) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
+      });
+      el.innerHTML = html || 'No matches.';
+    }
+
+    (function initResultsPage() {
+      var pathname = window.location.pathname;
+      if (pathname !== '/results' && pathname !== '/results/') return;
+      var params = new URLSearchParams(window.location.search);
+      var mode = params.get('mode');
+      var homePage = document.getElementById('homePage');
+      var resultsPage = document.getElementById('resultsPage');
+      var resultsContent = document.getElementById('resultsContent');
+      if (!homePage || !resultsPage || !resultsContent) return;
+      homePage.style.display = 'none';
+      resultsPage.style.display = 'block';
+      if (!mode) {
+        resultsContent.innerHTML = '<span class="error">Missing search parameters.</span>';
+        return;
+      }
+      resultsContent.textContent = 'Loading...';
+      var apiUrl = '';
+      if (mode === 'chat') {
+        apiUrl = '/api/search/chat?' + new URLSearchParams({ steamid: params.get('steamid') || '', word: params.get('word') || '' }).toString();
+      } else if (mode === 'stats') {
+        apiUrl = '/api/search/stats?' + new URLSearchParams({ steamid: params.get('steamid') || '', gamemode: params.get('gamemode') || 'hl', classes: params.get('classes') || '' }).toString();
+      } else if (mode === 'logmatch') {
+        apiUrl = '/api/search/logmatch?' + new URLSearchParams({ steamids: params.get('steamids') || '' }).toString();
+      } else {
+        resultsContent.innerHTML = '<span class="error">Unknown search mode.</span>';
+        return;
+      }
+      fetch(apiUrl)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) {
+            resultsContent.innerHTML = '<span class="error">' + escapeHtml(data.error) + '</span>';
+            return;
+          }
+          if (mode === 'chat') {
+            renderChatResult(resultsContent, data, params.get('steamid'));
+          } else if (mode === 'stats') {
+            var rows = data.rows || [];
+            if (rows.length === 0) {
+              resultsContent.textContent = 'No rows.';
+            } else {
+              renderStatsTable(resultsContent, rows);
+            }
+          } else if (mode === 'logmatch') {
+            renderLogmatchResult(resultsContent, data);
+          }
+        })
+        .catch(function(err) {
+          resultsContent.innerHTML = '<span class="error">' + escapeHtml(err.message) + '</span>';
+        });
+    })();
   </script>
 </body>
 </html>

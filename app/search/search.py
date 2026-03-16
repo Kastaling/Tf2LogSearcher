@@ -13,6 +13,13 @@ LOGS_TF_URL_BASE = "https://logs.tf"
 CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID = 5000   # when showing one player's chat (with or without word filter)
 
 
+def local_log_ids_for_player(steamid64: str, logs_dir: str | Path) -> frozenset[int]:
+    """Set of log IDs we have locally for this player (intersection of API list and existing files)."""
+    logs_dir = Path(logs_dir)
+    log_ids = get_log_list_for_player(steamid64)
+    return frozenset(lid for lid in log_ids if (logs_dir / f"{lid}.json").exists())
+
+
 def _player_count_filter(player_count: int, gamemode: str) -> bool:
     """True if player count matches gamemode (hl, 7s, 6s, ud)."""
     if gamemode == "hl":
@@ -26,12 +33,11 @@ def _player_count_filter(player_count: int, gamemode: str) -> bool:
     return False
 
 
-def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dict[str, Any]], int, str | None]:
+def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dict[str, Any]], int, str | None, frozenset[int]]:
     """
-    Search chat for a player. Returns (results, total_count, searched_user_name).
+    Search chat for a player. Returns (results, total_count, searched_user_name, log_ids_used).
 
-    Results are dicts with log_id, alias, msg, url, team (Red|Blue from log's players).
-    searched_user_name is the alias from the most recent log with a hit, or None if no results.
+    log_ids_used: set of log IDs we had locally and considered (for cache invalidation).
     """
     logs_dir = Path(logs_dir)
     word = (word or "").strip()
@@ -39,6 +45,7 @@ def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dic
     has_word = bool(word)
     word_lower = word.lower() if has_word else ""
     results: list[dict[str, Any]] = []
+    log_ids_used: set[int] = set()
 
     steamid3 = steamid64_to_steamid3(steamid)
     log_ids = get_log_list_for_player(steamid)
@@ -48,6 +55,7 @@ def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dic
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
             continue
+        log_ids_used.add(log_id)
         try:
             data = path.read_text(encoding="utf-8", errors="replace")
             logtext = json.loads(data)
@@ -77,7 +85,7 @@ def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dic
     searched_name = results[0]["alias"] if results else None
     if searched_name is not None:
         searched_name = searched_name.strip() or None
-    return results, len(results), searched_name
+    return results, len(results), searched_name, frozenset(log_ids_used)
 
 
 def stats_search(
@@ -85,17 +93,19 @@ def stats_search(
     gamemode: str,
     class_list: list[str],
     logs_dir: str | Path,
-) -> list[dict[str, Any]]:
-    """Stats by gamemode and classes. Returns list of row dicts for table rendering."""
+) -> tuple[list[dict[str, Any]], frozenset[int]]:
+    """Stats by gamemode and classes. Returns (rows, log_ids_used) for table rendering and cache invalidation."""
     logs_dir = Path(logs_dir)
     steamid3 = steamid64_to_steamid3(steamid)
     log_ids = get_log_list_for_player(steamid)
     class_set = set(c.strip().lower() for c in class_list if c)
     rows: list[dict[str, Any]] = []
+    log_ids_used: set[int] = set()
     for log_id in log_ids:
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
             continue
+        log_ids_used.add(log_id)
         try:
             data = path.read_text(encoding="utf-8", errors="replace")
             logtext = json.loads(data)
@@ -155,18 +165,19 @@ def stats_search(
                 "date": date_str,
                 "url": f"{LOGS_TF_URL_BASE}/{log_id}",
             })
-    return rows
+    return rows, frozenset(log_ids_used)
 
 
-def log_match(steamids: list[str], logs_dir: str | Path) -> tuple[list[dict[str, Any]], int]:
-    """Logs where all given players participated. Returns (list of {log_id, title, map, date, url}, total)."""
+def log_match(steamids: list[str], logs_dir: str | Path) -> tuple[list[dict[str, Any]], int, frozenset[int]]:
+    """Logs where all given players participated. Returns (results, total, matching_log_ids) for cache invalidation."""
     logs_dir = Path(logs_dir)
     if not steamids:
-        return [], 0
+        return [], 0, frozenset()
     steamid3s = [steamid64_to_steamid3(s) for s in steamids]
     steamid3_set = set(steamid3s)
     log_ids = get_log_list_for_player(steamids[0])
     results: list[dict[str, Any]] = []
+    matching_log_ids: set[int] = set()
     for log_id in log_ids:
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
@@ -180,6 +191,7 @@ def log_match(steamids: list[str], logs_dir: str | Path) -> tuple[list[dict[str,
         namesid = set(names.keys())
         if not steamid3_set.issubset(namesid):
             continue
+        matching_log_ids.add(log_id)
         info = logtext.get("info") or {}
         title = info.get("title") or ""
         map_name = info.get("map") or ""
@@ -194,4 +206,28 @@ def log_match(steamids: list[str], logs_dir: str | Path) -> tuple[list[dict[str,
             "date": date_str,
             "url": f"{LOGS_TF_URL_BASE}/{log_id}",
         })
-    return results, len(results)
+    return results, len(results), frozenset(matching_log_ids)
+
+
+def log_match_matching_log_ids(steamids: list[str], logs_dir: str | Path) -> frozenset[int]:
+    """Return the set of log IDs that contain all given players (for cache invalidation without building full result)."""
+    logs_dir = Path(logs_dir)
+    if not steamids:
+        return frozenset()
+    steamid3s = [steamid64_to_steamid3(s) for s in steamids]
+    steamid3_set = set(steamid3s)
+    log_ids = get_log_list_for_player(steamids[0])
+    out: set[int] = set()
+    for log_id in log_ids:
+        path = logs_dir / f"{log_id}.json"
+        if not path.exists():
+            continue
+        try:
+            data = path.read_text(encoding="utf-8", errors="replace")
+            logtext = json.loads(data)
+        except (OSError, ValueError):
+            continue
+        names = logtext.get("names") or {}
+        if steamid3_set.issubset(set(names.keys())):
+            out.add(log_id)
+    return frozenset(out)
