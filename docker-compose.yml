@@ -11,7 +11,7 @@ services:
       - REQUEST_LOG_PATH=/app/request_logs/request_log.csv
     volumes:
       - ./logs:/app/logs
-      - ./downloader_state:/app/downloader_state:ro
+      - ./downloader_state:/app/downloader_state
       - ./request_logs:/app/request_logs
     restart: unless-stopped
 
