@@ -69,6 +69,8 @@ See `.env.example` for all options. Important ones:
 - `LOGS_DIR`, `DOWNLOADER_STATE_DIR` — paths inside the container (compose maps `./logs` and `./downloader_state`).
 - `DOWNLOAD_INTERVAL_SEC` — seconds between download cycles (default 3600).
 - `REQUEST_DELAY_MS`, `MAX_REQUESTS_BEFORE_BACKOFF`, `BACKOFF_SEC` — rate limiting for the logs.tf API.
+- `STEAM_WEB_API_KEY` — Steam Web API key for vanity URL/name resolution.
+- `REQUEST_LOG_PATH` — path to the request log CSV file.
 
 ---
 
