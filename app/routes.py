@@ -13,6 +13,7 @@ from app.request_log import append_request_log
 from app.search.search import chat_search, stats_search, log_match
 from app.search_cache import get as cache_get, set_ as cache_set
 from app.steam_resolver import resolve_to_steamid64
+from app.subscriptions import add_subscription, deactivate_by_token, is_valid_discord_webhook_url, send_welcome_message
 
 CHAT_SEARCH_MAX_WORD_LENGTH = 200
 STEAMID64_LEN = 17
@@ -226,6 +227,61 @@ async def api_search_logmatch(request: Request, steamids: str = Form("")):
 @router.get("/api/search/logmatch")
 async def api_search_logmatch_get(request: Request, steamids: str = Query("")):
     return _api_search_logmatch_impl(request, steamids or "")
+
+
+@router.post("/api/chat-subscriptions")
+async def api_add_chat_subscription(
+    request: Request,
+    webhook_url: str = Form(""),
+    steamid: str = Form(""),
+    word: str = Form(""),
+):
+    """
+    Subscribe a Discord webhook to chat search alerts for (steamid, word).
+    Only valid when word is non-empty. Webhook URL is validated strictly.
+    """
+    webhook_url = (webhook_url or "").strip()
+    steamid_input = (steamid or "").strip()
+    word = (word or "").strip()
+    if not word:
+        return JSONResponse({"ok": False, "error": "A search word is required (not full chat history)."}, status_code=400)
+    if not steamid_input:
+        return JSONResponse({"ok": False, "error": "Steam ID is required."}, status_code=400)
+    if not is_valid_discord_webhook_url(webhook_url):
+        return JSONResponse(
+            {"ok": False, "error": "Invalid Discord webhook URL. Use a URL like https://discord.com/api/webhooks/123.../abc..."},
+            status_code=400,
+        )
+    steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+    if resolve_error is not None:
+        return JSONResponse({"ok": False, "error": resolve_error}, status_code=400)
+    assert steamid64 is not None
+    state_dir = DOWNLOADER_STATE_DIR.resolve()
+    ok, err, deactivate_token = add_subscription(state_dir, webhook_url, steamid64, word)
+    if not ok:
+        return JSONResponse({"ok": False, "error": err or "Failed to save subscription."}, status_code=400)
+    if deactivate_token:
+        base = str(request.base_url).rstrip("/")
+        deactivate_url = f"{base}/api/chat-subscriptions/deactivate?token={deactivate_token}"
+        send_welcome_message(webhook_url, word, steamid64, deactivate_url)
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/chat-subscriptions/deactivate")
+async def api_deactivate_chat_subscription(request: Request, token: str = Query("")):
+    """Deactivate a subscription via its secret token (link from the welcome Discord message)."""
+    state_dir = DOWNLOADER_STATE_DIR.resolve()
+    if deactivate_by_token(state_dir, token):
+        return HTMLResponse(
+            "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Webhook deactivated</title></head>"
+            "<body><p>Webhook deactivated. You can close this tab.</p></body></html>",
+            status_code=200,
+        )
+    return HTMLResponse(
+        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Not found</title></head>"
+        "<body><p>Invalid or already used deactivation link.</p></body></html>",
+        status_code=404,
+    )
 
 
 def _progress_json_path() -> Path | None:

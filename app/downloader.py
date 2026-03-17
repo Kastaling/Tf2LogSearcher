@@ -17,6 +17,7 @@ from app.config import (
     RETRY_ATTEMPTS,
 )
 from app.logs_tf import fetch_log_list, fetch_log_json
+from app.subscriptions import check_log_for_subscriptions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -379,6 +380,10 @@ def run_catch_up_newest(logs_dir: Path, state_dir: Path, skipped: set[int], requ
                 del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
             downloaded += 1
             logger.info("Wrote new log %s (%s)", log_id, _human_bytes(size_bytes))
+            try:
+                check_log_for_subscriptions(log_id, logs_dir, state_dir)
+            except Exception as e:
+                logger.warning("Webhook check failed for log %s: %s", log_id, e)
         else:
             skipped.add(log_id)
             save_skip_list(state_dir, skipped)
@@ -436,6 +441,10 @@ def run_backfill_from_offset(
                     del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
                 downloaded += 1
                 logger.info("Wrote log %s (%s)", log_id, _human_bytes(size_bytes))
+                try:
+                    check_log_for_subscriptions(log_id, logs_dir, state_dir)
+                except Exception as e:
+                    logger.warning("Webhook check failed for log %s: %s", log_id, e)
             else:
                 skipped.add(log_id)
                 save_skip_list(state_dir, skipped)

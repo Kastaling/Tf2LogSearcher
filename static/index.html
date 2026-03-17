@@ -24,6 +24,9 @@
     table.stats-table th.sorted-desc::after { content: ' \25bc'; font-size: 0.7em; opacity: 0.8; }
     .chat-team-red { color: #a7584b; }
     .chat-team-blue { color: #547d8c; }
+    .webhook-subscribe { margin-bottom: 1rem; padding: 0.75rem; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; }
+    .webhook-subscribe input[type="url"], .webhook-subscribe input[type="text"] { max-width: 100%; width: 400px; }
+    .webhook-subscribe .subscribe-msg { margin-top: 0.35rem; font-size: 0.9em; }
   </style>
 </head>
 <body>
@@ -202,17 +205,52 @@
       });
     })();
 
-    function renderChatResult(el, data, steamidParam) {
+    function renderChatResult(el, data, steamidParam, wordParam, showWebhookBox) {
       var steamid = steamidParam || '';
+      var word = (wordParam || '').trim();
+      var html = '';
+      if (showWebhookBox && word) {
+        html += '<div class="webhook-subscribe" data-steamid="' + escapeHtml(steamid) + '" data-word="' + escapeHtml(word) + '">';
+        html += '<label for="webhookUrl">Notify me when new logs match this search (Discord webhook):</label><br>';
+        html += '<input type="url" id="webhookUrl" class="js-webhook-url" placeholder="https://discord.com/api/webhooks/..." autocomplete="url"> ';
+        html += '<button type="button" class="js-chat-subscribe">Subscribe</button>';
+        html += '<div class="subscribe-msg js-subscribe-msg" aria-live="polite"></div>';
+        html += '</div>';
+      }
       var resolved64 = data.resolved_steamid64 && /^\d{17}$/.test(String(data.resolved_steamid64)) ? String(data.resolved_steamid64) : null;
       var profileUrl = resolved64 ? ('https://steamcommunity.com/profiles/' + resolved64) : ((steamid && /^\d{17}$/.test(steamid)) ? ('https://steamcommunity.com/profiles/' + steamid) : '#');
       var label = data.searched_user_name ? escapeHtml(data.searched_user_name) : (profileUrl !== '#' ? profileUrl : escapeHtml(steamid));
-      var html = 'Total ' + data.total + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a>.<br>';
+      html += 'Total ' + data.total + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a>.<br>';
       (data.results || []).forEach(function(x) {
         var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
         html += '<span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + escapeHtml(x.msg) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
       });
       el.innerHTML = html || 'No matches.';
+      if (showWebhookBox && word) {
+        var box = el.querySelector('.webhook-subscribe');
+        var btn = el.querySelector('.js-chat-subscribe');
+        var msgEl = el.querySelector('.js-subscribe-msg');
+        var inputEl = el.querySelector('.js-webhook-url');
+        if (box && btn && msgEl && inputEl) {
+          btn.addEventListener('click', function() {
+            var url = (inputEl.value || '').trim();
+            var sid = box.getAttribute('data-steamid') || '';
+            var w = box.getAttribute('data-word') || '';
+            msgEl.textContent = '';
+            if (!url) { msgEl.textContent = 'Enter a Discord webhook URL.'; msgEl.className = 'subscribe-msg js-subscribe-msg error'; return; }
+            btn.disabled = true;
+            var body = new URLSearchParams({ webhook_url: url, steamid: sid, word: w });
+            fetch('/api/chat-subscriptions', { method: 'POST', body: body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
+              .then(function(r) { return r.json(); })
+              .then(function(res) {
+                btn.disabled = false;
+                if (res.ok) { msgEl.textContent = 'Subscribed. You will get a Discord message when new logs match this search.'; msgEl.className = 'subscribe-msg js-subscribe-msg'; }
+                else { msgEl.textContent = res.error || 'Subscription failed.'; msgEl.className = 'subscribe-msg js-subscribe-msg error'; }
+              })
+              .catch(function(err) { btn.disabled = false; msgEl.textContent = err.message || 'Request failed.'; msgEl.className = 'subscribe-msg js-subscribe-msg error'; });
+          });
+        }
+      }
     }
 
     document.getElementById('frmChat').addEventListener('submit', function(e) {
@@ -417,7 +455,7 @@
             return;
           }
           if (mode === 'chat') {
-            renderChatResult(resultsContent, data, params.get('steamid'));
+            renderChatResult(resultsContent, data, params.get('steamid'), params.get('word'), true);
           } else if (mode === 'stats') {
             var rows = data.rows || [];
             if (rows.length === 0) {
