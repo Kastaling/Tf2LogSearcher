@@ -4,32 +4,73 @@
   <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8559919563649462"
      crossorigin="anonymous"></script>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TF2 Log Searcher</title>
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <script>
+    (function() {
+      var stored = typeof localStorage !== 'undefined' && localStorage.getItem('tf2log-theme');
+      var dark = stored === 'dark' || (!stored && typeof matchMedia !== 'undefined' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    })();
+  </script>
   <style>
-    body { font-family: sans-serif; max-width: 800px; margin: 1rem auto; padding: 0 1rem; }
+    :root {
+      --bg: #fff;
+      --text: #222;
+      --text-muted: #444;
+      --link: #2e6c80;
+      --border: #ccc;
+      --input-bg: #fff;
+      --progress-bg: #f0f8f8;
+      --progress-border: #cce;
+      --table-hover: #e8f4f4;
+      --webhook-bg: #f8f9fa;
+      --webhook-border: #dee2e6;
+    }
+    [data-theme="dark"] {
+      --bg: #1a1a1a;
+      --text: #e0e0e0;
+      --text-muted: #b0b0b0;
+      --link: #6eb5c0;
+      --border: #404040;
+      --input-bg: #2d2d2d;
+      --progress-bg: #252525;
+      --progress-border: #404040;
+      --table-hover: #2a3535;
+      --webhook-bg: #252525;
+      --webhook-border: #404040;
+    }
+    body { font-family: sans-serif; max-width: 800px; margin: 1rem auto; padding: 0 1rem; background: var(--bg); color: var(--text); }
     h1 { color: #5e9ca0; }
+    [data-theme="dark"] h1 { color: #7eb8bd; }
     h2 { color: #2e6c80; }
+    [data-theme="dark"] h2 { color: #6eb5c0; }
     form { margin-bottom: 2rem; }
-    input[type="text"], textarea, select { width: 100%; max-width: 400px; }
+    input[type="text"], textarea, select { width: 100%; max-width: 400px; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); }
     .results { margin-top: 1rem; white-space: pre-wrap; }
-    .error { color: #c00; }
-    .download-progress { margin: 1rem 0; padding: 0.75rem; background: #f0f8f8; border-radius: 4px; border: 1px solid #cce; }
-    a { color: #2e6c80; }
+    .error { color: #c66; }
+    [data-theme="dark"] .error { color: #e88; }
+    .download-progress { margin: 1rem 0; padding: 0.75rem; background: var(--progress-bg); border-radius: 4px; border: 1px solid var(--progress-border); }
+    a { color: var(--link); }
     table.stats-table { border-collapse: collapse; width: 100%; }
-    table.stats-table th, table.stats-table td { border: 1px solid #ccc; padding: 0.35rem 0.5rem; text-align: left; }
+    table.stats-table th, table.stats-table td { border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: left; }
     table.stats-table th.sortable { cursor: pointer; user-select: none; }
-    table.stats-table th.sortable:hover { background: #e8f4f4; }
+    table.stats-table th.sortable:hover { background: var(--table-hover); }
     table.stats-table th.sorted-asc::after { content: ' \25b2'; font-size: 0.7em; opacity: 0.8; }
     table.stats-table th.sorted-desc::after { content: ' \25bc'; font-size: 0.7em; opacity: 0.8; }
     .chat-team-red { color: #a7584b; }
     .chat-team-blue { color: #547d8c; }
-    .webhook-subscribe { margin-bottom: 1rem; padding: 0.75rem; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; }
+    .webhook-subscribe { margin-bottom: 1rem; padding: 0.75rem; background: var(--webhook-bg); border: 1px solid var(--webhook-border); border-radius: 4px; }
     .webhook-subscribe input[type="url"], .webhook-subscribe input[type="text"] { max-width: 100%; width: 400px; }
     .webhook-subscribe .subscribe-msg { margin-top: 0.35rem; font-size: 0.9em; }
+    .theme-toggle { position: fixed; top: 0.5rem; right: 0.5rem; z-index: 1000; padding: 0.5rem 0.75rem; min-height: 44px; min-width: 44px; font-size: 1rem; border-radius: 6px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text); cursor: pointer; line-height: 1; }
+    .theme-toggle:hover, .theme-toggle:focus { opacity: 0.9; outline: 2px solid var(--link); outline-offset: 2px; }
+    @media (max-width: 600px) { .theme-toggle { top: 0.25rem; right: 0.25rem; padding: 0.4rem 0.6rem; } }
   </style>
 </head>
 <body>
+  <button type="button" class="theme-toggle" id="themeToggle" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
   <div id="homePage">
   <h1>Tf2 Logs.tf Advanced Searcher</h1>
 
@@ -88,6 +129,22 @@
 
   <script>
     const PROGRESS_POLL_MS = 5 * 60 * 1000;
+    var THEME_KEY = 'tf2log-theme';
+
+    function getTheme() { return document.documentElement.getAttribute('data-theme') || 'light'; }
+    function setTheme(theme) {
+      theme = theme === 'dark' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', theme);
+      try { localStorage.setItem(THEME_KEY, theme); } catch (e) {}
+      var btn = document.getElementById('themeToggle');
+      if (btn) { btn.textContent = theme === 'dark' ? '\u263C' : '\u263E'; btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'); }
+    }
+    (function initThemeToggle() {
+      var btn = document.getElementById('themeToggle');
+      if (!btn) return;
+      setTheme(getTheme());
+      btn.addEventListener('click', function() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); });
+    })();
 
     function formData(form) {
       const fd = new FormData(form);
