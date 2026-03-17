@@ -149,8 +149,11 @@ def stats_search(
                 "%I:%M:%S %p %Z %m/%d/%Y"
             )
             alias = names.get(steamid3) or ""
+            team_raw = stats.get("team") if isinstance(stats, dict) else None
+            team = "Red" if team_raw == "Red" else ("Blue" if team_raw == "Blue" else None)
             rows.append({
                 "alias": alias,
+                "team": team,
                 "character": cls,
                 "kills": kills,
                 "assists": assists,
