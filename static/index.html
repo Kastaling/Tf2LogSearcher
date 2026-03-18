@@ -7,6 +7,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TF2 Log Searcher</title>
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <!-- Preconnect for performance -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://cdn.simplecss.org" crossorigin>
+  <!-- Simple.css base theme (customized below with our colors) -->
+  <link rel="stylesheet" href="https://cdn.simplecss.org/simple.min.css" crossorigin="anonymous">
+  <!-- Fonts: Archivo Black (headings), Source Sans 3 (body). display=swap for performance. -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Source+Sans+3:ital,wght@0,400;600;700;1,400&display=swap" crossorigin="anonymous">
   <script>
     (function() {
       var stored = typeof localStorage !== 'undefined' && localStorage.getItem('tf2log-theme');
@@ -15,6 +23,11 @@
     })();
   </script>
   <style>
+    /*
+     * Theme customization (edit these to change site colors later).
+     * Our vars: --bg, --text, --text-muted, --link, --border, --input-bg, --progress-bg, --progress-border,
+     * --table-hover, --webhook-bg, --webhook-border. Simple.css vars are set from these below.
+     */
     :root {
       --bg: #fff;
       --text: #222;
@@ -27,6 +40,18 @@
       --table-hover: #e8f4f4;
       --webhook-bg: #f8f9fa;
       --webhook-border: #dee2e6;
+      /* Map to Simple.css variables so buttons, inputs, tables use our palette */
+      --accent-bg: #f0f8f8;
+      --accent: var(--link);
+      --accent-hover: #3d8a9a;
+      --accent-text: #fff;
+      --text-light: var(--text-muted);
+      --disabled: #e8e8e8;
+      --code: #c7254e;
+      --preformatted: #444;
+      --marked: #ffdd33;
+      --sans-font: "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --heading-font: "Archivo Black", var(--sans-font);
     }
     [data-theme="dark"] {
       --bg: #1a1a1a;
@@ -40,19 +65,68 @@
       --table-hover: #2a3535;
       --webhook-bg: #252525;
       --webhook-border: #404040;
+      --accent-bg: #252525;
+      --accent: var(--link);
+      --accent-hover: #8ec9d1;
+      --accent-text: #1a1a1a;
+      --text-light: var(--text-muted);
+      --disabled: #333;
+      --code: #e88;
+      --preformatted: #ccc;
+      --marked: #665200;
     }
-    body { font-family: sans-serif; max-width: 800px; margin: 1rem auto; padding: 0 1rem; background: var(--bg); color: var(--text); }
+    /* Theme is controlled by data-theme (set in head script). color-scheme for form controls/scrollbars. */
+    html { color-scheme: light; }
+    [data-theme="dark"] { color-scheme: dark; }
+    body {
+      font-family: var(--sans-font);
+      max-width: 800px;
+      margin: 1rem auto;
+      padding: 0 1rem;
+      background: var(--bg);
+      color: var(--text);
+      display: block;
+      grid-template-columns: unset;
+    }
+    body > * { grid-column: unset; }
+    /* Tighter spacing (override Simple.css defaults) */
+    h1 { margin-top: 0; margin-bottom: 0.5rem; }
+    h2 { margin-top: 1.25rem; margin-bottom: 0.35rem; }
+    h3, h4, h5, h6 { margin-top: 1rem; margin-bottom: 0.25rem; }
+    p { margin: 0.5rem 0 0.75rem; }
+    h1, h2, h3, h4, h5, h6 { font-family: var(--heading-font); }
     h1 { color: #5e9ca0; }
     [data-theme="dark"] h1 { color: #7eb8bd; }
     h2 { color: #2e6c80; }
     [data-theme="dark"] h2 { color: #6eb5c0; }
-    form { margin-bottom: 2rem; }
-    input[type="text"], textarea, select { width: 100%; max-width: 400px; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); }
-    .results { margin-top: 1rem; white-space: pre-wrap; }
+    a, a:visited { color: var(--link); }
+    form { margin-bottom: 1.25rem; }
+    form label { margin-bottom: 0.1rem; display: block; }
+    form input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]),
+    form textarea, form select { margin-bottom: 0; padding: 0.3rem 0.45rem; }
+    form br { display: block; margin: 0.15rem 0; height: 0; line-height: 0; }
+    form button[type="submit"] { margin-top: 0.35rem; }
+    /* Use --input-bg so inputs stay slightly darker than page in dark theme */
+    input:not([type="submit"]):not([type="button"]):not([type="reset"]),
+    textarea, select {
+      background-color: var(--input-bg);
+      color: var(--text);
+    }
+    input[type="text"], input[type="url"], textarea, select {
+      width: 100%;
+      max-width: 400px;
+      border: 1px solid var(--border);
+    }
+    .results { margin-top: 0.5rem; white-space: pre-wrap; }
     .error { color: #c66; }
     [data-theme="dark"] .error { color: #e88; }
-    .download-progress { margin: 1rem 0; padding: 0.75rem; background: var(--progress-bg); border-radius: 4px; border: 1px solid var(--progress-border); }
-    a { color: var(--link); }
+    .download-progress {
+      margin: 0.75rem 0;
+      padding: 0.5rem 0.75rem;
+      background: var(--progress-bg);
+      border-radius: var(--standard-border-radius, 5px);
+      border: 1px solid var(--progress-border);
+    }
     table.stats-table { border-collapse: collapse; width: 100%; }
     table.stats-table th, table.stats-table td { border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: left; }
     table.stats-table th.sortable { cursor: pointer; user-select: none; }
@@ -61,12 +135,53 @@
     table.stats-table th.sorted-desc::after { content: ' \25bc'; font-size: 0.7em; opacity: 0.8; }
     .chat-team-red { color: #a7584b; }
     .chat-team-blue { color: #547d8c; }
-    .webhook-subscribe { margin-bottom: 1rem; padding: 0.75rem; background: var(--webhook-bg); border: 1px solid var(--webhook-border); border-radius: 4px; }
+    .webhook-subscribe {
+      margin-bottom: 1rem;
+      padding: 0.75rem;
+      background: var(--webhook-bg);
+      border: 1px solid var(--webhook-border);
+      border-radius: var(--standard-border-radius, 5px);
+    }
     .webhook-subscribe input[type="url"], .webhook-subscribe input[type="text"] { max-width: 100%; width: 400px; }
     .webhook-subscribe .subscribe-msg { margin-top: 0.35rem; font-size: 0.9em; }
-    .theme-toggle { position: fixed; top: 0.5rem; right: 0.5rem; z-index: 1000; padding: 0.5rem 0.75rem; min-height: 44px; min-width: 44px; font-size: 1rem; border-radius: 6px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text); cursor: pointer; line-height: 1; }
-    .theme-toggle:hover, .theme-toggle:focus { opacity: 0.9; outline: 2px solid var(--link); outline-offset: 2px; }
+    .theme-toggle {
+      position: fixed;
+      top: 0.5rem;
+      right: 0.5rem;
+      z-index: 1000;
+      padding: 0.5rem 0.75rem;
+      min-height: 44px;
+      min-width: 44px;
+      font-size: 1rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--input-bg);
+      color: var(--text);
+      cursor: pointer;
+      line-height: 1;
+    }
+    .theme-toggle:hover, .theme-toggle:focus {
+      opacity: 0.9;
+      outline: 2px solid var(--link);
+      outline-offset: 2px;
+    }
     @media (max-width: 600px) { .theme-toggle { top: 0.25rem; right: 0.25rem; padding: 0.4rem 0.6rem; } }
+    /* Checkbox checkmarks: white with black outline so they’re visible in both themes */
+    input[type="checkbox"]:checked,
+    input[type="radio"]:checked {
+      background-color: var(--accent);
+      border-color: var(--accent);
+    }
+    input[type="checkbox"]:checked::after {
+      border-right-color: #fff;
+      border-bottom-color: #fff;
+      /* Black outline so checkmark is visible in light and dark mode */
+      filter: drop-shadow(1px 0 0 #000) drop-shadow(-1px 0 0 #000) drop-shadow(0 1px 0 #000) drop-shadow(0 -1px 0 #000);
+    }
+    input[type="radio"]:checked::after {
+      background-color: #fff;
+      box-shadow: inset 0 0 0 1px #000;
+    }
   </style>
 </head>
 <body>
