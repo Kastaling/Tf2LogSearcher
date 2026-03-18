@@ -100,6 +100,23 @@
     h2 { color: #2e6c80; }
     [data-theme="dark"] h2 { color: #6eb5c0; }
     a, a:visited { color: var(--link); }
+    /* Explicit button text color so it stays visible in Vivaldi/browser dark mode */
+    button:not(.theme-toggle), input[type="submit"], input[type="button"], input[type="reset"], .back-button, .js-chat-subscribe {
+      background-color: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    button:not(.theme-toggle):hover, input[type="submit"]:hover, input[type="button"]:hover, input[type="reset"]:hover, .back-button:hover, .js-chat-subscribe:hover {
+      background-color: var(--accent-hover);
+      border-color: var(--accent-hover);
+      color: #fff;
+    }
+    [data-theme="dark"] button:not(.theme-toggle), [data-theme="dark"] input[type="submit"], [data-theme="dark"] input[type="button"], [data-theme="dark"] input[type="reset"], [data-theme="dark"] .back-button, [data-theme="dark"] .js-chat-subscribe {
+      color: #1a1a1a;
+    }
+    [data-theme="dark"] button:not(.theme-toggle):hover, [data-theme="dark"] input[type="submit"]:hover, [data-theme="dark"] input[type="button"]:hover, [data-theme="dark"] input[type="reset"]:hover, [data-theme="dark"] .back-button:hover, [data-theme="dark"] .js-chat-subscribe:hover {
+      color: #1a1a1a;
+    }
     form { margin-bottom: 1.25rem; }
     form label { margin-bottom: 0.5rem; display: block; }
     form .form-row { display: block; margin-bottom: 0.5rem; }
@@ -166,6 +183,21 @@
       outline-offset: 2px;
     }
     @media (max-width: 600px) { .theme-toggle { top: 0.25rem; right: 0.25rem; padding: 0.4rem 0.6rem; } }
+    .back-button {
+      display: inline-block;
+      padding: 0.5rem 1rem;
+      border: 1px solid var(--accent);
+      border-radius: var(--standard-border-radius, 5px);
+      text-decoration: none;
+      font-size: inherit;
+      font-family: inherit;
+      cursor: pointer;
+      line-height: 1.25;
+    }
+    .back-button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
     /* Checkbox checkmarks: white with black outline so they’re visible in both themes */
     input[type="checkbox"]:checked,
     input[type="radio"]:checked {
@@ -243,7 +275,7 @@
   </div>
 
   <div id="resultsPage" style="display: none;">
-    <p><a href="/" id="resultsBackLink">← Back to search</a></p>
+    <p><a href="/" id="resultsBackLink" class="back-button">← Back to search</a></p>
     <div id="resultsContent" class="results"></div>
   </div>
 
