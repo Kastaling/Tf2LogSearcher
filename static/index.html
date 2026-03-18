@@ -101,11 +101,11 @@
     [data-theme="dark"] h2 { color: #6eb5c0; }
     a, a:visited { color: var(--link); }
     form { margin-bottom: 1.25rem; }
-    form label { margin-bottom: 0.1rem; display: block; }
+    form label { margin-bottom: 0.5rem; display: block; }
+    form .form-row { display: block; margin-bottom: 0.5rem; }
     form input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]),
     form textarea, form select { margin-bottom: 0; padding: 0.3rem 0.45rem; }
-    form br { display: block; margin: 0.15rem 0; height: 0; line-height: 0; }
-    form button[type="submit"] { margin-top: 0.35rem; }
+    form button[type="submit"] { margin-top: 0.5rem; }
     /* Use --input-bg so inputs stay slightly darker than page in dark theme */
     input:not([type="submit"]):not([type="button"]):not([type="reset"]),
     textarea, select {
@@ -192,8 +192,8 @@
   <h2>Chat Searcher</h2>
   <p>Search for a word or phrase in a player's chat, or leave the word blank to see their full chat history. You can enter SteamID64, profile URL, vanity URL, or vanity name.</p>
   <form id="frmChat">
-    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label><br><br>
-    <label>Word or phrase (optional): <input type="text" name="word" placeholder="Leave empty for full chat history"></label><br><br>
+    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label>
+    <label>Word or phrase (optional): <input type="text" name="word" placeholder="Leave empty for full chat history"></label>
     <button type="submit">Submit</button>
   </form>
   <div id="chatResults" class="results"></div>
@@ -201,7 +201,7 @@
   <h2>Multi-party Log Searcher</h2>
   <p>Enter Steam ID(s) in any format (profile URL, vanity name, or SteamID64), one per line or separated by space/comma.</p>
   <form id="frmLogmatch">
-    <label>Steam IDs: <textarea name="steamids" rows="3" cols="50" placeholder="Profile URLs, vanity names, or 17-digit IDs (space or comma separated)"></textarea></label><br><br>
+    <label>Steam IDs: <textarea name="steamids" rows="3" cols="50" placeholder="Profile URLs, vanity names, or 17-digit IDs (space or comma separated)"></textarea></label>
     <button type="submit">Submit</button>
   </form>
   <div id="logmatchResults" class="results"></div>
@@ -209,14 +209,14 @@
   <h2>Stats Sorter</h2>
   <p>Enter Steam ID (profile URL, vanity name, or SteamID64), gamemode, and select classes to see stats.</p>
   <form id="frmStats">
-    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label><br><br>
+    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label>
     <label>Gamemode: <select name="gamemode">
       <option value="hl">Highlander</option>
       <option value="7s">Prolander</option>
       <option value="6s">6s</option>
       <option value="ud">Ultiduo</option>
-    </select></label><br><br>
-    Class selection:<br>
+    </select></label>
+    <span class="form-row">Class selection:</span>
     <label><input type="checkbox" name="classes" value="scout"> Scout</label>
     <label><input type="checkbox" name="classes" value="soldier"> Soldier</label>
     <label><input type="checkbox" name="classes" value="pyro"> Pyro</label>
@@ -225,7 +225,7 @@
     <label><input type="checkbox" name="classes" value="engineer"> Engineer</label>
     <label><input type="checkbox" name="classes" value="medic"> Medic</label>
     <label><input type="checkbox" name="classes" value="sniper"> Sniper</label>
-    <label><input type="checkbox" name="classes" value="spy"> Spy</label><br><br>
+    <label><input type="checkbox" name="classes" value="spy"> Spy</label>
     <button type="submit">Submit</button>
   </form>
   <div id="statsResults" class="results"></div>
