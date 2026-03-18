@@ -400,7 +400,7 @@
       html += 'Total ' + data.total + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a>.<br>';
       (data.results || []).forEach(function(x) {
         var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
-        html += '<span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + escapeHtml(x.msg) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
+        html += '<span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + highlightChatMatch(x.msg, word) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
       });
       el.innerHTML = html || 'No matches.';
       if (showWebhookBox && word) {
@@ -475,6 +475,30 @@
       if (str == null) return '';
       const s = String(str);
       return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    /** Escape string for use as a literal in a RegExp (security: no regex injection). */
+    function escapeRegexLiteral(str) {
+      if (str == null || str === '') return '';
+      return String(str).replace(/\\/g, '\\\\').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    /**
+     * Return HTML-safe message with case-insensitive matches of word wrapped in <strong>.
+     * If word is empty, returns escaped message with no highlighting.
+     */
+    function highlightChatMatch(msg, word) {
+      var safe = escapeHtml(msg);
+      var term = (word || '').trim();
+      if (term === '') return safe;
+      try {
+        var pattern = escapeRegexLiteral(term);
+        if (pattern === '') return safe;
+        var re = new RegExp(pattern, 'gi');
+        return safe.replace(re, '<strong>$&</strong>');
+      } catch (_) {
+        return safe;
+      }
     }
 
     function parseStatsDate(str) {
