@@ -80,7 +80,7 @@
     [data-theme="dark"] { color-scheme: dark; }
     body {
       font-family: var(--sans-font);
-      max-width: 800px;
+      max-width: 1200px;
       margin: 1rem auto;
       padding: 0 1rem;
       background: var(--bg);
@@ -168,8 +168,58 @@
       color: var(--text-muted);
       font-size: 0.9rem;
     }
-    .stats-summary table {
+    .stats-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 0.35rem 0.75rem;
+    }
+    .stats-summary-item {
+      min-width: 0;
+    }
+    .stats-summary-key {
+      display: block;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      line-height: 1.2;
+    }
+    .stats-summary-value {
+      display: block;
+      color: var(--text);
+      font-weight: 600;
+      line-height: 1.25;
+      margin-top: 0.1rem;
+      overflow-wrap: anywhere;
+    }
+    .stats-summary-item.aliases {
+      grid-column: 1 / -1;
+    }
+    .stats-aliases {
       margin: 0;
+    }
+    .stats-aliases summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--link);
+      margin: 0;
+      padding: 0;
+    }
+    .stats-aliases-list {
+      margin-top: 0.35rem;
+      color: var(--text-muted);
+      word-break: break-word;
+    }
+    .stats-table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .stats-table {
+      min-width: 980px;
+    }
+    @media (max-width: 720px) {
+      .stats-summary-grid {
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
+      }
     }
     .chat-team-red { color: #a7584b; }
     .chat-team-blue { color: #547d8c; }
@@ -615,6 +665,21 @@
       return value.toFixed(2);
     }
 
+    /** Ordered unique aliases from result rows (one pass). */
+    function uniqueAliasesFromRows(rows) {
+      var seen = new Set();
+      var list = [];
+      rows.forEach(function(r) {
+        if (!r || r.alias == null) return;
+        var a = String(r.alias).trim();
+        if (a && !seen.has(a)) {
+          seen.add(a);
+          list.push(a);
+        }
+      });
+      return list;
+    }
+
     function computeStatsAverages(rows) {
       var numericCols = STATS_COLUMNS.filter(function(c) { return c.type === 'number'; }).map(function(c) { return c.key; });
       var sums = {};
@@ -638,18 +703,31 @@
 
     function renderStatsSummary(rows) {
       var avg = computeStatsAverages(rows);
-      var summaryRow = STATS_COLUMNS.map(function(c) {
-        if (c.key === 'alias') return '<td><strong>Averages</strong></td>';
-        if (c.key === 'character') return '<td>All classes</td>';
-        if (c.type === 'number') return '<td>' + escapeHtml(avg[c.key]) + '</td>';
-        return '<td>\u2014</td>';
+      var aliases = uniqueAliasesFromRows(rows);
+      var aliasCellHtml = '\u2014';
+      if (aliases.length) {
+        var aliasesJoined = aliases.map(escapeHtml).join(' / ');
+        aliasCellHtml = '<details class="stats-aliases"><summary>Show aliases (' + escapeHtml(aliases.length) + ')</summary><div class="stats-aliases-list">' + aliasesJoined + '</div></details>';
+      }
+      var summaryItems = [
+        { key: 'Class', value: 'All classes' },
+        { key: 'K', value: avg.kills || '\u2014' },
+        { key: 'A', value: avg.assists || '\u2014' },
+        { key: 'D', value: avg.deaths || '\u2014' },
+        { key: 'KDR', value: avg.kdr || '\u2014' },
+        { key: 'KADR', value: avg.kadr || '\u2014' },
+        { key: 'DPM', value: avg.dpm || '\u2014' },
+        { key: 'Dmg', value: avg.dmg || '\u2014' },
+        { key: 'HS', value: avg.headshots_hit || '\u2014' },
+        { key: 'BS', value: avg.backstabs || '\u2014' }
+      ];
+      var summaryGrid = summaryItems.map(function(item) {
+        return '<div class="stats-summary-item"><span class="stats-summary-key">' + escapeHtml(item.key) + '</span><span class="stats-summary-value">' + escapeHtml(item.value) + '</span></div>';
       }).join('');
       return '<div class="stats-summary">' +
         '<p class="stats-summary-title">Average stats</p>' +
         '<p class="stats-summary-meta">Computed across ' + escapeHtml(rows.length) + ' matching log(s).</p>' +
-        '<table class="stats-table"><thead><tr>' +
-        STATS_COLUMNS.map(function(c) { return '<th scope="col">' + escapeHtml(c.label) + '</th>'; }).join('') +
-        '</tr></thead><tbody><tr>' + summaryRow + '</tr></tbody></table></div>';
+        '<div class="stats-summary-grid"><div class="stats-summary-item aliases"><span class="stats-summary-key">Aliases</span><span class="stats-summary-value">' + aliasCellHtml + '</span></div>' + summaryGrid + '</div></div>';
     }
 
     function renderStatsTable(container, rows) {
@@ -694,7 +772,7 @@
         tbody += '<tr><td>' + aliasCell + '</td><td>' + escapeHtml(x.character) + '</td><td>' + escapeHtml(x.kills) + '</td><td>' + escapeHtml(x.assists) + '</td><td>' + escapeHtml(x.deaths) + '</td><td>' + escapeHtml(x.kdr) + '</td><td>' + escapeHtml(x.kadr) + '</td><td>' + escapeHtml(x.dpm) + '</td><td>' + escapeHtml(x.dmg) + '</td><td>' + escapeHtml(x.headshots_hit) + '</td><td>' + escapeHtml(x.backstabs) + '</td><td>' + escapeHtml(x.map) + '</td><td>' + escapeHtml(x.date) + '</td><td><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">Link</a></td></tr>';
       });
 
-      container.innerHTML = (container._statsSummaryHtml || '') + '<table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table>';
+      container.innerHTML = (container._statsSummaryHtml || '') + '<div class="stats-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>';
       container._statsRows = originalRows;
 
       container.querySelectorAll('th.sortable').forEach(function(th) {
