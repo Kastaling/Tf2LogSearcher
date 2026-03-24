@@ -150,6 +150,27 @@
     table.stats-table th.sortable:hover { background: var(--table-hover); }
     table.stats-table th.sorted-asc::after { content: ' \25b2'; font-size: 0.7em; opacity: 0.8; }
     table.stats-table th.sorted-desc::after { content: ' \25bc'; font-size: 0.7em; opacity: 0.8; }
+    .stats-summary {
+      margin: 0 0 0.75rem;
+      padding: 0.6rem 0.75rem;
+      background: var(--progress-bg);
+      border: 1px solid var(--progress-border);
+      border-radius: var(--standard-border-radius, 5px);
+    }
+    .stats-summary-title {
+      margin: 0 0 0.35rem;
+      font-family: var(--heading-font);
+      font-size: 1rem;
+      color: var(--text);
+    }
+    .stats-summary-meta {
+      margin: 0 0 0.5rem;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+    .stats-summary table {
+      margin: 0;
+    }
     .chat-team-red { color: #a7584b; }
     .chat-team-blue { color: #547d8c; }
     .webhook-subscribe {
@@ -586,11 +607,57 @@
       return v != null ? String(v).toLowerCase() : '';
     }
 
+    function formatAvgNumber(key, value) {
+      if (!Number.isFinite(value)) return '';
+      var integerLike = { kills: true, assists: true, deaths: true, dmg: true, headshots_hit: true, backstabs: true };
+      if (integerLike[key]) return String(Math.round(value));
+      if (Math.abs(value - Math.round(value)) < 0.005) return String(Math.round(value));
+      return value.toFixed(2);
+    }
+
+    function computeStatsAverages(rows) {
+      var numericCols = STATS_COLUMNS.filter(function(c) { return c.type === 'number'; }).map(function(c) { return c.key; });
+      var sums = {};
+      var counts = {};
+      numericCols.forEach(function(k) { sums[k] = 0; counts[k] = 0; });
+      rows.forEach(function(r) {
+        numericCols.forEach(function(k) {
+          var n = Number(r[k]);
+          if (Number.isFinite(n)) {
+            sums[k] += n;
+            counts[k] += 1;
+          }
+        });
+      });
+      var avg = {};
+      numericCols.forEach(function(k) {
+        avg[k] = counts[k] > 0 ? formatAvgNumber(k, sums[k] / counts[k]) : '';
+      });
+      return avg;
+    }
+
+    function renderStatsSummary(rows) {
+      var avg = computeStatsAverages(rows);
+      var summaryRow = STATS_COLUMNS.map(function(c) {
+        if (c.key === 'alias') return '<td><strong>Averages</strong></td>';
+        if (c.key === 'character') return '<td>All classes</td>';
+        if (c.type === 'number') return '<td>' + escapeHtml(avg[c.key]) + '</td>';
+        return '<td>\u2014</td>';
+      }).join('');
+      return '<div class="stats-summary">' +
+        '<p class="stats-summary-title">Average stats</p>' +
+        '<p class="stats-summary-meta">Computed across ' + escapeHtml(rows.length) + ' matching log(s).</p>' +
+        '<table class="stats-table"><thead><tr>' +
+        STATS_COLUMNS.map(function(c) { return '<th scope="col">' + escapeHtml(c.label) + '</th>'; }).join('') +
+        '</tr></thead><tbody><tr>' + summaryRow + '</tr></tbody></table></div>';
+    }
+
     function renderStatsTable(container, rows) {
       if (rows !== container._statsRows) {
         container._statsRows = rows;
         statsSortCol = null;
         statsSortDir = 1;
+        container._statsSummaryHtml = renderStatsSummary(rows);
       }
       var originalRows = container._statsRows;
       var sortCol = statsSortCol;
@@ -627,7 +694,7 @@
         tbody += '<tr><td>' + aliasCell + '</td><td>' + escapeHtml(x.character) + '</td><td>' + escapeHtml(x.kills) + '</td><td>' + escapeHtml(x.assists) + '</td><td>' + escapeHtml(x.deaths) + '</td><td>' + escapeHtml(x.kdr) + '</td><td>' + escapeHtml(x.kadr) + '</td><td>' + escapeHtml(x.dpm) + '</td><td>' + escapeHtml(x.dmg) + '</td><td>' + escapeHtml(x.headshots_hit) + '</td><td>' + escapeHtml(x.backstabs) + '</td><td>' + escapeHtml(x.map) + '</td><td>' + escapeHtml(x.date) + '</td><td><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">Link</a></td></tr>';
       });
 
-      container.innerHTML = '<table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table>';
+      container.innerHTML = (container._statsSummaryHtml || '') + '<table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table>';
       container._statsRows = originalRows;
 
       container.querySelectorAll('th.sortable').forEach(function(th) {
