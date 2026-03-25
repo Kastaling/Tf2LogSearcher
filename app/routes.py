@@ -105,6 +105,7 @@ def _api_search_chat_impl(request: Request, word: str, steamid_input: str) -> JS
             "total": result_count,
             "searched_user_name": searched_user_name,
             "resolved_steamid64": steamid64,
+            "logs_searched": len(log_ids_used),
         }
         cache_set("chat", cache_key, payload, log_ids_used)
         duration_ms = int((time.perf_counter() - start) * 1000)

@@ -542,7 +542,15 @@
       var resolved64 = data.resolved_steamid64 && /^\d{17}$/.test(String(data.resolved_steamid64)) ? String(data.resolved_steamid64) : null;
       var profileUrl = resolved64 ? ('https://steamcommunity.com/profiles/' + resolved64) : ((steamid && /^\d{17}$/.test(steamid)) ? ('https://steamcommunity.com/profiles/' + steamid) : '#');
       var label = data.searched_user_name ? escapeHtml(data.searched_user_name) : (profileUrl !== '#' ? profileUrl : escapeHtml(steamid));
-      html += 'Total ' + data.total + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a>.<br>';
+      var logsAcross = null;
+      if (data && typeof data.logs_searched === 'number' && Number.isFinite(data.logs_searched)) {
+        logsAcross = data.logs_searched;
+      } else {
+        var ids = new Set();
+        (data.results || []).forEach(function(r) { if (r && r.log_id != null) ids.add(String(r.log_id)); });
+        logsAcross = ids.size;
+      }
+      html += 'Total ' + escapeHtml(String(data.total || 0)) + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a> across ' + escapeHtml(String(logsAcross)) + ' log(s).<br>';
       (data.results || []).forEach(function(x) {
         var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
         html += '<span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + highlightChatMatch(x.msg, word) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
