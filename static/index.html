@@ -135,6 +135,39 @@
       border: 1px solid var(--border);
     }
     .results { margin-top: 0.5rem; white-space: pre-wrap; }
+    .loading-state {
+      display: flex;
+      align-items: baseline;
+      gap: 0.15rem;
+      color: var(--text-muted);
+      font-size: 1rem;
+    }
+    .loading-label { color: var(--text); }
+    .loading-dots {
+      display: inline-flex;
+      letter-spacing: 0.02em;
+    }
+    .loading-dots span {
+      display: inline-block;
+      width: 0.35em;
+      text-align: center;
+      animation: loading-dot 1.2s ease-in-out infinite;
+      opacity: 0.25;
+    }
+    .loading-dots span:nth-child(1) { animation-delay: 0s; }
+    .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes loading-dot {
+      0%, 70%, 100% { opacity: 0.2; transform: translateY(0); }
+      35% { opacity: 1; transform: translateY(-0.08em); }
+    }
+    .request-timing {
+      margin: 0.75rem 0 0;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
     .error { color: #c66; }
     [data-theme="dark"] .error { color: #e88; }
     .download-progress {
@@ -485,7 +518,16 @@
       });
     })();
 
-    function renderChatResult(el, data, steamidParam, wordParam, showWebhookBox) {
+    function requestTimingFooter(ms) {
+      if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '';
+      return '<p class="request-timing">Loaded in <b>' + escapeHtml(String(Math.round(ms))) + '</b> ms</p>';
+    }
+
+    function showResultsLoading(el) {
+      el.innerHTML = '<div class="loading-state" role="status" aria-live="polite"><span class="loading-label">Loading</span><span class="loading-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span></div>';
+    }
+
+    function renderChatResult(el, data, steamidParam, wordParam, showWebhookBox, elapsedMs) {
       var steamid = steamidParam || '';
       var word = (wordParam || '').trim();
       var html = '';
@@ -505,7 +547,7 @@
         var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
         html += '<span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + highlightChatMatch(x.msg, word) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
       });
-      el.innerHTML = html || 'No matches.';
+      el.innerHTML = (html || 'No matches.') + requestTimingFooter(elapsedMs);
       if (showWebhookBox && word) {
         var box = el.querySelector('.webhook-subscribe');
         var btn = el.querySelector('.js-chat-subscribe');
@@ -730,12 +772,15 @@
         '<div class="stats-summary-grid"><div class="stats-summary-item aliases"><span class="stats-summary-key">Aliases</span><span class="stats-summary-value">' + aliasCellHtml + '</span></div>' + summaryGrid + '</div></div>';
     }
 
-    function renderStatsTable(container, rows) {
+    function renderStatsTable(container, rows, elapsedMs) {
       if (rows !== container._statsRows) {
         container._statsRows = rows;
         statsSortCol = null;
         statsSortDir = 1;
         container._statsSummaryHtml = renderStatsSummary(rows);
+      }
+      if (typeof elapsedMs === 'number' && Number.isFinite(elapsedMs)) {
+        container._statsRequestMs = elapsedMs;
       }
       var originalRows = container._statsRows;
       var sortCol = statsSortCol;
@@ -772,7 +817,7 @@
         tbody += '<tr><td>' + aliasCell + '</td><td>' + escapeHtml(x.character) + '</td><td>' + escapeHtml(x.kills) + '</td><td>' + escapeHtml(x.assists) + '</td><td>' + escapeHtml(x.deaths) + '</td><td>' + escapeHtml(x.kdr) + '</td><td>' + escapeHtml(x.kadr) + '</td><td>' + escapeHtml(x.dpm) + '</td><td>' + escapeHtml(x.dmg) + '</td><td>' + escapeHtml(x.headshots_hit) + '</td><td>' + escapeHtml(x.backstabs) + '</td><td>' + escapeHtml(x.map) + '</td><td>' + escapeHtml(x.date) + '</td><td><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">Link</a></td></tr>';
       });
 
-      container.innerHTML = (container._statsSummaryHtml || '') + '<div class="stats-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>';
+      container.innerHTML = (container._statsSummaryHtml || '') + '<div class="stats-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' + requestTimingFooter(container._statsRequestMs);
       container._statsRows = originalRows;
 
       container.querySelectorAll('th.sortable').forEach(function(th) {
@@ -790,12 +835,12 @@
       });
     }
 
-    function renderLogmatchResult(el, data) {
+    function renderLogmatchResult(el, data, elapsedMs) {
       var html = 'Total ' + (data.total || 0) + ' matching log(s).<br>';
       (data.results || []).forEach(function(x) {
         html += escapeHtml(x.title) + '<br>' + escapeHtml(x.map) + '<br>' + escapeHtml(x.date) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
       });
-      el.innerHTML = html || 'No matches.';
+      el.innerHTML = (html || 'No matches.') + requestTimingFooter(elapsedMs);
     }
 
     (function initResultsPage() {
@@ -813,7 +858,8 @@
         resultsContent.innerHTML = '<span class="error">Missing search parameters.</span>';
         return;
       }
-      resultsContent.textContent = 'Loading...';
+      var t0 = performance.now();
+      showResultsLoading(resultsContent);
       var apiUrl = '';
       if (mode === 'chat') {
         apiUrl = '/api/search/chat?' + new URLSearchParams({ steamid: params.get('steamid') || '', word: params.get('word') || '' }).toString();
@@ -828,25 +874,27 @@
       fetch(apiUrl)
         .then(function(r) { return r.json(); })
         .then(function(data) {
+          var ms = performance.now() - t0;
           if (data.error) {
-            resultsContent.innerHTML = '<span class="error">' + escapeHtml(data.error) + '</span>';
+            resultsContent.innerHTML = '<span class="error">' + escapeHtml(data.error) + '</span>' + requestTimingFooter(ms);
             return;
           }
           if (mode === 'chat') {
-            renderChatResult(resultsContent, data, params.get('steamid'), params.get('word'), true);
+            renderChatResult(resultsContent, data, params.get('steamid'), params.get('word'), true, ms);
           } else if (mode === 'stats') {
             var rows = data.rows || [];
             if (rows.length === 0) {
-              resultsContent.textContent = 'No rows.';
+              resultsContent.innerHTML = 'No rows.' + requestTimingFooter(ms);
             } else {
-              renderStatsTable(resultsContent, rows);
+              renderStatsTable(resultsContent, rows, ms);
             }
           } else if (mode === 'logmatch') {
-            renderLogmatchResult(resultsContent, data);
+            renderLogmatchResult(resultsContent, data, ms);
           }
         })
         .catch(function(err) {
-          resultsContent.innerHTML = '<span class="error">' + escapeHtml(err.message) + '</span>';
+          var ms = performance.now() - t0;
+          resultsContent.innerHTML = '<span class="error">' + escapeHtml(err.message) + '</span>' + requestTimingFooter(ms);
         });
     })();
   </script>
