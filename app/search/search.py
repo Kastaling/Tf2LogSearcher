@@ -171,11 +171,85 @@ def stats_search(
     return rows, frozenset(log_ids_used)
 
 
-def log_match(steamids: list[str], logs_dir: str | Path) -> tuple[list[dict[str, Any]], int, frozenset[int]]:
+def _player_stats_row_logmatch(
+    steamid3: str,
+    logtext: dict[str, Any],
+    *,
+    search_input: str,
+    steamid64: str,
+) -> dict[str, Any] | None:
+    """One row of match stats for a player (logs.tf aggregate player block)."""
+    players = logtext.get("players") or {}
+    if not isinstance(players, dict):
+        return None
+    stats = players.get(steamid3)
+    if not isinstance(stats, dict):
+        return None
+    names = logtext.get("names") or {}
+    alias_raw = names.get(steamid3) if isinstance(names, dict) else ""
+    alias = (str(alias_raw).strip() if alias_raw is not None else "") or ""
+    team_raw = stats.get("team")
+    team = "Red" if team_raw == "Red" else ("Blue" if team_raw == "Blue" else None)
+    kills = int(stats.get("kills") or 0)
+    deaths = int(stats.get("deaths") or 0)
+    assists = int(stats.get("assists") or 0)
+    if deaths == 0:
+        kadr = float(kills + assists)
+        kdr = float(kills)
+    else:
+        kadr = round((kills + assists) / deaths, 2)
+        kdr = round(kills / deaths, 2)
+    dmg = int(stats.get("dmg") or 0)
+    dapm_raw = stats.get("dapm")
+    if dapm_raw is not None:
+        try:
+            dpm = round(float(dapm_raw), 2)
+        except (TypeError, ValueError):
+            dpm = 0.0
+    else:
+        info = logtext.get("info") or {}
+        length_sec = int(info.get("total_length") or logtext.get("length") or 0)
+        if length_sec <= 0:
+            length_sec = 1
+        dpm = round((dmg / length_sec) * 60, 2)
+    hs = int(stats.get("headshots_hit") or stats.get("headshots") or 0)
+    bs = int(stats.get("backstabs") or 0)
+    ubers = int(stats.get("ubers") or 0)
+    drops = int(stats.get("drops") or 0)
+    return {
+        "alias": alias,
+        "team": team,
+        "search_input": search_input,
+        "resolved_steamid64": steamid64,
+        "kills": kills,
+        "assists": assists,
+        "deaths": deaths,
+        "kdr": kdr,
+        "kadr": kadr,
+        "dpm": dpm,
+        "dmg": dmg,
+        "headshots_hit": hs,
+        "backstabs": bs,
+        "ubers": ubers,
+        "drops": drops,
+    }
+
+
+def log_match(
+    steamids: list[str],
+    logs_dir: str | Path,
+    *,
+    search_inputs: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], int, frozenset[int]]:
     """Logs where all given players participated. Returns (results, total, matching_log_ids) for cache invalidation."""
     logs_dir = Path(logs_dir)
     if not steamids:
         return [], 0, frozenset()
+    labels: list[str] = (
+        list(search_inputs)
+        if search_inputs is not None and len(search_inputs) == len(steamids)
+        else [str(s) for s in steamids]
+    )
     steamid3s = [steamid64_to_steamid3(s) for s in steamids]
     steamid3_set = set(steamid3s)
     log_ids = get_log_list_for_player(steamids[0])
@@ -198,16 +272,28 @@ def log_match(steamids: list[str], logs_dir: str | Path) -> tuple[list[dict[str,
         info = logtext.get("info") or {}
         title = info.get("title") or ""
         map_name = info.get("map") or ""
-        date_ts = info.get("date") or 0
+        date_ts = int(info.get("date") or 0)
         date_str = datetime.fromtimestamp(date_ts, tz=timezone.utc).strftime(
             "%m/%d/%Y %I:%M:%S %p %Z"
         )
+        player_stats: list[dict[str, Any]] = []
+        for i, sid3 in enumerate(steamid3s):
+            row = _player_stats_row_logmatch(
+                sid3,
+                logtext,
+                search_input=labels[i],
+                steamid64=str(steamids[i]),
+            )
+            if row is not None:
+                player_stats.append(row)
         results.append({
             "log_id": log_id,
             "title": title,
             "map": map_name,
             "date": date_str,
+            "date_ts": date_ts,
             "url": f"{LOGS_TF_URL_BASE}/{log_id}",
+            "player_stats": player_stats,
         })
     return results, len(results), frozenset(matching_log_ids)
 

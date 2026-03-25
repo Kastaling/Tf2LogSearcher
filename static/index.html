@@ -256,6 +256,37 @@
     }
     .chat-team-red { color: #a7584b; }
     .chat-team-blue { color: #547d8c; }
+    .logmatch-total { margin: 0 0 0.75rem; }
+    .logmatch-item { margin-bottom: 1rem; padding-bottom: 0.85rem; border-bottom: 1px solid var(--border); }
+    .logmatch-item:last-of-type { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
+    .logmatch-header { margin-bottom: 0.35rem; }
+    .logmatch-title { font-weight: 700; margin: 0 0 0.2rem; }
+    .logmatch-meta { color: var(--text-muted); font-size: 0.9rem; margin: 0 0 0.25rem; }
+    .logmatch-details { margin-top: 0.25rem; }
+    .logmatch-details summary { cursor: pointer; color: var(--link); font-weight: 600; }
+    .logmatch-details summary::-webkit-details-marker { color: var(--link); }
+    .logmatch-count { color: var(--text-muted); font-weight: 500; }
+    .logmatch-no-stats { margin: 0.35rem 0 0; color: var(--text-muted); font-size: 0.9rem; }
+    .logmatch-table-wrap .stats-table { min-width: 480px; }
+    .logmatch-alias {
+      cursor: help;
+      border-radius: 2px;
+      transition: background-color 0.12s ease, box-shadow 0.12s ease;
+    }
+    .logmatch-alias:hover {
+      background-color: var(--table-hover);
+      box-shadow: 0 0 0 1px var(--border);
+    }
+    @supports (background-color: color-mix(in srgb, white 50%, black)) {
+      .logmatch-alias:hover {
+        background-color: color-mix(in srgb, var(--link) 12%, transparent);
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--link) 22%, transparent);
+      }
+    }
+    .logmatch-alias:focus-visible {
+      outline: 2px solid var(--link);
+      outline-offset: 2px;
+    }
     .webhook-subscribe {
       margin-bottom: 1rem;
       padding: 0.75rem;
@@ -323,7 +354,7 @@
 <body>
   <button type="button" class="theme-toggle" id="themeToggle" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
   <div id="homePage">
-  <h1>Tf2 Logs.tf Advanced Searcher</h1>
+  <h1>TF2 Logs.tf Advanced Searcher</h1>
 
   <h2>Chat Searcher</h2>
   <p>Search for a word or phrase in a player's chat, or leave the word blank to see their full chat history. You can enter SteamID64, profile URL, vanity URL, or vanity name.</p>
@@ -491,6 +522,21 @@
       }
     }
 
+    /** Logmatch / log timestamps: browser TZ, fallback to UTC (same pattern as progress dates). */
+    function formatUnixLogTimestamp(unixSeconds) {
+      if (unixSeconds == null || unixSeconds === '') return '';
+      var n = Number(unixSeconds);
+      if (!Number.isFinite(n)) return '';
+      var date = new Date(n * 1000);
+      if (Number.isNaN(date.getTime())) return '';
+      try {
+        var tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        return new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short', timeZone: tz }).format(date);
+      } catch (_) {
+        return date.toLocaleString(undefined, { timeZone: 'UTC' }) + ' UTC';
+      }
+    }
+
     async function fetchProgress() {
       try {
         const r = await fetch('/api/download-progress');
@@ -628,6 +674,21 @@
       if (str == null) return '';
       const s = String(str);
       return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    /** Escape for double-quoted HTML attributes (e.g. title=""). */
+    function escapeAttr(str) {
+      if (str == null) return '';
+      return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    }
+
+    function logmatchAliasTooltip(row) {
+      var q = row.search_input != null ? String(row.search_input) : '';
+      var sid = row.resolved_steamid64 != null ? String(row.resolved_steamid64) : '';
+      if (q && sid) return 'Searched: ' + q + ' · ' + sid;
+      if (q) return q;
+      if (sid) return 'SteamID64: ' + sid;
+      return '';
     }
 
     /** Escape string for use as a literal in a RegExp (security: no regex injection). */
@@ -843,12 +904,137 @@
       });
     }
 
-    function renderLogmatchResult(el, data, elapsedMs) {
-      var html = 'Total ' + (data.total || 0) + ' matching log(s).<br>';
-      (data.results || []).forEach(function(x) {
-        html += escapeHtml(x.title) + '<br>' + escapeHtml(x.map) + '<br>' + escapeHtml(x.date) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
+    function logmatchColumnsForRows(rows) {
+      var cols = [
+        { key: 'alias', label: 'Alias', type: 'text' },
+        { key: 'kills', label: 'K', type: 'number' },
+        { key: 'assists', label: 'A', type: 'number' },
+        { key: 'deaths', label: 'D', type: 'number' },
+        { key: 'kdr', label: 'KDR', type: 'number' },
+        { key: 'kadr', label: 'KADR', type: 'number' },
+        { key: 'dpm', label: 'DPM', type: 'number' },
+        { key: 'dmg', label: 'Dmg', type: 'number' }
+      ];
+      function anyPos(key) {
+        return rows.some(function(r) { return Number(r[key] || 0) > 0; });
+      }
+      if (anyPos('headshots_hit')) cols.push({ key: 'headshots_hit', label: 'HS', type: 'number' });
+      if (anyPos('backstabs')) cols.push({ key: 'backstabs', label: 'BS', type: 'number' });
+      if (anyPos('ubers') || anyPos('drops')) {
+        cols.push({ key: 'ubers', label: 'Ubers', type: 'number' });
+        cols.push({ key: 'drops', label: 'Drops', type: 'number' });
+      }
+      return cols;
+    }
+
+    function logmatchGetSortValue(row, key, type) {
+      var v = row[key];
+      if (type === 'number') {
+        var n = Number(v);
+        return Number.isNaN(n) ? -Infinity : n;
+      }
+      return v != null ? String(v).toLowerCase() : '';
+    }
+
+    function renderLogmatchTableContents(table, rows, cols, sortCol, sortDir) {
+      var sorted = rows.slice();
+      var colDef = cols.find(function(c) { return c.key === sortCol; });
+      if (colDef) {
+        sorted.sort(function(a, b) {
+          var va = logmatchGetSortValue(a, sortCol, colDef.type);
+          var vb = logmatchGetSortValue(b, sortCol, colDef.type);
+          if (colDef.type === 'text') {
+            if (va < vb) return -sortDir;
+            if (va > vb) return sortDir;
+            return 0;
+          }
+          if (va < vb) return -sortDir;
+          if (va > vb) return sortDir;
+          return 0;
+        });
+      }
+      var thead = '<tr>';
+      cols.forEach(function(c) {
+        var cls = 'sortable';
+        if (c.key === sortCol) cls += sortDir === 1 ? ' sorted-asc' : ' sorted-desc';
+        thead += '<th class="' + cls + '" data-col="' + escapeHtml(c.key) + '" scope="col">' + escapeHtml(c.label) + '</th>';
       });
-      el.innerHTML = (html || 'No matches.') + requestTimingFooter(elapsedMs);
+      thead += '</tr>';
+      var tbody = '';
+      sorted.forEach(function(x) {
+        tbody += '<tr>';
+        cols.forEach(function(c) {
+          if (c.key === 'alias') {
+            var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
+            var val = x.alias != null ? String(x.alias) : '';
+            var tip = logmatchAliasTooltip(x);
+            var titleAttr = tip ? ' title="' + escapeAttr(tip) + '"' : '';
+            var inner = teamClass ? ('<span class="' + teamClass + '">' + escapeHtml(val) + '</span>') : escapeHtml(val);
+            tbody += '<td><span class="logmatch-alias"' + titleAttr + '>' + inner + '</span></td>';
+          } else {
+            var cell = x[c.key];
+            tbody += '<td>' + escapeHtml(cell != null ? String(cell) : '') + '</td>';
+          }
+        });
+        tbody += '</tr>';
+      });
+      table.innerHTML = '<thead>' + thead + '</thead><tbody>' + tbody + '</tbody>';
+    }
+
+    function bindLogmatchSortableTable(table) {
+      if (table.getAttribute('data-logmatch-bound')) return;
+      table.setAttribute('data-logmatch-bound', '1');
+      table._lmSortCol = 'kills';
+      table._lmSortDir = 1;
+      renderLogmatchTableContents(table, table._logmatchRows, table._logmatchCols, table._lmSortCol, table._lmSortDir);
+      table.addEventListener('click', function(ev) {
+        var th = ev.target.closest('th.sortable');
+        if (!th || !table.contains(th)) return;
+        var col = th.getAttribute('data-col');
+        if (!col) return;
+        if (table._lmSortCol === col) table._lmSortDir *= -1;
+        else { table._lmSortCol = col; table._lmSortDir = 1; }
+        renderLogmatchTableContents(table, table._logmatchRows, table._logmatchCols, table._lmSortCol, table._lmSortDir);
+      });
+    }
+
+    function renderLogmatchResult(el, data, elapsedMs) {
+      var results = data.results || [];
+      var html = '<p class="logmatch-total">Total ' + escapeHtml(String(data.total || 0)) + ' matching log(s).</p>';
+      if (results.length === 0) {
+        el.innerHTML = 'No matches.' + requestTimingFooter(elapsedMs);
+        return;
+      }
+      results.forEach(function(x) {
+        var rows = x.player_stats || [];
+        var dateShown = formatUnixLogTimestamp(x.date_ts);
+        if (!dateShown) dateShown = x.date ? String(x.date) : '\u2014';
+        else dateShown = String(dateShown);
+        html += '<div class="logmatch-item" data-log-id="' + escapeHtml(String(x.log_id != null ? x.log_id : '')) + '">';
+        html += '<div class="logmatch-header">';
+        html += '<div class="logmatch-title">' + escapeHtml(x.title || '') + '</div>';
+        html += '<div class="logmatch-meta">' + escapeHtml(x.map || '') + ' \u00b7 ' + escapeHtml(dateShown) + '</div>';
+        html += '<a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a>';
+        html += '</div>';
+        if (rows.length === 0) {
+          html += '<details class="logmatch-details"><summary>Matched players \u2014 Stats</summary><p class="logmatch-no-stats">No player stats available for this log.</p></details>';
+        } else {
+          html += '<details class="logmatch-details"><summary>Matched players \u2014 Stats <span class="logmatch-count">(' + escapeHtml(String(rows.length)) + ')</span></summary>';
+          html += '<div class="stats-table-wrap logmatch-table-wrap"><table class="stats-table logmatch-stats-table"></table></div></details>';
+        }
+        html += '</div>';
+      });
+      el.innerHTML = html + requestTimingFooter(elapsedMs);
+      var items = el.querySelectorAll('.logmatch-item');
+      for (var i = 0; i < items.length; i++) {
+        var x = results[i];
+        var table = items[i].querySelector('table.logmatch-stats-table');
+        if (!x || !table) continue;
+        var pr = x.player_stats || [];
+        table._logmatchRows = pr;
+        table._logmatchCols = logmatchColumnsForRows(pr);
+        bindLogmatchSortableTable(table);
+      }
     }
 
     (function initResultsPage() {

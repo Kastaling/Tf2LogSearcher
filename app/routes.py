@@ -207,7 +207,9 @@ def _api_search_logmatch_impl(request: Request, steamids: str) -> JSONResponse:
     status_code = 200
     result_count = 0
     try:
-        results, result_count, matching_log_ids = log_match(sid_list, LOGS_DIR)
+        results, result_count, matching_log_ids = log_match(
+            sid_list, LOGS_DIR, search_inputs=raw_list
+        )
         payload = {"results": results, "total": result_count}
         cache_set("logmatch", (sid_tuple,), payload, matching_log_ids)
         duration_ms = int((time.perf_counter() - start) * 1000)
