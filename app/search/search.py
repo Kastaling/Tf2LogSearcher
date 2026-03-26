@@ -47,6 +47,7 @@ def _class_playtime_for_logmatch(stats: dict[str, Any]) -> list[dict[str, Any]]:
 
 # Limits to prevent runaway queries and huge responses
 CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID = 5000   # when showing one player's chat (with or without word filter)
+CHAT_CONTEXT_PREVIEW_MAX_CHARS = 220
 
 
 def local_log_ids_for_player(steamid64: str, logs_dir: str | Path) -> frozenset[int]:
@@ -104,17 +105,39 @@ def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dic
         player_info = players.get(steamid3) if isinstance(players, dict) else None
         team_raw = player_info.get("team") if isinstance(player_info, dict) else None
         team = "Red" if team_raw == "Red" else ("Blue" if team_raw == "Blue" else None)
-        for msg in chat:
+        for idx, msg in enumerate(chat):
             if msg.get("steamid") != steamid3:
                 continue
             m = msg.get("msg") or ""
             if has_word and word_lower not in m.lower():
                 continue
             alias = msg.get("name") or ""
+            prev_entry = chat[idx - 1] if idx > 0 else None
+            next_entry = chat[idx + 1] if idx + 1 < len(chat) else None
+
+            def _ctx(entry: Any) -> dict[str, Any] | None:
+                if not isinstance(entry, dict):
+                    return None
+                t = str(entry.get("msg") or "").strip()
+                if not t:
+                    return None
+                if len(t) > CHAT_CONTEXT_PREVIEW_MAX_CHARS:
+                    t = t[: CHAT_CONTEXT_PREVIEW_MAX_CHARS - 1] + "…"
+                n = str(entry.get("name") or "").strip()
+                sid3 = str(entry.get("steamid") or "").strip()
+                ctx_team = None
+                p = players.get(sid3) if isinstance(players, dict) and sid3 else None
+                if isinstance(p, dict):
+                    tr = p.get("team")
+                    ctx_team = "Red" if tr == "Red" else ("Blue" if tr == "Blue" else None)
+                return {"name": n, "msg": t, "team": ctx_team}
+
             results.append({
                 "log_id": log_id,
                 "alias": alias,
                 "msg": m,
+                "context_prev": _ctx(prev_entry),
+                "context_next": _ctx(next_entry),
                 "url": f"{LOGS_TF_URL_BASE}/{log_id}",
                 "team": team,
             })

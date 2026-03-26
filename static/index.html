@@ -135,6 +135,62 @@
       border: 1px solid var(--border);
     }
     .results { margin-top: 0.5rem; white-space: pre-wrap; }
+    .chat-hit {
+      margin: 0 0 0.9rem;
+      padding: 0.45rem 0.55rem;
+      border: 1px solid var(--border);
+      border-radius: var(--standard-border-radius, 5px);
+      background: var(--accent-bg);
+      position: relative;
+    }
+    .chat-hit:target {
+      box-shadow: 0 0 0 2px var(--link);
+    }
+    .chat-hit-link {
+      position: absolute;
+      top: 0.3rem;
+      right: 0.35rem;
+      font-size: 0.95rem;
+      text-decoration: none;
+      color: var(--text-muted);
+      line-height: 1;
+      padding: 0.15rem;
+      border-radius: 4px;
+    }
+    .chat-hit-link:hover,
+    .chat-hit-link:focus-visible {
+      color: var(--link);
+      background: var(--table-hover);
+      outline: none;
+    }
+    .chat-hit-main {
+      cursor: pointer;
+      display: inline-block;
+      width: fit-content;
+      max-width: 100%;
+      padding: 0.05rem 0.12rem;
+      border-radius: 3px;
+    }
+    .chat-context-wrap { display: none; }
+    .chat-hit.chat-hit-hover .chat-context-wrap,
+    .chat-hit.chat-hit-open .chat-context-wrap { display: block; }
+    .chat-line {
+      margin: 0.1rem 0;
+      white-space: pre-wrap;
+    }
+    .chat-context {
+      color: var(--text-muted);
+      font-size: 0.92em;
+    }
+    .chat-main {
+      color: var(--text);
+      font-size: 1em;
+    }
+    .chat-log-link {
+      display: block;
+      margin-top: 0.15rem;
+    }
+    .chat-team-none { color: var(--text-muted); }
     .loading-state {
       display: flex;
       align-items: baseline;
@@ -306,6 +362,23 @@
       object-fit: contain;
       vertical-align: middle;
       image-rendering: crisp-edges;
+    }
+    .has-tooltip { cursor: help; }
+    .custom-tooltip {
+      position: fixed;
+      z-index: 3000;
+      max-width: min(340px, calc(100vw - 1rem));
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.35rem 0.5rem;
+      font-size: 0.82rem;
+      line-height: 1.25;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+      pointer-events: none;
+      word-break: break-word;
+      white-space: pre-line;
     }
     .webhook-subscribe {
       margin-bottom: 1rem;
@@ -593,6 +666,98 @@
       el.innerHTML = '<div class="loading-state" role="status" aria-live="polite"><span class="loading-label">Loading</span><span class="loading-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span></div>';
     }
 
+    function chatTeamClass(teamVal) {
+      return teamVal === 'Red' ? 'chat-team-red' : (teamVal === 'Blue' ? 'chat-team-blue' : 'chat-team-none');
+    }
+
+    function chatContextLineHtml(prefix, ctx) {
+      if (!ctx) return '';
+      var name = '';
+      var msg = '';
+      var team = null;
+      if (typeof ctx === 'string') {
+        var s = String(ctx);
+        var i = s.indexOf(':');
+        if (i > -1) {
+          name = s.slice(0, i).trim();
+          msg = s.slice(i + 1).trim();
+        } else {
+          msg = s.trim();
+        }
+      } else if (typeof ctx === 'object') {
+        name = (ctx.name != null ? String(ctx.name) : '').trim();
+        msg = (ctx.msg != null ? String(ctx.msg) : '').trim();
+        team = ctx.team;
+      }
+      if (!msg) return '';
+      var who = name ? ('<span class="' + chatTeamClass(team) + '">' + escapeHtml(name) + '</span>: ') : '';
+      return '<div class="chat-line chat-context">' + escapeHtml(prefix) + ': ' + who + escapeHtml(msg) + '</div>';
+    }
+
+    (function initChatContextToggle() {
+      if (window._chatContextToggleBound) return;
+      window._chatContextToggleBound = true;
+      document.addEventListener('mouseover', function(ev) {
+        var trigger = ev.target && ev.target.closest ? ev.target.closest('.chat-hit-main') : null;
+        if (!trigger) return;
+        var item = trigger.closest('.chat-hit');
+        if (!item) return;
+        item.classList.add('chat-hit-hover');
+      });
+      document.addEventListener('mouseout', function(ev) {
+        var trigger = ev.target && ev.target.closest ? ev.target.closest('.chat-hit-main') : null;
+        if (!trigger) return;
+        var rel = ev.relatedTarget;
+        if (rel && trigger.contains(rel)) return;
+        var item = trigger.closest('.chat-hit');
+        if (!item) return;
+        item.classList.remove('chat-hit-hover');
+      });
+      document.addEventListener('click', function(ev) {
+        var trigger = ev.target && ev.target.closest ? ev.target.closest('.chat-hit-main') : null;
+        if (!trigger) return;
+        var item = trigger.closest('.chat-hit');
+        if (!item) return;
+        item.classList.toggle('chat-hit-open');
+      });
+    })();
+
+    function resolveChatResultAnchor(container) {
+      if (!container || !window.location.hash) return;
+      var raw = window.location.hash.slice(1);
+      if (!/^chat-hit-[A-Za-z0-9_-]+$/.test(raw)) return;
+      var target = document.getElementById(raw);
+      if (!target) return;
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('chat-hit-open');
+    }
+
+    (function initChatShareLinks() {
+      if (window._chatShareLinksBound) return;
+      window._chatShareLinksBound = true;
+      document.addEventListener('click', function(ev) {
+        var link = ev.target && ev.target.closest ? ev.target.closest('.js-chat-hit-link') : null;
+        if (!link) return;
+        ev.preventDefault();
+        var shareUrl = link.getAttribute('data-share-url') || '';
+        if (!shareUrl) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(shareUrl).then(function() {
+            link.setAttribute('title', 'Copied!');
+            setTimeout(function() { link.setAttribute('title', 'Copy link to this result'); }, 1200);
+          }).catch(function() {
+            window.location.hash = link.getAttribute('data-anchor') || '';
+          });
+        } else {
+          window.location.hash = link.getAttribute('data-anchor') || '';
+        }
+      });
+      window.addEventListener('hashchange', function() {
+        var content = document.getElementById('resultsContent');
+        resolveChatResultAnchor(content);
+      });
+    })();
+
     function renderChatResult(el, data, steamidParam, wordParam, showWebhookBox, elapsedMs) {
       var steamid = steamidParam || '';
       var word = (wordParam || '').trim();
@@ -617,11 +782,26 @@
         logsAcross = ids.size;
       }
       html += 'Total ' + escapeHtml(String(data.total || 0)) + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a> across ' + escapeHtml(String(logsAcross)) + ' log(s).<br>';
-      (data.results || []).forEach(function(x) {
+      (data.results || []).forEach(function(x, i) {
         var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
-        html += '<span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + highlightChatMatch(x.msg, word) + '<br><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a><br><br>';
+        var p = x.context_prev || null;
+        var n = x.context_next || null;
+        var prevLine = chatContextLineHtml('Previous', p);
+        var nextLine = chatContextLineHtml('Next', n);
+        var idBase = String((x.log_id != null ? x.log_id : 'na')) + '-' + String(i);
+        var safeId = idBase.replace(/[^A-Za-z0-9_-]/g, '_');
+        var hitId = 'chat-hit-' + safeId;
+        var shareUrl = window.location.origin + window.location.pathname + window.location.search + '#' + hitId;
+        html += '<div class="chat-hit" id="' + hitId + '">';
+        html += '<a href="#' + hitId + '" class="chat-hit-link js-chat-hit-link" data-anchor="' + hitId + '" data-share-url="' + escapeAttr(shareUrl) + '" title="Copy link to this result" aria-label="Copy link to this result">🔗</a>';
+        html += '<div class="chat-context-wrap">' + prevLine + '</div>';
+        html += '<div class="chat-line chat-main chat-hit-main"><span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + highlightChatMatch(x.msg, word) + '</div>';
+        html += '<div class="chat-context-wrap">' + nextLine + '</div>';
+        html += '<a class="chat-log-link" href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a>';
+        html += '</div>';
       });
       el.innerHTML = (html || 'No matches.') + requestTimingFooter(elapsedMs);
+      resolveChatResultAnchor(el);
       if (showWebhookBox && word) {
         var box = el.querySelector('.webhook-subscribe');
         var btn = el.querySelector('.js-chat-subscribe');
@@ -763,13 +943,79 @@
         var label = LOGMATCH_CLASS_LABEL[cid] || cid;
         var tip = label + ' — ' + formatClassTimeMinSec(sec) + ' (min:sec)';
         parts.push(
-          '<img class="logmatch-class-icon" src="' + src + '" alt="" width="22" height="22" loading="lazy" ' +
-          'style="opacity:' + opacity.toFixed(3) + '" title="' + escapeAttr(tip) + '">'
+          '<img class="logmatch-class-icon has-tooltip" src="' + src + '" alt="" width="22" height="22" loading="lazy" ' +
+          'style="opacity:' + opacity.toFixed(3) + '" data-tip="' + escapeAttr(tip) + '">'
         );
       }
       if (!parts.length) return '';
       return '<span class="logmatch-class-icons" role="img" aria-label="Classes played in this log">' + parts.join('') + '</span>';
     }
+
+    var _tooltipNode = null;
+    var _tooltipTarget = null;
+    function ensureTooltipNode() {
+      if (_tooltipNode) return _tooltipNode;
+      var n = document.createElement('div');
+      n.className = 'custom-tooltip';
+      n.hidden = true;
+      n.setAttribute('role', 'tooltip');
+      document.body.appendChild(n);
+      _tooltipNode = n;
+      return n;
+    }
+    function hideTooltip() {
+      if (_tooltipNode) _tooltipNode.hidden = true;
+      _tooltipTarget = null;
+    }
+    function placeTooltip(target) {
+      var n = ensureTooltipNode();
+      var rect = target.getBoundingClientRect();
+      var pad = 8;
+      var top = rect.bottom + pad;
+      var left = rect.left;
+      n.style.top = '0px';
+      n.style.left = '0px';
+      var w = n.offsetWidth || 220;
+      var h = n.offsetHeight || 24;
+      if (left + w > window.innerWidth - pad) left = Math.max(pad, window.innerWidth - w - pad);
+      if (top + h > window.innerHeight - pad) top = Math.max(pad, rect.top - h - pad);
+      n.style.left = Math.round(left) + 'px';
+      n.style.top = Math.round(top) + 'px';
+    }
+    function showTooltipFor(target) {
+      var text = target.getAttribute('data-tip');
+      if (!text) return;
+      var n = ensureTooltipNode();
+      n.textContent = text;
+      n.hidden = false;
+      _tooltipTarget = target;
+      placeTooltip(target);
+    }
+    (function initCustomTooltips() {
+      if (window._customTooltipsBound) return;
+      window._customTooltipsBound = true;
+      document.addEventListener('mouseover', function(ev) {
+        var t = ev.target && ev.target.closest ? ev.target.closest('[data-tip]') : null;
+        if (!t) return;
+        showTooltipFor(t);
+      });
+      document.addEventListener('mouseout', function(ev) {
+        if (!_tooltipTarget) return;
+        var rel = ev.relatedTarget;
+        if (rel && _tooltipTarget.contains(rel)) return;
+        hideTooltip();
+      });
+      document.addEventListener('click', function(ev) {
+        var t = ev.target && ev.target.closest ? ev.target.closest('[data-tip]') : null;
+        if (!t) { hideTooltip(); return; }
+        if (_tooltipTarget === t && _tooltipNode && !_tooltipNode.hidden) hideTooltip();
+        else showTooltipFor(t);
+      });
+      window.addEventListener('scroll', hideTooltip, { passive: true });
+      window.addEventListener('resize', function() {
+        if (_tooltipTarget && _tooltipNode && !_tooltipNode.hidden) placeTooltip(_tooltipTarget);
+      }, { passive: true });
+    })();
 
     /** Escape string for use as a literal in a RegExp (security: no regex injection). */
     function escapeRegexLiteral(str) {
@@ -1048,10 +1294,10 @@
             var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
             var val = x.alias != null ? String(x.alias) : '';
             var tip = logmatchAliasTooltip(x);
-            var titleAttr = tip ? ' title="' + escapeAttr(tip) + '"' : '';
+            var tipAttr = tip ? ' data-tip="' + escapeAttr(tip) + '"' : '';
             var inner = teamClass ? ('<span class="' + teamClass + '">' + escapeHtml(val) + '</span>') : escapeHtml(val);
             var icons = logmatchClassIconsHtml(x);
-            tbody += '<td><span class="logmatch-alias-cell">' + icons + '<span class="logmatch-alias"' + titleAttr + '>' + inner + '</span></span></td>';
+            tbody += '<td><span class="logmatch-alias-cell">' + icons + '<span class="logmatch-alias has-tooltip"' + tipAttr + '>' + inner + '</span></span></td>';
           } else {
             var cell = x[c.key];
             tbody += '<td>' + escapeHtml(cell != null ? String(cell) : '') + '</td>';
