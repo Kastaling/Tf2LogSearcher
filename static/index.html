@@ -287,6 +287,26 @@
       outline: 2px solid var(--link);
       outline-offset: 2px;
     }
+    .logmatch-alias-cell {
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.3rem;
+      vertical-align: middle;
+    }
+    .logmatch-class-icons {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      flex-shrink: 0;
+    }
+    .logmatch-class-icon {
+      width: 22px;
+      height: 22px;
+      object-fit: contain;
+      vertical-align: middle;
+      image-rendering: crisp-edges;
+    }
     .webhook-subscribe {
       margin-bottom: 1rem;
       padding: 0.75rem;
@@ -691,6 +711,66 @@
       return '';
     }
 
+    /** Minutes:seconds for class time tooltips (m:ss). */
+    function formatClassTimeMinSec(totalSec) {
+      var n = Math.max(0, Math.floor(Number(totalSec) || 0));
+      var m = Math.floor(n / 60);
+      var s = n % 60;
+      return m + ':' + (s < 10 ? '0' : '') + s;
+    }
+
+    var LOGMATCH_CLASS_ICON = {
+      scout: '/static/class_scout.png',
+      soldier: '/static/class_soldier.png',
+      pyro: '/static/class_pyro.png',
+      demoman: '/static/class_demoman.png',
+      heavyweapons: '/static/class_heavy.png',
+      engineer: '/static/class_engineer.png',
+      medic: '/static/class_medic.png',
+      sniper: '/static/class_sniper.png',
+      spy: '/static/class_spy.png'
+    };
+    var LOGMATCH_CLASS_LABEL = {
+      scout: 'Scout',
+      soldier: 'Soldier',
+      pyro: 'Pyro',
+      demoman: 'Demoman',
+      heavyweapons: 'Heavy',
+      engineer: 'Engineer',
+      medic: 'Medic',
+      sniper: 'Sniper',
+      spy: 'Spy'
+    };
+
+    function logmatchClassIconsHtml(row) {
+      var arr = row.class_playtime;
+      if (!arr || !Array.isArray(arr) || arr.length === 0) return '';
+      var maxSec = 0;
+      for (var i = 0; i < arr.length; i++) {
+        var t = Number(arr[i].seconds);
+        if (!Number.isNaN(t) && t > maxSec) maxSec = t;
+      }
+      var parts = [];
+      for (var j = 0; j < arr.length; j++) {
+        var p = arr[j];
+        var cid = p && p.class;
+        var src = cid && LOGMATCH_CLASS_ICON[cid];
+        if (!src) continue;
+        var sec = Math.max(0, Math.floor(Number(p.seconds) || 0));
+        var opacity = maxSec > 0 ? (0.18 + 0.82 * (sec / maxSec)) : 1;
+        if (opacity > 1) opacity = 1;
+        if (opacity < 0.12) opacity = 0.12;
+        var label = LOGMATCH_CLASS_LABEL[cid] || cid;
+        var tip = label + ' — ' + formatClassTimeMinSec(sec) + ' (min:sec)';
+        parts.push(
+          '<img class="logmatch-class-icon" src="' + src + '" alt="" width="22" height="22" loading="lazy" ' +
+          'style="opacity:' + opacity.toFixed(3) + '" title="' + escapeAttr(tip) + '">'
+        );
+      }
+      if (!parts.length) return '';
+      return '<span class="logmatch-class-icons" role="img" aria-label="Classes played in this log">' + parts.join('') + '</span>';
+    }
+
     /** Escape string for use as a literal in a RegExp (security: no regex injection). */
     function escapeRegexLiteral(str) {
       if (str == null || str === '') return '';
@@ -970,7 +1050,8 @@
             var tip = logmatchAliasTooltip(x);
             var titleAttr = tip ? ' title="' + escapeAttr(tip) + '"' : '';
             var inner = teamClass ? ('<span class="' + teamClass + '">' + escapeHtml(val) + '</span>') : escapeHtml(val);
-            tbody += '<td><span class="logmatch-alias"' + titleAttr + '>' + inner + '</span></td>';
+            var icons = logmatchClassIconsHtml(x);
+            tbody += '<td><span class="logmatch-alias-cell">' + icons + '<span class="logmatch-alias"' + titleAttr + '>' + inner + '</span></span></td>';
           } else {
             var cell = x[c.key];
             tbody += '<td>' + escapeHtml(cell != null ? String(cell) : '') + '</td>';

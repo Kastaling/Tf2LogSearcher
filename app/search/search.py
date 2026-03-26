@@ -8,6 +8,42 @@ from app.logs_tf import get_log_list_for_player, steamid64_to_steamid3
 
 LOGS_TF_URL_BASE = "https://logs.tf"
 
+# logs.tf player class_stats "type" values we expose to the API (whitelist).
+_LOGMATCH_CLASS_TYPES: frozenset[str] = frozenset({
+    "scout",
+    "soldier",
+    "pyro",
+    "demoman",
+    "heavyweapons",
+    "engineer",
+    "medic",
+    "sniper",
+    "spy",
+})
+
+
+def _class_playtime_for_logmatch(stats: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-class playtime in seconds from logs.tf class_stats (longest first)."""
+    raw = stats.get("class_stats")
+    if not isinstance(raw, list):
+        return []
+    pairs: list[tuple[str, int]] = []
+    for cs in raw:
+        if not isinstance(cs, dict):
+            continue
+        ctype = cs.get("type")
+        if not isinstance(ctype, str) or ctype not in _LOGMATCH_CLASS_TYPES:
+            continue
+        try:
+            sec = int(cs.get("total_time") or 0)
+        except (TypeError, ValueError):
+            continue
+        if sec <= 0:
+            continue
+        pairs.append((ctype, sec))
+    pairs.sort(key=lambda x: -x[1])
+    return [{"class": a, "seconds": b} for a, b in pairs]
+
 
 # Limits to prevent runaway queries and huge responses
 CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID = 5000   # when showing one player's chat (with or without word filter)
@@ -221,6 +257,7 @@ def _player_stats_row_logmatch(
         "team": team,
         "search_input": search_input,
         "resolved_steamid64": steamid64,
+        "class_playtime": _class_playtime_for_logmatch(stats),
         "kills": kills,
         "assists": assists,
         "deaths": deaths,
