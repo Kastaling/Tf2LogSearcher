@@ -297,6 +297,16 @@
       color: var(--text-muted);
       word-break: break-word;
     }
+    .stats-csv-toolbar {
+      margin: 0.5rem 0 0.65rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .stats-csv-toolbar button {
+      margin: 0;
+    }
     .stats-table-wrap {
       width: 100%;
       overflow-x: auto;
@@ -1281,6 +1291,25 @@
     var statsSortCol = null;
     var statsSortDir = 1;
 
+    /** CSV includes Team (not shown as its own column in the HTML table). */
+    var STATS_CSV_COLUMNS = [
+      { key: 'alias', label: 'Alias' },
+      { key: 'team', label: 'Team' },
+      { key: 'character', label: 'Class' },
+      { key: 'kills', label: 'K' },
+      { key: 'assists', label: 'A' },
+      { key: 'deaths', label: 'D' },
+      { key: 'kdr', label: 'KDR' },
+      { key: 'kadr', label: 'KADR' },
+      { key: 'dpm', label: 'DPM' },
+      { key: 'dmg', label: 'Dmg' },
+      { key: 'headshots_hit', label: 'HS' },
+      { key: 'backstabs', label: 'BS' },
+      { key: 'map', label: 'Map' },
+      { key: 'date', label: 'Date' },
+      { key: 'url', label: 'Log URL' }
+    ];
+
     var STATS_COLUMNS = [
       { key: 'alias', label: 'Alias', type: 'text' },
       { key: 'character', label: 'Class', type: 'text' },
@@ -1297,6 +1326,90 @@
       { key: 'date', label: 'Date', type: 'date' },
       { key: 'url', label: 'Log', type: 'text' }
     ];
+
+    function escapeCsvField(value) {
+      if (value == null) return '';
+      var s = String(value);
+      if (/[",\r\n]/.test(s)) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    }
+
+    /** Prefix cells that could be interpreted as formulas when opened in Excel / similar. */
+    function statsValueForCsvCell(raw) {
+      var s = raw == null ? '' : String(raw);
+      if (/^[=+\-@]/.test(s)) s = "'" + s;
+      return escapeCsvField(s);
+    }
+
+    function buildStatsCsvContent(sortedRows) {
+      var header = STATS_CSV_COLUMNS.map(function(c) {
+        return escapeCsvField(c.label);
+      }).join(',');
+      var lines = [header];
+      for (var i = 0; i < sortedRows.length; i++) {
+        var row = sortedRows[i];
+        var parts = [];
+        for (var j = 0; j < STATS_CSV_COLUMNS.length; j++) {
+          parts.push(statsValueForCsvCell(row[STATS_CSV_COLUMNS[j].key]));
+        }
+        lines.push(parts.join(','));
+      }
+      return '\uFEFF' + lines.join('\r\n');
+    }
+
+    function getSortedStatsRows(originalRows) {
+      var sortedRows = originalRows.slice();
+      var sortCol = statsSortCol;
+      var sortDir = statsSortDir;
+      var colDef = STATS_COLUMNS.find(function(c) { return c.key === sortCol; });
+      if (colDef) {
+        sortedRows.sort(function(a, b) {
+          var va = getSortValue(a, sortCol, colDef.type);
+          var vb = getSortValue(b, sortCol, colDef.type);
+          if (colDef.type === 'text') {
+            if (va < vb) return -sortDir;
+            if (va > vb) return sortDir;
+            return 0;
+          }
+          if (va < vb) return -sortDir;
+          if (va > vb) return sortDir;
+          return 0;
+        });
+      }
+      return sortedRows;
+    }
+
+    function triggerCsvDownload(filename, text) {
+      try {
+        var blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 0);
+      } catch (e) {}
+    }
+
+    function bindStatsCsvDownload(container) {
+      var btn = container.querySelector('.js-stats-csv-download');
+      if (!btn || btn.getAttribute('data-csv-bound')) return;
+      btn.setAttribute('data-csv-bound', '1');
+      btn.addEventListener('click', function() {
+        var rows = container._statsRows;
+        if (!rows || !rows.length) return;
+        var sorted = getSortedStatsRows(rows);
+        var csv = buildStatsCsvContent(sorted);
+        var d = new Date();
+        var fn = 'tf2-stats-sorter-' + d.getFullYear() + '-' + (d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate() + '.csv';
+        triggerCsvDownload(fn, csv);
+      });
+    }
 
     function getSortValue(row, key, type) {
       const v = row[key];
@@ -1395,24 +1508,7 @@
         container._statsRequestMs = elapsedMs;
       }
       var originalRows = container._statsRows;
-      var sortCol = statsSortCol;
-      var sortDir = statsSortDir;
-      var sortedRows = originalRows.slice();
-      var colDef = STATS_COLUMNS.find(function(c) { return c.key === sortCol; });
-      if (colDef) {
-        sortedRows.sort(function(a, b) {
-          var va = getSortValue(a, sortCol, colDef.type);
-          var vb = getSortValue(b, sortCol, colDef.type);
-          if (colDef.type === 'text') {
-            if (va < vb) return -sortDir;
-            if (va > vb) return sortDir;
-            return 0;
-          }
-          if (va < vb) return -sortDir;
-          if (va > vb) return sortDir;
-          return 0;
-        });
-      }
+      var sortedRows = getSortedStatsRows(originalRows);
 
       var thead = '<tr>';
       STATS_COLUMNS.forEach(function(c) {
@@ -1429,8 +1525,12 @@
         tbody += '<tr><td>' + aliasCell + '</td><td>' + escapeHtml(x.character) + '</td><td>' + escapeHtml(x.kills) + '</td><td>' + escapeHtml(x.assists) + '</td><td>' + escapeHtml(x.deaths) + '</td><td>' + escapeHtml(x.kdr) + '</td><td>' + escapeHtml(x.kadr) + '</td><td>' + escapeHtml(x.dpm) + '</td><td>' + escapeHtml(x.dmg) + '</td><td>' + escapeHtml(x.headshots_hit) + '</td><td>' + escapeHtml(x.backstabs) + '</td><td>' + escapeHtml(x.map) + '</td><td>' + escapeHtml(x.date) + '</td><td><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">Link</a></td></tr>';
       });
 
-      container.innerHTML = (container._statsSummaryHtml || '') + '<div class="stats-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' + requestTimingFooter(container._statsRequestMs);
+      container.innerHTML = (container._statsSummaryHtml || '') +
+        '<div class="stats-csv-toolbar"><button type="button" class="js-stats-csv-download" aria-label="Download stats table as a CSV file">Download as CSV</button></div>' +
+        '<div class="stats-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' + requestTimingFooter(container._statsRequestMs);
       container._statsRows = originalRows;
+
+      bindStatsCsvDownload(container);
 
       container.querySelectorAll('th.sortable').forEach(function(th) {
         th.addEventListener('click', function() {
