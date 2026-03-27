@@ -1,7 +1,7 @@
 """API routes for search endpoints and request logging."""
 import json
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +67,24 @@ def _log_request(
         pass  # Do not fail the request if logging fails
 
 
-def _api_search_chat_impl(request: Request, word: str, steamid_input: str) -> JSONResponse:
+def _parse_iso_date_or_none(value: str) -> tuple[date | None, str | None]:
+    """Parse YYYY-MM-DD date string; empty means None."""
+    s = (value or "").strip()
+    if not s:
+        return None, None
+    try:
+        return date.fromisoformat(s), None
+    except ValueError:
+        return None, "Invalid date format. Use YYYY-MM-DD."
+
+
+def _api_search_chat_impl(
+    request: Request,
+    word: str,
+    steamid_input: str,
+    date_from_raw: str,
+    date_to_raw: str,
+) -> JSONResponse:
     """Shared implementation for POST and GET chat search. Returns JSONResponse."""
     start = time.perf_counter()
     if not steamid_input:
@@ -80,6 +97,14 @@ def _api_search_chat_impl(request: Request, word: str, steamid_input: str) -> JS
             {"results": [], "total": 0, "error": "Search word is too long."},
             status_code=400,
         )
+    date_from, err = _parse_iso_date_or_none(date_from_raw)
+    if err:
+        return JSONResponse({"results": [], "total": 0, "error": err}, status_code=400)
+    date_to, err = _parse_iso_date_or_none(date_to_raw)
+    if err:
+        return JSONResponse({"results": [], "total": 0, "error": err}, status_code=400)
+    if date_from is not None and date_to is not None and date_from > date_to:
+        return JSONResponse({"results": [], "total": 0, "error": "date_from must be before or equal to date_to."}, status_code=400)
 
     steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
     if resolve_error is not None:
@@ -89,7 +114,7 @@ def _api_search_chat_impl(request: Request, word: str, steamid_input: str) -> JS
         )
     assert steamid64 is not None
 
-    cache_key = (steamid64, word)
+    cache_key = (steamid64, word, date_from.isoformat() if date_from else "", date_to.isoformat() if date_to else "")
     cached = cache_get("chat", cache_key)
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
@@ -99,7 +124,13 @@ def _api_search_chat_impl(request: Request, word: str, steamid_input: str) -> JS
     status_code = 200
     result_count = 0
     try:
-        results, result_count, searched_user_name, log_ids_used = chat_search(word, steamid64, LOGS_DIR)
+        results, result_count, searched_user_name, log_ids_used = chat_search(
+            word,
+            steamid64,
+            LOGS_DIR,
+            date_from=date_from,
+            date_to=date_to,
+        )
         payload = {
             "results": results,
             "total": result_count,
@@ -119,18 +150,49 @@ def _api_search_chat_impl(request: Request, word: str, steamid_input: str) -> JS
 
 
 @router.post("/api/search/chat")
-async def api_search_chat(request: Request, word: str = Form(""), steamid: str = Form("")):
+async def api_search_chat(
+    request: Request,
+    word: str = Form(""),
+    steamid: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+):
     """Chat search: Steam ID (any format) required; word optional."""
-    return _api_search_chat_impl(request, (word or "").strip(), (steamid or "").strip())
+    return _api_search_chat_impl(
+        request,
+        (word or "").strip(),
+        (steamid or "").strip(),
+        date_from or "",
+        date_to or "",
+    )
 
 
 @router.get("/api/search/chat")
-async def api_search_chat_get(request: Request, word: str = Query(""), steamid: str = Query("")):
+async def api_search_chat_get(
+    request: Request,
+    word: str = Query(""),
+    steamid: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+):
     """GET variant for shareable links; same response as POST."""
-    return _api_search_chat_impl(request, (word or "").strip(), (steamid or "").strip())
+    return _api_search_chat_impl(
+        request,
+        (word or "").strip(),
+        (steamid or "").strip(),
+        date_from or "",
+        date_to or "",
+    )
 
 
-def _api_search_stats_impl(request: Request, steamid: str, gamemode: str, classes: str) -> JSONResponse:
+def _api_search_stats_impl(
+    request: Request,
+    steamid: str,
+    gamemode: str,
+    classes: str,
+    date_from_raw: str,
+    date_to_raw: str,
+) -> JSONResponse:
     """Shared impl for POST/GET stats search."""
     start = time.perf_counter()
     steamid_input = (steamid or "").strip()
@@ -140,16 +202,37 @@ def _api_search_stats_impl(request: Request, steamid: str, gamemode: str, classe
     if resolve_error is not None:
         return JSONResponse({"rows": [], "error": resolve_error}, status_code=400)
     assert steamid64 is not None
+    date_from, err = _parse_iso_date_or_none(date_from_raw)
+    if err:
+        return JSONResponse({"rows": [], "error": err}, status_code=400)
+    date_to, err = _parse_iso_date_or_none(date_to_raw)
+    if err:
+        return JSONResponse({"rows": [], "error": err}, status_code=400)
+    if date_from is not None and date_to is not None and date_from > date_to:
+        return JSONResponse({"rows": [], "error": "date_from must be before or equal to date_to."}, status_code=400)
     class_list = [c.strip() for c in (classes or "").split(",") if c.strip()]
     class_tuple = tuple(sorted(c.lower() for c in class_list if c))
-    cache_key = (steamid64, gamemode, class_tuple)
+    cache_key = (
+        steamid64,
+        gamemode,
+        class_tuple,
+        date_from.isoformat() if date_from else "",
+        date_to.isoformat() if date_to else "",
+    )
     cached = cache_get("stats", cache_key)
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/search/stats", 200, duration_ms, result_count=len(cached.get("rows", [])), steamid=steamid64, gamemode=gamemode, classes=classes)
         return JSONResponse(cached)
     try:
-        rows, log_ids_used = stats_search(steamid64, gamemode, class_list, LOGS_DIR)
+        rows, log_ids_used = stats_search(
+            steamid64,
+            gamemode,
+            class_list,
+            LOGS_DIR,
+            date_from=date_from,
+            date_to=date_to,
+        )
         payload = {"rows": rows}
         cache_set("stats", cache_key, payload, log_ids_used)
         duration_ms = int((time.perf_counter() - start) * 1000)
@@ -167,8 +250,17 @@ async def api_search_stats(
     steamid: str = Form(""),
     gamemode: str = Form("hl"),
     classes: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
 ):
-    return _api_search_stats_impl(request, steamid or "", gamemode or "hl", classes or "")
+    return _api_search_stats_impl(
+        request,
+        steamid or "",
+        gamemode or "hl",
+        classes or "",
+        date_from or "",
+        date_to or "",
+    )
 
 
 @router.get("/api/search/stats")
@@ -177,8 +269,17 @@ async def api_search_stats_get(
     steamid: str = Query(""),
     gamemode: str = Query("hl"),
     classes: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
 ):
-    return _api_search_stats_impl(request, steamid or "", gamemode or "hl", classes or "")
+    return _api_search_stats_impl(
+        request,
+        steamid or "",
+        gamemode or "hl",
+        classes or "",
+        date_from or "",
+        date_to or "",
+    )
 
 
 def _api_search_logmatch_impl(request: Request, steamids: str) -> JSONResponse:

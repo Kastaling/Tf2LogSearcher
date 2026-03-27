@@ -129,7 +129,7 @@
       background-color: var(--input-bg);
       color: var(--text);
     }
-    input[type="text"], input[type="url"], textarea, select {
+    input[type="text"], input[type="url"], input[type="date"], textarea, select {
       width: 100%;
       max-width: 400px;
       border: 1px solid var(--border);
@@ -454,6 +454,8 @@
   <form id="frmChat">
     <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label>
     <label>Word or phrase (optional): <input type="text" name="word" placeholder="Leave empty for full chat history"></label>
+    <label>Date from (optional): <input type="date" name="date_from"></label>
+    <label>Date to (optional): <input type="date" name="date_to"></label>
     <button type="submit">Submit</button>
   </form>
   <div id="chatResults" class="results"></div>
@@ -476,6 +478,8 @@
       <option value="6s">6s</option>
       <option value="ud">Ultiduo</option>
     </select></label>
+    <label>Date from (optional): <input type="date" name="date_from"></label>
+    <label>Date to (optional): <input type="date" name="date_to"></label>
     <span class="form-row">Class selection:</span>
     <label><input type="checkbox" name="classes" value="scout"> Scout</label>
     <label><input type="checkbox" name="classes" value="soldier"> Soldier</label>
@@ -834,6 +838,8 @@
       const form = e.target;
       var word = (form.word.value || '').trim();
       var steamid = (form.steamid.value || '').trim();
+      var dateFrom = (form.date_from && form.date_from.value) ? String(form.date_from.value).trim() : '';
+      var dateTo = (form.date_to && form.date_to.value) ? String(form.date_to.value).trim() : '';
       if (!steamid) {
         document.getElementById('chatResults').innerHTML = '<span class="error">Steam ID is required.</span>';
         return;
@@ -842,7 +848,11 @@
         document.getElementById('chatResults').innerHTML = '<span class="error">Search word is too long.</span>';
         return;
       }
-      var params = new URLSearchParams({ mode: 'chat', steamid: steamid, word: word });
+      if (dateFrom && dateTo && dateFrom > dateTo) {
+        document.getElementById('chatResults').innerHTML = '<span class="error">Date from must be before or equal to date to.</span>';
+        return;
+      }
+      var params = new URLSearchParams({ mode: 'chat', steamid: steamid, word: word, date_from: dateFrom, date_to: dateTo });
       window.location.href = '/results?' + params.toString();
     });
 
@@ -862,11 +872,24 @@
       const form = e.target;
       const classes = Array.from(form.querySelectorAll('input[name="classes"]:checked')).map(function(c) { return c.value; }).join(',');
       var steamid = (form.steamid.value || '').trim();
+      var dateFrom = (form.date_from && form.date_from.value) ? String(form.date_from.value).trim() : '';
+      var dateTo = (form.date_to && form.date_to.value) ? String(form.date_to.value).trim() : '';
       if (!steamid) {
         document.getElementById('statsResults').innerHTML = '<span class="error">Steam ID is required.</span>';
         return;
       }
-      var params = new URLSearchParams({ mode: 'stats', steamid: steamid, gamemode: form.gamemode.value || 'hl', classes: classes });
+      if (dateFrom && dateTo && dateFrom > dateTo) {
+        document.getElementById('statsResults').innerHTML = '<span class="error">Date from must be before or equal to date to.</span>';
+        return;
+      }
+      var params = new URLSearchParams({
+        mode: 'stats',
+        steamid: steamid,
+        gamemode: form.gamemode.value || 'hl',
+        classes: classes,
+        date_from: dateFrom,
+        date_to: dateTo,
+      });
       window.location.href = '/results?' + params.toString();
     });
 
@@ -1383,9 +1406,20 @@
       showResultsLoading(resultsContent);
       var apiUrl = '';
       if (mode === 'chat') {
-        apiUrl = '/api/search/chat?' + new URLSearchParams({ steamid: params.get('steamid') || '', word: params.get('word') || '' }).toString();
+        apiUrl = '/api/search/chat?' + new URLSearchParams({
+          steamid: params.get('steamid') || '',
+          word: params.get('word') || '',
+          date_from: params.get('date_from') || '',
+          date_to: params.get('date_to') || '',
+        }).toString();
       } else if (mode === 'stats') {
-        apiUrl = '/api/search/stats?' + new URLSearchParams({ steamid: params.get('steamid') || '', gamemode: params.get('gamemode') || 'hl', classes: params.get('classes') || '' }).toString();
+        apiUrl = '/api/search/stats?' + new URLSearchParams({
+          steamid: params.get('steamid') || '',
+          gamemode: params.get('gamemode') || 'hl',
+          classes: params.get('classes') || '',
+          date_from: params.get('date_from') || '',
+          date_to: params.get('date_to') || '',
+        }).toString();
       } else if (mode === 'logmatch') {
         apiUrl = '/api/search/logmatch?' + new URLSearchParams({ steamids: params.get('steamids') || '' }).toString();
       } else {

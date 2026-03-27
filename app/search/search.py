@@ -1,6 +1,6 @@
 """Search logic: chat search, stats search, log match. Pure Python, no HTTP."""
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -70,7 +70,36 @@ def _player_count_filter(player_count: int, gamemode: str) -> bool:
     return False
 
 
-def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dict[str, Any]], int, str | None, frozenset[int]]:
+def _log_in_date_range(
+    log_ts: Any,
+    date_from: date | None,
+    date_to: date | None,
+) -> bool:
+    """True when log timestamp is within [date_from, date_to] (UTC calendar date, inclusive)."""
+    if date_from is None and date_to is None:
+        return True
+    try:
+        ts = int(log_ts or 0)
+    except (TypeError, ValueError):
+        return False
+    if ts <= 0:
+        return False
+    d = datetime.fromtimestamp(ts, tz=timezone.utc).date()
+    if date_from is not None and d < date_from:
+        return False
+    if date_to is not None and d > date_to:
+        return False
+    return True
+
+
+def chat_search(
+    word: str,
+    steamid: str,
+    logs_dir: str | Path,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> tuple[list[dict[str, Any]], int, str | None, frozenset[int]]:
     """
     Search chat for a player. Returns (results, total_count, searched_user_name, log_ids_used).
 
@@ -100,6 +129,9 @@ def chat_search(word: str, steamid: str, logs_dir: str | Path) -> tuple[list[dic
             continue
         chat = logtext.get("chat")
         if not chat:
+            continue
+        info = logtext.get("info") or {}
+        if not _log_in_date_range(info.get("date"), date_from, date_to):
             continue
         players = logtext.get("players") or {}
         player_info = players.get(steamid3) if isinstance(players, dict) else None
@@ -152,6 +184,9 @@ def stats_search(
     gamemode: str,
     class_list: list[str],
     logs_dir: str | Path,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> tuple[list[dict[str, Any]], frozenset[int]]:
     """Stats by gamemode and classes. Returns (rows, log_ids_used) for table rendering and cache invalidation."""
     logs_dir = Path(logs_dir)
@@ -173,6 +208,9 @@ def stats_search(
         names = logtext.get("names") or {}
         namesid = list(names.keys())
         if not _player_count_filter(len(namesid), gamemode):
+            continue
+        info = logtext.get("info") or {}
+        if not _log_in_date_range(info.get("date"), date_from, date_to):
             continue
         players = logtext.get("players") or {}
         stats = players.get(steamid3)
@@ -201,7 +239,6 @@ def stats_search(
             dpm = round((dmg / total_time) * 60, 2)
             hs = stats.get("headshots_hit") or 0
             bs = stats.get("backstabs") or 0
-            info = logtext.get("info") or {}
             map_name = info.get("map") or ""
             date_ts = info.get("date") or 0
             date_str = datetime.fromtimestamp(date_ts, tz=timezone.utc).strftime(
