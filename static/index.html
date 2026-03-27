@@ -488,6 +488,7 @@
   <form id="frmChat">
     <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label>
     <label>Word or phrase (optional): <input type="text" name="word" placeholder="Leave empty for full chat history"></label>
+    <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
     <label>Date from (optional): <input type="date" name="date_from"></label>
     <label>Date to (optional): <input type="date" name="date_to"></label>
     <button type="submit">Submit</button>
@@ -498,6 +499,7 @@
   <p>Enter Steam ID(s) in any format (profile URL, vanity name, or SteamID64), one per line or separated by space/comma.</p>
   <form id="frmLogmatch">
     <label>Steam IDs: <textarea name="steamids" rows="3" cols="50" placeholder="Profile URLs, vanity names, or 17-digit IDs (space or comma separated)"></textarea></label>
+    <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
     <button type="submit">Submit</button>
   </form>
   <div id="logmatchResults" class="results"></div>
@@ -512,6 +514,7 @@
       <option value="6s">6s</option>
       <option value="ud">Ultiduo</option>
     </select></label>
+    <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
     <label>Date from (optional): <input type="date" name="date_from"></label>
     <label>Date to (optional): <input type="date" name="date_to"></label>
     <span class="form-row">Class selection:</span>
@@ -573,6 +576,7 @@
     var SEARCH_STATE_KEY = 'tf2log-search-state';
     var MAX_STEAMID_INPUT_LEN = 2048;
     var MAX_CHAT_WORD_LEN = 200;
+    var MAX_MAP_QUERY_LEN = 100;
     var MAX_LOGMATCH_STEAMIDS_LEN = 32768;
     var VALID_STATS_GAMEMODES = { hl: 1, '7s': 1, '6s': 1, ud: 1 };
     var VALID_STATS_CLASSES = { scout: 1, soldier: 1, pyro: 1, demoman: 1, heavyweapons: 1, engineer: 1, medic: 1, sniper: 1, spy: 1 };
@@ -603,6 +607,12 @@
       return out.join(',');
     }
 
+    function sanitizeMapQueryInput(s) {
+      s = (s == null ? '' : String(s)).trim();
+      if (s.length > MAX_MAP_QUERY_LEN) s = s.slice(0, MAX_MAP_QUERY_LEN);
+      return s;
+    }
+
     /**
      * Build a safe state object from URL-style params (no HTML; length-limited).
      * mode: chat | stats | logmatch
@@ -621,6 +631,7 @@
           word: word,
           date_from: sanitizeDateInput(params.get('date_from')),
           date_to: sanitizeDateInput(params.get('date_to')),
+          map_query: sanitizeMapQueryInput(params.get('map_query')),
         };
       }
       if (mode === 'stats') {
@@ -634,13 +645,14 @@
           classes: sanitizeClassesCsv(params.get('classes')),
           date_from: sanitizeDateInput(params.get('date_from')),
           date_to: sanitizeDateInput(params.get('date_to')),
+          map_query: sanitizeMapQueryInput(params.get('map_query')),
         };
       }
       if (mode === 'logmatch') {
         var steamids = (params.get('steamids') || '').trim();
         if (!steamids) return null;
         if (steamids.length > MAX_LOGMATCH_STEAMIDS_LEN) steamids = steamids.slice(0, MAX_LOGMATCH_STEAMIDS_LEN);
-        return { mode: 'logmatch', steamids: steamids };
+        return { mode: 'logmatch', steamids: steamids, map_query: sanitizeMapQueryInput(params.get('map_query')) };
       }
       return null;
     }
@@ -661,6 +673,7 @@
         if (fc.word) fc.word.value = state.word || '';
         if (fc.elements.date_from) fc.elements.date_from.value = state.date_from || '';
         if (fc.elements.date_to) fc.elements.date_to.value = state.date_to || '';
+        if (fc.elements.map_query) fc.elements.map_query.value = state.map_query || '';
         return;
       }
       if (state.mode === 'stats') {
@@ -670,6 +683,7 @@
         if (fs.gamemode) fs.gamemode.value = sanitizeGamemodeInput(state.gamemode);
         if (fs.elements.date_from) fs.elements.date_from.value = state.date_from || '';
         if (fs.elements.date_to) fs.elements.date_to.value = state.date_to || '';
+        if (fs.elements.map_query) fs.elements.map_query.value = state.map_query || '';
         var checks = fs.querySelectorAll('input[name="classes"]');
         var want = {};
         (state.classes || '').split(',').forEach(function(c) {
@@ -685,6 +699,7 @@
         var fl = document.getElementById('frmLogmatch');
         if (!fl || !fl.steamids) return;
         fl.steamids.value = state.steamids || '';
+        if (fl.elements.map_query) fl.elements.map_query.value = state.map_query || '';
       }
     }
 
@@ -726,14 +741,17 @@
         p2.set('word', parsed.word != null ? String(parsed.word) : '');
         p2.set('date_from', parsed.date_from != null ? String(parsed.date_from) : '');
         p2.set('date_to', parsed.date_to != null ? String(parsed.date_to) : '');
+        p2.set('map_query', parsed.map_query != null ? String(parsed.map_query) : '');
       } else if (parsed.mode === 'stats') {
         p2.set('steamid', parsed.steamid != null ? String(parsed.steamid) : '');
         p2.set('gamemode', parsed.gamemode != null ? String(parsed.gamemode) : '');
         p2.set('classes', parsed.classes != null ? String(parsed.classes) : '');
         p2.set('date_from', parsed.date_from != null ? String(parsed.date_from) : '');
         p2.set('date_to', parsed.date_to != null ? String(parsed.date_to) : '');
+        p2.set('map_query', parsed.map_query != null ? String(parsed.map_query) : '');
       } else if (parsed.mode === 'logmatch') {
         p2.set('steamids', parsed.steamids != null ? String(parsed.steamids) : '');
+        p2.set('map_query', parsed.map_query != null ? String(parsed.map_query) : '');
       } else {
         return;
       }
@@ -1203,6 +1221,7 @@
       const form = e.target;
       var word = (form.word.value || '').trim();
       var steamid = (form.steamid.value || '').trim();
+      var mapQuery = sanitizeMapQueryInput(form.map_query && form.map_query.value ? form.map_query.value : '');
       var dateFrom = (form.date_from && form.date_from.value) ? String(form.date_from.value).trim() : '';
       var dateTo = (form.date_to && form.date_to.value) ? String(form.date_to.value).trim() : '';
       if (!steamid) {
@@ -1217,24 +1236,25 @@
         document.getElementById('chatResults').innerHTML = '<span class="error">Date from must be before or equal to date to.</span>';
         return;
       }
-      var chatParams = new URLSearchParams({ steamid: steamid, word: word, date_from: dateFrom, date_to: dateTo });
+      var chatParams = new URLSearchParams({ steamid: steamid, word: word, date_from: dateFrom, date_to: dateTo, map_query: mapQuery });
       var chatState = buildSanitizedSearchState('chat', chatParams);
       if (chatState) persistSearchState(chatState);
-      var params = new URLSearchParams({ mode: 'chat', steamid: steamid, word: word, date_from: dateFrom, date_to: dateTo });
+      var params = new URLSearchParams({ mode: 'chat', steamid: steamid, word: word, date_from: dateFrom, date_to: dateTo, map_query: mapQuery });
       window.location.href = '/results?' + params.toString();
     });
 
     document.getElementById('frmLogmatch').addEventListener('submit', function(e) {
       e.preventDefault();
       var steamids = (e.target.steamids.value || '').trim();
+      var mapQuery = sanitizeMapQueryInput(e.target.map_query && e.target.map_query.value ? e.target.map_query.value : '');
       if (!steamids) {
         document.getElementById('logmatchResults').innerHTML = '<span class="error">At least one Steam ID is required.</span>';
         return;
       }
-      var lmParams = new URLSearchParams({ steamids: steamids });
+      var lmParams = new URLSearchParams({ steamids: steamids, map_query: mapQuery });
       var lmState = buildSanitizedSearchState('logmatch', lmParams);
       if (lmState) persistSearchState(lmState);
-      var params = new URLSearchParams({ mode: 'logmatch', steamids: steamids });
+      var params = new URLSearchParams({ mode: 'logmatch', steamids: steamids, map_query: mapQuery });
       window.location.href = '/results?' + params.toString();
     });
 
@@ -1243,6 +1263,7 @@
       const form = e.target;
       const classes = Array.from(form.querySelectorAll('input[name="classes"]:checked')).map(function(c) { return c.value; }).join(',');
       var steamid = (form.steamid.value || '').trim();
+      var mapQuery = sanitizeMapQueryInput(form.map_query && form.map_query.value ? form.map_query.value : '');
       var dateFrom = (form.date_from && form.date_from.value) ? String(form.date_from.value).trim() : '';
       var dateTo = (form.date_to && form.date_to.value) ? String(form.date_to.value).trim() : '';
       if (!steamid) {
@@ -1259,6 +1280,7 @@
         classes: classes,
         date_from: dateFrom,
         date_to: dateTo,
+        map_query: mapQuery,
       });
       var statsState = buildSanitizedSearchState('stats', statsParams);
       if (statsState) persistSearchState(statsState);
@@ -1269,6 +1291,7 @@
         classes: classes,
         date_from: dateFrom,
         date_to: dateTo,
+        map_query: mapQuery,
       });
       window.location.href = '/results?' + params.toString();
     });
@@ -1885,6 +1908,7 @@
           word: params.get('word') || '',
           date_from: params.get('date_from') || '',
           date_to: params.get('date_to') || '',
+          map_query: params.get('map_query') || '',
         }).toString();
       } else if (mode === 'stats') {
         apiUrl = '/api/search/stats?' + new URLSearchParams({
@@ -1893,9 +1917,13 @@
           classes: params.get('classes') || '',
           date_from: params.get('date_from') || '',
           date_to: params.get('date_to') || '',
+          map_query: params.get('map_query') || '',
         }).toString();
       } else if (mode === 'logmatch') {
-        apiUrl = '/api/search/logmatch?' + new URLSearchParams({ steamids: params.get('steamids') || '' }).toString();
+        apiUrl = '/api/search/logmatch?' + new URLSearchParams({
+          steamids: params.get('steamids') || '',
+          map_query: params.get('map_query') || '',
+        }).toString();
       } else {
         resultsContent.innerHTML = '<span class="error">Unknown search mode.</span>';
         return;

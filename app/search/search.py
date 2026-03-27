@@ -92,6 +92,17 @@ def _log_in_date_range(
     return True
 
 
+def _map_matches_query(map_name: Any, map_query: str | None) -> bool:
+    """True when map name contains query (case-insensitive); empty query means no filter."""
+    q = (map_query or "").strip().lower()
+    if not q:
+        return True
+    m = str(map_name or "").strip().lower()
+    if not m:
+        return False
+    return q in m
+
+
 def chat_search(
     word: str,
     steamid: str,
@@ -99,6 +110,7 @@ def chat_search(
     *,
     date_from: date | None = None,
     date_to: date | None = None,
+    map_query: str = "",
 ) -> tuple[list[dict[str, Any]], int, str | None, frozenset[int]]:
     """
     Search chat for a player. Returns (results, total_count, searched_user_name, log_ids_used).
@@ -132,6 +144,8 @@ def chat_search(
             continue
         info = logtext.get("info") or {}
         if not _log_in_date_range(info.get("date"), date_from, date_to):
+            continue
+        if not _map_matches_query(info.get("map"), map_query):
             continue
         players = logtext.get("players") or {}
         player_info = players.get(steamid3) if isinstance(players, dict) else None
@@ -187,6 +201,7 @@ def stats_search(
     *,
     date_from: date | None = None,
     date_to: date | None = None,
+    map_query: str = "",
 ) -> tuple[list[dict[str, Any]], frozenset[int]]:
     """Stats by gamemode and classes. Returns (rows, log_ids_used) for table rendering and cache invalidation."""
     logs_dir = Path(logs_dir)
@@ -211,6 +226,8 @@ def stats_search(
             continue
         info = logtext.get("info") or {}
         if not _log_in_date_range(info.get("date"), date_from, date_to):
+            continue
+        if not _map_matches_query(info.get("map"), map_query):
             continue
         players = logtext.get("players") or {}
         stats = players.get(steamid3)
@@ -337,6 +354,7 @@ def log_match(
     logs_dir: str | Path,
     *,
     search_inputs: list[str] | None = None,
+    map_query: str = "",
 ) -> tuple[list[dict[str, Any]], int, frozenset[int]]:
     """Logs where all given players participated. Returns (results, total, matching_log_ids) for cache invalidation."""
     logs_dir = Path(logs_dir)
@@ -369,6 +387,8 @@ def log_match(
         info = logtext.get("info") or {}
         title = info.get("title") or ""
         map_name = info.get("map") or ""
+        if not _map_matches_query(map_name, map_query):
+            continue
         date_ts = int(info.get("date") or 0)
         date_str = datetime.fromtimestamp(date_ts, tz=timezone.utc).strftime(
             "%m/%d/%Y %I:%M:%S %p %Z"

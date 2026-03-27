@@ -16,6 +16,7 @@ from app.steam_resolver import resolve_to_steamid64
 from app.subscriptions import add_subscription, deactivate_by_token, is_valid_discord_webhook_url, send_welcome_message
 
 CHAT_SEARCH_MAX_WORD_LENGTH = 200
+MAP_QUERY_MAX_LENGTH = 100
 STEAMID64_LEN = 17
 
 
@@ -84,6 +85,7 @@ def _api_search_chat_impl(
     steamid_input: str,
     date_from_raw: str,
     date_to_raw: str,
+    map_query_raw: str,
 ) -> JSONResponse:
     """Shared implementation for POST and GET chat search. Returns JSONResponse."""
     start = time.perf_counter()
@@ -95,6 +97,12 @@ def _api_search_chat_impl(
     if len(word) > CHAT_SEARCH_MAX_WORD_LENGTH:
         return JSONResponse(
             {"results": [], "total": 0, "error": "Search word is too long."},
+            status_code=400,
+        )
+    map_query = (map_query_raw or "").strip()
+    if len(map_query) > MAP_QUERY_MAX_LENGTH:
+        return JSONResponse(
+            {"results": [], "total": 0, "error": "Map filter is too long."},
             status_code=400,
         )
     date_from, err = _parse_iso_date_or_none(date_from_raw)
@@ -114,7 +122,13 @@ def _api_search_chat_impl(
         )
     assert steamid64 is not None
 
-    cache_key = (steamid64, word, date_from.isoformat() if date_from else "", date_to.isoformat() if date_to else "")
+    cache_key = (
+        steamid64,
+        word,
+        date_from.isoformat() if date_from else "",
+        date_to.isoformat() if date_to else "",
+        map_query.lower(),
+    )
     cached = cache_get("chat", cache_key)
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
@@ -130,6 +144,7 @@ def _api_search_chat_impl(
             LOGS_DIR,
             date_from=date_from,
             date_to=date_to,
+            map_query=map_query,
         )
         payload = {
             "results": results,
@@ -156,6 +171,7 @@ async def api_search_chat(
     steamid: str = Form(""),
     date_from: str = Form(""),
     date_to: str = Form(""),
+    map_query: str = Form(""),
 ):
     """Chat search: Steam ID (any format) required; word optional."""
     return _api_search_chat_impl(
@@ -164,6 +180,7 @@ async def api_search_chat(
         (steamid or "").strip(),
         date_from or "",
         date_to or "",
+        map_query or "",
     )
 
 
@@ -174,6 +191,7 @@ async def api_search_chat_get(
     steamid: str = Query(""),
     date_from: str = Query(""),
     date_to: str = Query(""),
+    map_query: str = Query(""),
 ):
     """GET variant for shareable links; same response as POST."""
     return _api_search_chat_impl(
@@ -182,6 +200,7 @@ async def api_search_chat_get(
         (steamid or "").strip(),
         date_from or "",
         date_to or "",
+        map_query or "",
     )
 
 
@@ -192,6 +211,7 @@ def _api_search_stats_impl(
     classes: str,
     date_from_raw: str,
     date_to_raw: str,
+    map_query_raw: str,
 ) -> JSONResponse:
     """Shared impl for POST/GET stats search."""
     start = time.perf_counter()
@@ -210,6 +230,9 @@ def _api_search_stats_impl(
         return JSONResponse({"rows": [], "error": err}, status_code=400)
     if date_from is not None and date_to is not None and date_from > date_to:
         return JSONResponse({"rows": [], "error": "date_from must be before or equal to date_to."}, status_code=400)
+    map_query = (map_query_raw or "").strip()
+    if len(map_query) > MAP_QUERY_MAX_LENGTH:
+        return JSONResponse({"rows": [], "error": "Map filter is too long."}, status_code=400)
     class_list = [c.strip() for c in (classes or "").split(",") if c.strip()]
     class_tuple = tuple(sorted(c.lower() for c in class_list if c))
     cache_key = (
@@ -218,6 +241,7 @@ def _api_search_stats_impl(
         class_tuple,
         date_from.isoformat() if date_from else "",
         date_to.isoformat() if date_to else "",
+        map_query.lower(),
     )
     cached = cache_get("stats", cache_key)
     if cached is not None:
@@ -232,6 +256,7 @@ def _api_search_stats_impl(
             LOGS_DIR,
             date_from=date_from,
             date_to=date_to,
+            map_query=map_query,
         )
         payload = {"rows": rows}
         cache_set("stats", cache_key, payload, log_ids_used)
@@ -252,6 +277,7 @@ async def api_search_stats(
     classes: str = Form(""),
     date_from: str = Form(""),
     date_to: str = Form(""),
+    map_query: str = Form(""),
 ):
     return _api_search_stats_impl(
         request,
@@ -260,6 +286,7 @@ async def api_search_stats(
         classes or "",
         date_from or "",
         date_to or "",
+        map_query or "",
     )
 
 
@@ -271,6 +298,7 @@ async def api_search_stats_get(
     classes: str = Query(""),
     date_from: str = Query(""),
     date_to: str = Query(""),
+    map_query: str = Query(""),
 ):
     return _api_search_stats_impl(
         request,
@@ -279,13 +307,17 @@ async def api_search_stats_get(
         classes or "",
         date_from or "",
         date_to or "",
+        map_query or "",
     )
 
 
-def _api_search_logmatch_impl(request: Request, steamids: str) -> JSONResponse:
+def _api_search_logmatch_impl(request: Request, steamids: str, map_query_raw: str) -> JSONResponse:
     """Shared impl for POST/GET logmatch search."""
     start = time.perf_counter()
     raw_list = [s.strip() for s in (steamids or "").replace(",", " ").split() if s.strip()]
+    map_query = (map_query_raw or "").strip()
+    if len(map_query) > MAP_QUERY_MAX_LENGTH:
+        return JSONResponse({"results": [], "total": 0, "error": "Map filter is too long."}, status_code=400)
     if not raw_list:
         return JSONResponse({"results": [], "total": 0, "error": "At least one Steam ID is required."}, status_code=400)
     sid_list: list[str] = []
@@ -299,7 +331,7 @@ def _api_search_logmatch_impl(request: Request, steamids: str) -> JSONResponse:
         assert steamid64 is not None
         sid_list.append(steamid64)
     sid_tuple = tuple(sorted(sid_list))
-    cached = cache_get("logmatch", (sid_tuple,))
+    cached = cache_get("logmatch", (sid_tuple, map_query.lower()))
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/search/logmatch", 200, duration_ms, result_count=cached.get("total", 0), steamids=",".join(sid_list))
@@ -309,10 +341,10 @@ def _api_search_logmatch_impl(request: Request, steamids: str) -> JSONResponse:
     result_count = 0
     try:
         results, result_count, matching_log_ids = log_match(
-            sid_list, LOGS_DIR, search_inputs=raw_list
+            sid_list, LOGS_DIR, search_inputs=raw_list, map_query=map_query
         )
         payload = {"results": results, "total": result_count}
-        cache_set("logmatch", (sid_tuple,), payload, matching_log_ids)
+        cache_set("logmatch", (sid_tuple, map_query.lower()), payload, matching_log_ids)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/search/logmatch", status_code, duration_ms, result_count=result_count, steamids=",".join(sid_list))
         return JSONResponse(payload)
@@ -324,13 +356,13 @@ def _api_search_logmatch_impl(request: Request, steamids: str) -> JSONResponse:
 
 
 @router.post("/api/search/logmatch")
-async def api_search_logmatch(request: Request, steamids: str = Form("")):
-    return _api_search_logmatch_impl(request, steamids or "")
+async def api_search_logmatch(request: Request, steamids: str = Form(""), map_query: str = Form("")):
+    return _api_search_logmatch_impl(request, steamids or "", map_query or "")
 
 
 @router.get("/api/search/logmatch")
-async def api_search_logmatch_get(request: Request, steamids: str = Query("")):
-    return _api_search_logmatch_impl(request, steamids or "")
+async def api_search_logmatch_get(request: Request, steamids: str = Query(""), map_query: str = Query("")):
+    return _api_search_logmatch_impl(request, steamids or "", map_query or "")
 
 
 @router.post("/api/chat-subscriptions")
