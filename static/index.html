@@ -306,6 +306,57 @@
     .stats-summary-item.aliases {
       grid-column: 1 / -1;
     }
+    .stats-trend {
+      margin-top: 0.7rem;
+      border-top: 1px solid var(--progress-border);
+      padding-top: 0.6rem;
+    }
+    .stats-trend-toggle {
+      display: flex;
+      gap: 0.45rem;
+      margin: 0 0 0.45rem;
+      flex-wrap: wrap;
+    }
+    .stats-trend-btn {
+      margin: 0;
+      padding: 0.3rem 0.55rem;
+      font-size: 0.86rem;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+    }
+    .stats-trend-btn:hover,
+    .stats-trend-btn:focus-visible {
+      color: var(--text);
+      background: var(--table-hover);
+      border-color: var(--link);
+      outline: none;
+    }
+    .stats-trend-btn.active {
+      border-color: var(--link);
+      box-shadow: inset 0 0 0 1px var(--link);
+      color: var(--link);
+      background: var(--bg);
+    }
+    [data-theme="dark"] .stats-trend-btn,
+    [data-theme="dark"] .stats-trend-btn:hover,
+    [data-theme="dark"] .stats-trend-btn:focus-visible,
+    [data-theme="dark"] .stats-trend-btn.active {
+      color: var(--text);
+    }
+    [data-theme="dark"] .stats-trend-btn.active {
+      color: var(--link);
+    }
+    .stats-trend-canvas-wrap {
+      position: relative;
+      height: 200px;
+      max-height: 200px;
+    }
+    .stats-trend-note {
+      margin: 0.35rem 0 0;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+    }
     .stats-aliases {
       margin: 0;
     }
@@ -559,6 +610,7 @@
       try { localStorage.setItem(THEME_KEY, theme); } catch (e) {}
       var btn = document.getElementById('themeToggle');
       if (btn) { btn.textContent = theme === 'dark' ? '\u263C' : '\u263E'; btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'); }
+      refreshStatsTrendChart();
     }
     (function initThemeToggle() {
       var btn = document.getElementById('themeToggle');
@@ -932,6 +984,9 @@
     (function initChatContextToggle() {
       if (window._chatContextToggleBound) return;
       window._chatContextToggleBound = true;
+      function isCoarsePointer() {
+        return typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+      }
       document.addEventListener('mouseover', function(ev) {
         var trigger = ev.target && ev.target.closest ? ev.target.closest('.chat-hit-main') : null;
         if (!trigger) return;
@@ -949,9 +1004,21 @@
         item.classList.remove('chat-hit-hover');
       });
       document.addEventListener('click', function(ev) {
-        var trigger = ev.target && ev.target.closest ? ev.target.closest('.chat-hit-main') : null;
-        if (!trigger) return;
-        var item = trigger.closest('.chat-hit');
+        var t = ev.target;
+        if (!t || !t.closest) return;
+        var trigger = t.closest('.chat-hit-main');
+        var item = null;
+        if (trigger) {
+          item = trigger.closest('.chat-hit');
+        } else if (isCoarsePointer()) {
+          // Mobile-friendly: allow tapping anywhere on a chat card to toggle,
+          // except interactive elements (links/buttons/inputs/etc).
+          item = t.closest('.chat-hit');
+          if (!item) return;
+          if (t.closest('a, button, input, textarea, select, label, summary, details')) return;
+        } else {
+          return;
+        }
         if (!item) return;
         item.classList.toggle('chat-hit-open');
       });
@@ -1489,6 +1556,11 @@
 
     var statsSortCol = null;
     var statsSortDir = 1;
+    var statsTrendChart = null;
+    var statsTrendHost = null;
+    var statsTrendRows = null;
+    var statsTrendMetric = 'dpm';
+    var chartJsLoadPromise = null;
 
     /** CSV includes Team (not shown as its own column in the HTML table). */
     var STATS_CSV_COLUMNS = [
@@ -1667,6 +1739,198 @@
       return avg;
     }
 
+    function loadChartJsIfNeeded() {
+      if (window.Chart) return Promise.resolve(window.Chart);
+      if (chartJsLoadPromise) return chartJsLoadPromise;
+      chartJsLoadPromise = new Promise(function(resolve, reject) {
+        var s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
+        s.async = true;
+        s.onload = function() {
+          if (window.Chart) resolve(window.Chart);
+          else reject(new Error('Chart.js did not load.'));
+        };
+        s.onerror = function() { reject(new Error('Failed to load chart library.')); };
+        document.head.appendChild(s);
+      });
+      return chartJsLoadPromise;
+    }
+
+    function statsTrendSortRows(rows) {
+      return rows.slice().sort(function(a, b) {
+        var ta = parseStatsDate(a && a.date);
+        var tb = parseStatsDate(b && b.date);
+        if (Number.isNaN(ta) && Number.isNaN(tb)) return 0;
+        if (Number.isNaN(ta)) return 1;
+        if (Number.isNaN(tb)) return -1;
+        return ta - tb;
+      });
+    }
+
+    function rollingAverage(values, windowSize) {
+      var out = [];
+      var q = [];
+      for (var i = 0; i < values.length; i++) {
+        var v = Number(values[i]);
+        if (!Number.isFinite(v)) v = NaN;
+        q.push(v);
+        if (q.length > windowSize) q.shift();
+        var sum = 0;
+        var count = 0;
+        for (var j = 0; j < q.length; j++) {
+          if (!Number.isFinite(q[j])) continue;
+          sum += q[j];
+          count += 1;
+        }
+        out.push(count > 0 ? (sum / count) : NaN);
+      }
+      return out;
+    }
+
+    function colorVar(name) {
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
+    function withAlpha(color, alpha) {
+      if (!color) return 'rgba(128,128,128,' + alpha + ')';
+      if (color.indexOf('rgb(') === 0) {
+        var m = color.replace('rgb(', '').replace(')', '').split(',');
+        if (m.length === 3) return 'rgba(' + m[0].trim() + ',' + m[1].trim() + ',' + m[2].trim() + ',' + alpha + ')';
+      }
+      if (/^#([0-9a-f]{3}){1,2}$/i.test(color)) {
+        var c = color.slice(1);
+        if (c.length === 3) c = c[0] + c[0] + c[1] + c[1] + c[2] + c[2];
+        var r = parseInt(c.slice(0, 2), 16);
+        var g = parseInt(c.slice(2, 4), 16);
+        var b = parseInt(c.slice(4, 6), 16);
+        return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+      }
+      return color;
+    }
+
+    function destroyStatsTrendChart() {
+      if (!statsTrendChart) return;
+      try { statsTrendChart.destroy(); } catch (e) {}
+      statsTrendChart = null;
+    }
+
+    function buildTrendDatasets(rowsSorted, metric) {
+      var link = colorVar('--link') || '#2e6c80';
+      var kdrBlue = '#547d8c';
+      var kadrRed = '#a7584b';
+      var useRolling = rowsSorted.length >= 5;
+      var out = [];
+      function addMetric(label, key, col) {
+        var raw = rowsSorted.map(function(r) {
+          var n = Number(r && r[key]);
+          return Number.isFinite(n) ? n : NaN;
+        });
+        if (!useRolling) {
+          out.push({
+            label: label,
+            data: raw,
+            showLine: false,
+            pointRadius: 2.4,
+            pointHoverRadius: 3,
+            pointBackgroundColor: withAlpha(col, 0.55),
+            pointBorderColor: withAlpha(col, 0.55),
+            borderWidth: 0,
+            order: 1
+          });
+          return;
+        }
+        out.push({
+          label: label + ' (raw)',
+          data: raw,
+          showLine: false,
+          pointRadius: 2,
+          pointHoverRadius: 2,
+          pointBackgroundColor: withAlpha(col, 0.22),
+          pointBorderColor: withAlpha(col, 0.22),
+          borderWidth: 0,
+          order: 0
+        });
+        out.push({
+          label: label + ' (20-game avg)',
+          data: rollingAverage(raw, 20),
+          borderColor: col,
+          backgroundColor: withAlpha(col, 0.18),
+          pointRadius: 0,
+          pointHoverRadius: 3,
+          borderWidth: 2,
+          tension: 0.2,
+          spanGaps: true,
+          order: 1
+        });
+      }
+      if (metric === 'dpm') {
+        addMetric('DPM', 'dpm', link);
+      } else {
+        addMetric('KDR', 'kdr', kdrBlue);
+        addMetric('KADR', 'kadr', kadrRed);
+      }
+      return out;
+    }
+
+    function renderStatsTrendChart(host, rows, metric) {
+      if (!host || !rows || rows.length < 2) return;
+      var canvas = host.querySelector('.js-stats-trend-canvas');
+      if (!canvas) return;
+      var sorted = statsTrendSortRows(rows);
+      var labels = sorted.map(function(r) { return (r && r.date) ? String(r.date) : ''; });
+      var datasets = buildTrendDatasets(sorted, metric);
+      var showLegend = metric !== 'dpm';
+      destroyStatsTrendChart();
+      loadChartJsIfNeeded().then(function() {
+        if (statsTrendHost !== host) return;
+        var border = colorVar('--border') || '#ccc';
+        var text = colorVar('--text') || '#222';
+        var textMuted = colorVar('--text-muted') || '#666';
+        statsTrendChart = new window.Chart(canvas.getContext('2d'), {
+          type: 'line',
+          data: { labels: labels, datasets: datasets },
+          options: {
+            animation: false,
+            responsive: true,
+            maintainAspectRatio: false,
+            normalized: true,
+            plugins: {
+              legend: { display: showLegend, labels: { color: text, boxWidth: 14, usePointStyle: true } },
+              tooltip: { mode: 'index', intersect: false }
+            },
+            scales: {
+              x: { ticks: { color: textMuted, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { color: withAlpha(border, 0.35) } },
+              y: { ticks: { color: textMuted }, grid: { color: withAlpha(border, 0.35) } }
+            }
+          }
+        });
+      }).catch(function() {});
+    }
+
+    function bindStatsTrendControls(container) {
+      var trend = container.querySelector('.js-stats-trend');
+      if (!trend) return;
+      var btns = trend.querySelectorAll('.js-stats-trend-btn');
+      btns.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var metric = btn.getAttribute('data-metric');
+          if (metric !== 'dpm' && metric !== 'kpair') return;
+          statsTrendMetric = metric;
+          btns.forEach(function(b) {
+            var active = b.getAttribute('data-metric') === metric;
+            b.classList.toggle('active', active);
+            b.setAttribute('aria-selected', active ? 'true' : 'false');
+          });
+          renderStatsTrendChart(trend, statsTrendRows, statsTrendMetric);
+        });
+      });
+    }
+
+    function refreshStatsTrendChart() {
+      if (!statsTrendHost || !statsTrendRows || statsTrendRows.length < 2) return;
+      renderStatsTrendChart(statsTrendHost, statsTrendRows, statsTrendMetric);
+    }
+
     function renderStatsSummary(rows) {
       var avg = computeStatsAverages(rows);
       var aliases = uniqueAliasesFromRows(rows);
@@ -1690,10 +1954,24 @@
       var summaryGrid = summaryItems.map(function(item) {
         return '<div class="stats-summary-item"><span class="stats-summary-key">' + escapeHtml(item.key) + '</span><span class="stats-summary-value">' + escapeHtml(item.value) + '</span></div>';
       }).join('');
+      var trendHtml = '';
+      if (rows.length >= 2) {
+        trendHtml =
+          '<div class="stats-trend js-stats-trend">' +
+            '<div class="stats-trend-toggle" role="tablist" aria-label="Trends over time metric">' +
+              '<button type="button" class="stats-trend-btn js-stats-trend-btn active" data-metric="dpm" role="tab" aria-selected="true">DPM</button>' +
+              '<button type="button" class="stats-trend-btn js-stats-trend-btn" data-metric="kpair" role="tab" aria-selected="false">KDR / KADR</button>' +
+            '</div>' +
+            '<div class="stats-trend-canvas-wrap"><canvas class="js-stats-trend-canvas" aria-label="Trends over time chart"></canvas></div>' +
+            '<p class="stats-trend-note">20-game rolling average with per-game points.</p>' +
+          '</div>';
+      }
       return '<div class="stats-summary">' +
         '<p class="stats-summary-title">Average stats</p>' +
         '<p class="stats-summary-meta">Computed across ' + escapeHtml(rows.length) + ' matching log(s).</p>' +
-        '<div class="stats-summary-grid"><div class="stats-summary-item aliases"><span class="stats-summary-key">Aliases</span><span class="stats-summary-value">' + aliasCellHtml + '</span></div>' + summaryGrid + '</div></div>';
+        '<div class="stats-summary-grid"><div class="stats-summary-item aliases"><span class="stats-summary-key">Aliases</span><span class="stats-summary-value">' + aliasCellHtml + '</span></div>' + summaryGrid + '</div>' +
+        trendHtml +
+        '</div>';
     }
 
     function renderStatsTable(container, rows, elapsedMs) {
@@ -1701,6 +1979,7 @@
         container._statsRows = rows;
         statsSortCol = null;
         statsSortDir = 1;
+        statsTrendMetric = 'dpm';
         container._statsSummaryHtml = renderStatsSummary(rows);
       }
       if (typeof elapsedMs === 'number' && Number.isFinite(elapsedMs)) {
@@ -1732,6 +2011,13 @@
       container._statsRows = originalRows;
 
       bindStatsCsvDownload(container);
+      statsTrendHost = container.querySelector('.js-stats-trend');
+      statsTrendRows = originalRows;
+      destroyStatsTrendChart();
+      if (statsTrendHost && statsTrendRows && statsTrendRows.length >= 2) {
+        bindStatsTrendControls(container);
+        renderStatsTrendChart(statsTrendHost, statsTrendRows, statsTrendMetric);
+      }
 
       container.querySelectorAll('th.sortable').forEach(function(th) {
         th.addEventListener('click', function() {
