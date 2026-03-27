@@ -535,6 +535,185 @@
       return new URLSearchParams(fd).toString();
     }
 
+    /** Last search params for restoring forms when returning to home (sessionStorage; tab-scoped). */
+    var SEARCH_STATE_KEY = 'tf2log-search-state';
+    var MAX_STEAMID_INPUT_LEN = 2048;
+    var MAX_CHAT_WORD_LEN = 200;
+    var MAX_LOGMATCH_STEAMIDS_LEN = 32768;
+    var VALID_STATS_GAMEMODES = { hl: 1, '7s': 1, '6s': 1, ud: 1 };
+    var VALID_STATS_CLASSES = { scout: 1, soldier: 1, pyro: 1, demoman: 1, heavyweapons: 1, engineer: 1, medic: 1, sniper: 1, spy: 1 };
+
+    function sanitizeDateInput(s) {
+      if (s == null) return '';
+      s = String(s).trim();
+      if (!s) return '';
+      return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+    }
+
+    function sanitizeGamemodeInput(g) {
+      g = (g == null ? '' : String(g)).trim();
+      return VALID_STATS_GAMEMODES[g] ? g : 'hl';
+    }
+
+    function sanitizeClassesCsv(s) {
+      var parts = (s == null ? '' : String(s)).split(',');
+      var seen = {};
+      var out = [];
+      for (var i = 0; i < parts.length; i++) {
+        var c = parts[i].trim();
+        if (c && VALID_STATS_CLASSES[c] && !seen[c]) {
+          seen[c] = true;
+          out.push(c);
+        }
+      }
+      return out.join(',');
+    }
+
+    /**
+     * Build a safe state object from URL-style params (no HTML; length-limited).
+     * mode: chat | stats | logmatch
+     */
+    function buildSanitizedSearchState(mode, params) {
+      mode = (mode || '').trim();
+      if (mode === 'chat') {
+        var sid = (params.get('steamid') || '').trim();
+        if (!sid) return null;
+        if (sid.length > MAX_STEAMID_INPUT_LEN) sid = sid.slice(0, MAX_STEAMID_INPUT_LEN);
+        var word = (params.get('word') || '').trim();
+        if (word.length > MAX_CHAT_WORD_LEN) word = word.slice(0, MAX_CHAT_WORD_LEN);
+        return {
+          mode: 'chat',
+          steamid: sid,
+          word: word,
+          date_from: sanitizeDateInput(params.get('date_from')),
+          date_to: sanitizeDateInput(params.get('date_to')),
+        };
+      }
+      if (mode === 'stats') {
+        var steamid = (params.get('steamid') || '').trim();
+        if (!steamid) return null;
+        if (steamid.length > MAX_STEAMID_INPUT_LEN) steamid = steamid.slice(0, MAX_STEAMID_INPUT_LEN);
+        return {
+          mode: 'stats',
+          steamid: steamid,
+          gamemode: sanitizeGamemodeInput(params.get('gamemode')),
+          classes: sanitizeClassesCsv(params.get('classes')),
+          date_from: sanitizeDateInput(params.get('date_from')),
+          date_to: sanitizeDateInput(params.get('date_to')),
+        };
+      }
+      if (mode === 'logmatch') {
+        var steamids = (params.get('steamids') || '').trim();
+        if (!steamids) return null;
+        if (steamids.length > MAX_LOGMATCH_STEAMIDS_LEN) steamids = steamids.slice(0, MAX_LOGMATCH_STEAMIDS_LEN);
+        return { mode: 'logmatch', steamids: steamids };
+      }
+      return null;
+    }
+
+    function persistSearchState(state) {
+      if (!state) return;
+      try {
+        sessionStorage.setItem(SEARCH_STATE_KEY, JSON.stringify(state));
+      } catch (e) {}
+    }
+
+    function applySearchStateToForms(state) {
+      if (!state || !state.mode) return;
+      if (state.mode === 'chat') {
+        var fc = document.getElementById('frmChat');
+        if (!fc) return;
+        if (fc.steamid) fc.steamid.value = state.steamid || '';
+        if (fc.word) fc.word.value = state.word || '';
+        if (fc.elements.date_from) fc.elements.date_from.value = state.date_from || '';
+        if (fc.elements.date_to) fc.elements.date_to.value = state.date_to || '';
+        return;
+      }
+      if (state.mode === 'stats') {
+        var fs = document.getElementById('frmStats');
+        if (!fs) return;
+        if (fs.steamid) fs.steamid.value = state.steamid || '';
+        if (fs.gamemode) fs.gamemode.value = sanitizeGamemodeInput(state.gamemode);
+        if (fs.elements.date_from) fs.elements.date_from.value = state.date_from || '';
+        if (fs.elements.date_to) fs.elements.date_to.value = state.date_to || '';
+        var checks = fs.querySelectorAll('input[name="classes"]');
+        var want = {};
+        (state.classes || '').split(',').forEach(function(c) {
+          c = c.trim();
+          if (VALID_STATS_CLASSES[c]) want[c] = true;
+        });
+        for (var i = 0; i < checks.length; i++) {
+          checks[i].checked = !!want[checks[i].value];
+        }
+        return;
+      }
+      if (state.mode === 'logmatch') {
+        var fl = document.getElementById('frmLogmatch');
+        if (!fl || !fl.steamids) return;
+        fl.steamids.value = state.steamids || '';
+      }
+    }
+
+    function isHomePathname() {
+      var p = window.location.pathname || '';
+      return p === '/' || p === '/index.html';
+    }
+
+    /** Restore chat / stats / logmatch forms from ?query or sessionStorage. */
+    function restoreHomeForms() {
+      if (!isHomePathname()) return;
+      var params = new URLSearchParams(window.location.search);
+      var mode = params.get('mode');
+      if (mode) {
+        var fromUrl = buildSanitizedSearchState(mode, params);
+        if (fromUrl) {
+          applySearchStateToForms(fromUrl);
+          persistSearchState(fromUrl);
+        }
+        return;
+      }
+      var raw;
+      try {
+        raw = sessionStorage.getItem(SEARCH_STATE_KEY);
+      } catch (e) {
+        return;
+      }
+      if (!raw) return;
+      var parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        return;
+      }
+      if (!parsed || typeof parsed.mode !== 'string') return;
+      var p2 = new URLSearchParams();
+      if (parsed.mode === 'chat') {
+        p2.set('steamid', parsed.steamid != null ? String(parsed.steamid) : '');
+        p2.set('word', parsed.word != null ? String(parsed.word) : '');
+        p2.set('date_from', parsed.date_from != null ? String(parsed.date_from) : '');
+        p2.set('date_to', parsed.date_to != null ? String(parsed.date_to) : '');
+      } else if (parsed.mode === 'stats') {
+        p2.set('steamid', parsed.steamid != null ? String(parsed.steamid) : '');
+        p2.set('gamemode', parsed.gamemode != null ? String(parsed.gamemode) : '');
+        p2.set('classes', parsed.classes != null ? String(parsed.classes) : '');
+        p2.set('date_from', parsed.date_from != null ? String(parsed.date_from) : '');
+        p2.set('date_to', parsed.date_to != null ? String(parsed.date_to) : '');
+      } else if (parsed.mode === 'logmatch') {
+        p2.set('steamids', parsed.steamids != null ? String(parsed.steamids) : '');
+      } else {
+        return;
+      }
+      var again = buildSanitizedSearchState(parsed.mode, p2);
+      if (again) applySearchStateToForms(again);
+    }
+
+    (function initHomeFormRestore() {
+      restoreHomeForms();
+      window.addEventListener('pageshow', function(ev) {
+        if (ev.persisted && isHomePathname()) restoreHomeForms();
+      });
+    })();
+
     function renderProgress(data) {
       const el = document.getElementById('downloadProgress');
       if (!el) return;
@@ -852,6 +1031,9 @@
         document.getElementById('chatResults').innerHTML = '<span class="error">Date from must be before or equal to date to.</span>';
         return;
       }
+      var chatParams = new URLSearchParams({ steamid: steamid, word: word, date_from: dateFrom, date_to: dateTo });
+      var chatState = buildSanitizedSearchState('chat', chatParams);
+      if (chatState) persistSearchState(chatState);
       var params = new URLSearchParams({ mode: 'chat', steamid: steamid, word: word, date_from: dateFrom, date_to: dateTo });
       window.location.href = '/results?' + params.toString();
     });
@@ -863,6 +1045,9 @@
         document.getElementById('logmatchResults').innerHTML = '<span class="error">At least one Steam ID is required.</span>';
         return;
       }
+      var lmParams = new URLSearchParams({ steamids: steamids });
+      var lmState = buildSanitizedSearchState('logmatch', lmParams);
+      if (lmState) persistSearchState(lmState);
       var params = new URLSearchParams({ mode: 'logmatch', steamids: steamids });
       window.location.href = '/results?' + params.toString();
     });
@@ -882,6 +1067,15 @@
         document.getElementById('statsResults').innerHTML = '<span class="error">Date from must be before or equal to date to.</span>';
         return;
       }
+      var statsParams = new URLSearchParams({
+        steamid: steamid,
+        gamemode: form.gamemode.value || 'hl',
+        classes: classes,
+        date_from: dateFrom,
+        date_to: dateTo,
+      });
+      var statsState = buildSanitizedSearchState('stats', statsParams);
+      if (statsState) persistSearchState(statsState);
       var params = new URLSearchParams({
         mode: 'stats',
         steamid: steamid,
@@ -1402,6 +1596,8 @@
         resultsContent.innerHTML = '<span class="error">Missing search parameters.</span>';
         return;
       }
+      var persisted = buildSanitizedSearchState(mode, params);
+      if (persisted) persistSearchState(persisted);
       var t0 = performance.now();
       showResultsLoading(resultsContent);
       var apiUrl = '';
