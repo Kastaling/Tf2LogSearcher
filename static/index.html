@@ -1509,6 +1509,8 @@
       }
       var originalRows = container._statsRows;
       var sortedRows = getSortedStatsRows(originalRows);
+      var sortCol = statsSortCol;
+      var sortDir = statsSortDir;
 
       var thead = '<tr>';
       STATS_COLUMNS.forEach(function(c) {
