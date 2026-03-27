@@ -190,6 +190,30 @@
       display: block;
       margin-top: 0.15rem;
     }
+    .chat-summary-line { margin: 0.35rem 0 0.5rem; }
+    .chat-results-list { margin: 0.35rem 0 0; }
+    .chat-lazy-controls {
+      margin: 0.75rem 0 0;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }
+    .chat-lazy-controls .js-chat-load-more { margin: 0; }
+    .chat-autoload-label {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      cursor: pointer;
+      font-weight: 500;
+      color: var(--text);
+    }
+    .chat-lazy-sentinel {
+      width: 100%;
+      height: 1px;
+      pointer-events: none;
+      flex-shrink: 0;
+    }
     .chat-team-none { color: var(--text-muted); }
     .loading-state {
       display: flex;
@@ -915,14 +939,97 @@
       });
     })();
 
-    function resolveChatResultAnchor(container) {
-      if (!container || !window.location.hash) return;
-      var raw = window.location.hash.slice(1);
-      if (!/^chat-hit-[A-Za-z0-9_-]+$/.test(raw)) return;
-      var target = document.getElementById(raw);
-      if (!target) return;
+    var CHAT_LAZY_CHUNK_SIZE = 100;
+    var CHAT_AUTOLOAD_STORAGE_KEY = 'tf2log-chat-autoload';
+
+    function scrollChatHitIntoViewIfPresent(anchorId) {
+      if (!anchorId || !/^chat-hit-[A-Za-z0-9_-]+$/.test(anchorId)) return false;
+      var target = document.getElementById(anchorId);
+      if (!target) return false;
       target.scrollIntoView({ behavior: 'smooth', block: 'center' });
       target.classList.add('chat-hit-open');
+      return true;
+    }
+
+    /** Append up to maxN chat hits starting at current renderedCount. */
+    function appendNextChatChunk(container, maxN) {
+      maxN = maxN == null ? CHAT_LAZY_CHUNK_SIZE : maxN;
+      var state = container._chatLazyState;
+      var list = container.querySelector('.chat-results-list');
+      if (!state || !list || !state.results || state.results.length === 0) return;
+      var remaining = state.results.length - state.renderedCount;
+      if (remaining <= 0) return;
+      var n = Math.min(maxN, remaining);
+      var html = '';
+      var end = state.renderedCount + n;
+      var word = state.word || '';
+      for (var i = state.renderedCount; i < end; i++) {
+        html += chatHitHtml(state.results[i], i, word);
+      }
+      state.renderedCount = end;
+      list.insertAdjacentHTML('beforeend', html);
+    }
+
+    function updateChatLazyUI(container) {
+      var state = container._chatLazyState;
+      var ctrl = container.querySelector('.chat-lazy-controls');
+      if (!state || !ctrl) return;
+      if (state.renderedCount >= state.results.length) {
+        ctrl.style.display = 'none';
+        if (container._chatLazyObserver) {
+          try { container._chatLazyObserver.disconnect(); } catch (e) {}
+          container._chatLazyObserver = null;
+        }
+      } else {
+        ctrl.style.display = '';
+      }
+    }
+
+    function disconnectChatLazyObserver(container) {
+      if (container._chatLazyObserver) {
+        try { container._chatLazyObserver.disconnect(); } catch (e) {}
+        container._chatLazyObserver = null;
+      }
+    }
+
+    function setupChatLazyObserver(container) {
+      disconnectChatLazyObserver(container);
+      var cb = container.querySelector('.js-chat-autoload');
+      if (!cb || !cb.checked) return;
+      var state = container._chatLazyState;
+      var sentinel = container.querySelector('.chat-lazy-sentinel');
+      if (!state || !sentinel || state.renderedCount >= state.results.length) return;
+      var obs = new IntersectionObserver(function(entries) {
+        for (var i = 0; i < entries.length; i++) {
+          if (!entries[i].isIntersecting) continue;
+          var st = container._chatLazyState;
+          if (!st || st.renderedCount >= st.results.length) return;
+          appendNextChatChunk(container, CHAT_LAZY_CHUNK_SIZE);
+          updateChatLazyUI(container);
+          break;
+        }
+      }, { root: null, rootMargin: '80px', threshold: 0 });
+      obs.observe(sentinel);
+      container._chatLazyObserver = obs;
+    }
+
+    /**
+     * Load chunks until hash target exists or all results are in the DOM.
+     * Does not scroll until the target element is found (then scrolls once).
+     */
+    function resolveChatAnchorProgressive(container) {
+      if (!container || !window.location.hash) return;
+      var raw = window.location.hash.slice(1);
+      if (!raw || !/^chat-hit-[A-Za-z0-9_-]+$/.test(raw)) return;
+      var state = container._chatLazyState;
+      if (!state || !state.results || state.results.length === 0) return;
+      var maxSteps = Math.ceil(state.results.length / CHAT_LAZY_CHUNK_SIZE) + 3;
+      for (var step = 0; step < maxSteps; step++) {
+        if (scrollChatHitIntoViewIfPresent(raw)) return;
+        if (state.renderedCount >= state.results.length) return;
+        appendNextChatChunk(container, CHAT_LAZY_CHUNK_SIZE);
+        updateChatLazyUI(container);
+      }
     }
 
     (function initChatShareLinks() {
@@ -947,11 +1054,59 @@
       });
       window.addEventListener('hashchange', function() {
         var content = document.getElementById('resultsContent');
-        resolveChatResultAnchor(content);
+        resolveChatAnchorProgressive(content);
       });
     })();
 
+    function chatHitHtml(x, i, word) {
+      var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
+      var p = x.context_prev || null;
+      var n = x.context_next || null;
+      var prevLine = chatContextLineHtml('Previous', p);
+      var nextLine = chatContextLineHtml('Next', n);
+      var idBase = String((x.log_id != null ? x.log_id : 'na')) + '-' + String(i);
+      var safeId = idBase.replace(/[^A-Za-z0-9_-]/g, '_');
+      var hitId = 'chat-hit-' + safeId;
+      var shareUrl = window.location.origin + window.location.pathname + window.location.search + '#' + hitId;
+      var html = '';
+      html += '<div class="chat-hit" id="' + hitId + '">';
+      html += '<a href="#' + hitId + '" class="chat-hit-link js-chat-hit-link" data-anchor="' + hitId + '" data-share-url="' + escapeAttr(shareUrl) + '" title="Copy link to this result" aria-label="Copy link to this result">🔗</a>';
+      html += '<div class="chat-context-wrap">' + prevLine + '</div>';
+      html += '<div class="chat-line chat-main chat-hit-main"><span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + highlightChatMatch(x.msg, word) + '</div>';
+      html += '<div class="chat-context-wrap">' + nextLine + '</div>';
+      html += '<a class="chat-log-link" href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a>';
+      html += '</div>';
+      return html;
+    }
+
+    function bindChatLazyControls(el) {
+      var loadBtn = el.querySelector('.js-chat-load-more');
+      var autoCb = el.querySelector('.js-chat-autoload');
+      if (loadBtn) {
+        loadBtn.addEventListener('click', function() {
+          appendNextChatChunk(el, CHAT_LAZY_CHUNK_SIZE);
+          updateChatLazyUI(el);
+          setupChatLazyObserver(el);
+        });
+      }
+      if (autoCb) {
+        autoCb.addEventListener('change', function() {
+          try {
+            localStorage.setItem(CHAT_AUTOLOAD_STORAGE_KEY, autoCb.checked ? '1' : '0');
+          } catch (err) {}
+          if (autoCb.checked) {
+            setupChatLazyObserver(el);
+          } else {
+            disconnectChatLazyObserver(el);
+          }
+        });
+      }
+    }
+
     function renderChatResult(el, data, steamidParam, wordParam, showWebhookBox, elapsedMs) {
+      disconnectChatLazyObserver(el);
+      el._chatLazyState = null;
+
       var steamid = steamidParam || '';
       var word = (wordParam || '').trim();
       var html = '';
@@ -974,27 +1129,48 @@
         (data.results || []).forEach(function(r) { if (r && r.log_id != null) ids.add(String(r.log_id)); });
         logsAcross = ids.size;
       }
-      html += 'Total ' + escapeHtml(String(data.total || 0)) + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a> across ' + escapeHtml(String(logsAcross)) + ' log(s).<br>';
-      (data.results || []).forEach(function(x, i) {
-        var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
-        var p = x.context_prev || null;
-        var n = x.context_next || null;
-        var prevLine = chatContextLineHtml('Previous', p);
-        var nextLine = chatContextLineHtml('Next', n);
-        var idBase = String((x.log_id != null ? x.log_id : 'na')) + '-' + String(i);
-        var safeId = idBase.replace(/[^A-Za-z0-9_-]/g, '_');
-        var hitId = 'chat-hit-' + safeId;
-        var shareUrl = window.location.origin + window.location.pathname + window.location.search + '#' + hitId;
-        html += '<div class="chat-hit" id="' + hitId + '">';
-        html += '<a href="#' + hitId + '" class="chat-hit-link js-chat-hit-link" data-anchor="' + hitId + '" data-share-url="' + escapeAttr(shareUrl) + '" title="Copy link to this result" aria-label="Copy link to this result">🔗</a>';
-        html += '<div class="chat-context-wrap">' + prevLine + '</div>';
-        html += '<div class="chat-line chat-main chat-hit-main"><span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + highlightChatMatch(x.msg, word) + '</div>';
-        html += '<div class="chat-context-wrap">' + nextLine + '</div>';
-        html += '<a class="chat-log-link" href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a>';
-        html += '</div>';
-      });
-      el.innerHTML = (html || 'No matches.') + requestTimingFooter(elapsedMs);
-      resolveChatResultAnchor(el);
+      var results = data.results || [];
+      if (results.length === 0) {
+        el.innerHTML = html + 'No matches.' + requestTimingFooter(elapsedMs);
+        return;
+      }
+
+      html += '<p class="chat-summary-line">Total ' + escapeHtml(String(data.total || 0)) + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a> across ' + escapeHtml(String(logsAcross)) + ' log(s).</p>';
+      var firstN = Math.min(CHAT_LAZY_CHUNK_SIZE, results.length);
+      var listHtml = '';
+      for (var j = 0; j < firstN; j++) {
+        listHtml += chatHitHtml(results[j], j, word);
+      }
+      html += '<div class="chat-results-list">' + listHtml + '</div>';
+      html += '<div class="chat-lazy-controls">';
+      html += '<button type="button" class="js-chat-load-more">Load more</button>';
+      html += '<label class="chat-autoload-label"><input type="checkbox" class="js-chat-autoload"> Auto-load more as I scroll</label>';
+      html += '<div class="chat-lazy-sentinel" aria-hidden="true"></div>';
+      html += '</div>';
+      html += requestTimingFooter(elapsedMs);
+
+      el.innerHTML = html;
+      el._chatLazyState = {
+        results: results,
+        renderedCount: firstN,
+        word: word
+      };
+      updateChatLazyUI(el);
+
+      bindChatLazyControls(el);
+      var autoCb = el.querySelector('.js-chat-autoload');
+      var autoloadOn = false;
+      try {
+        autoloadOn = localStorage.getItem(CHAT_AUTOLOAD_STORAGE_KEY) === '1';
+      } catch (e) {}
+      if (autoCb) autoCb.checked = autoloadOn;
+
+      resolveChatAnchorProgressive(el);
+
+      if (autoloadOn) {
+        setupChatLazyObserver(el);
+      }
+
       if (showWebhookBox && word) {
         var box = el.querySelector('.webhook-subscribe');
         var btn = el.querySelector('.js-chat-subscribe');
