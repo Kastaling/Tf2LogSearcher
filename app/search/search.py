@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.logs_tf import get_log_list_for_player, steamid64_to_steamid3
+from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
 
 LOGS_TF_URL_BASE = "https://logs.tf"
 
@@ -281,6 +281,209 @@ def stats_search(
                 "date": date_str,
                 "url": f"{LOGS_TF_URL_BASE}/{log_id}",
             })
+    return rows, frozenset(log_ids_used)
+
+
+def _team_from_player_block(stats: Any) -> str | None:
+    """Red / Blue from logs.tf player block, or None if unknown."""
+    if not isinstance(stats, dict):
+        return None
+    tr = stats.get("team")
+    if tr == "Red":
+        return "Red"
+    if tr == "Blue":
+        return "Blue"
+    return None
+
+
+def _team_score_from_teams_block(teams: Any, team_key: str) -> int | None:
+    """Integer score for Red or Blue from logs.tf ``teams`` object."""
+    if not isinstance(teams, dict):
+        return None
+    block = teams.get(team_key)
+    if not isinstance(block, dict):
+        return None
+    raw = block.get("score")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _winner_team_from_info_field(w: Any) -> str | None:
+    """Normalize ``info.winner`` to Red / Blue when unambiguous."""
+    if w is None:
+        return None
+    if isinstance(w, str):
+        s = w.strip()
+        if not s:
+            return None
+        if s in ("Red", "Blue"):
+            return s
+        low = s.casefold()
+        if low == "red":
+            return "Red"
+        if low in ("blue", "blu"):
+            return "Blue"
+    return None
+
+
+def _winner_team_from_log(logtext: dict[str, Any]) -> str | None:
+    """
+    Winning team as Red or Blue.
+
+    Prefer ``info.winner`` when it maps cleanly; otherwise infer from
+    ``teams.Red.score`` vs ``teams.Blue.score`` (logs.tf often leaves winner null).
+    Ties or missing scores => unknown (None).
+    """
+    info = logtext.get("info")
+    if isinstance(info, dict):
+        parsed = _winner_team_from_info_field(info.get("winner"))
+        if parsed is not None:
+            return parsed
+    teams = logtext.get("teams")
+    rs = _team_score_from_teams_block(teams, "Red")
+    bs = _team_score_from_teams_block(teams, "Blue")
+    if rs is None or bs is None:
+        return None
+    if rs > bs:
+        return "Red"
+    if bs > rs:
+        return "Blue"
+    return None
+
+
+def coplayers_search(
+    steamid: str,
+    logs_dir: str | Path,
+    gamemode: str = "",
+    map_query: str = "",
+) -> tuple[list[dict[str, Any]], frozenset[int]]:
+    """
+    Frequent co-players for a player across local logs.
+    Returns (rows sorted by total_games desc, log_ids_used) for cache invalidation.
+    """
+    logs_dir = Path(logs_dir)
+    steamid3 = steamid64_to_steamid3(steamid)
+    gm = (gamemode or "").strip()
+    if gm not in ("hl", "7s", "6s", "ud"):
+        gm = ""
+    mq = map_query or ""
+    log_ids_used: set[int] = set()
+    agg: dict[str, dict[str, Any]] = {}
+    log_ids = get_log_list_for_player(steamid)
+
+    for log_id in log_ids:
+        path = logs_dir / f"{log_id}.json"
+        if not path.exists():
+            continue
+        try:
+            data = path.read_text(encoding="utf-8", errors="replace")
+            logtext = json.loads(data)
+        except (OSError, ValueError):
+            continue
+
+        names = logtext.get("names") or {}
+        if not isinstance(names, dict) or steamid3 not in names:
+            continue
+
+        names_keys = [k for k in names if isinstance(k, str)]
+        n_players = len(names_keys)
+        if gm and not _player_count_filter(n_players, gm):
+            continue
+
+        info = logtext.get("info") or {}
+        if not _map_matches_query(info.get("map"), mq):
+            continue
+
+        players = logtext.get("players") or {}
+        if not isinstance(players, dict):
+            continue
+
+        sub_stats = players.get(steamid3)
+        subject_team = _team_from_player_block(sub_stats)
+        if subject_team is None:
+            continue
+
+        log_ids_used.add(log_id)
+
+        winner_team = _winner_team_from_log(logtext)
+
+        try:
+            log_ts = int(info.get("date") or 0)
+        except (TypeError, ValueError):
+            log_ts = 0
+
+        for sid3 in names_keys:
+            if sid3 == steamid3:
+                continue
+            opp_stats = players.get(sid3)
+            opp_team = _team_from_player_block(opp_stats)
+            if opp_team is None:
+                continue
+
+            bucket = agg.setdefault(
+                sid3,
+                {
+                    "steamid3": sid3,
+                    "name": "",
+                    "_last_ts": -1,
+                    "games_with": 0,
+                    "wins_with": 0,
+                    "losses_with": 0,
+                    "games_against": 0,
+                    "wins_against": 0,
+                    "losses_against": 0,
+                },
+            )
+
+            raw_name = names.get(sid3)
+            nm = str(raw_name).strip() if raw_name is not None else ""
+            if log_ts >= bucket["_last_ts"]:
+                bucket["_last_ts"] = log_ts
+                if nm:
+                    bucket["name"] = nm
+
+            same = opp_team == subject_team
+            if same:
+                bucket["games_with"] += 1
+                if winner_team is not None:
+                    if winner_team == subject_team:
+                        bucket["wins_with"] += 1
+                    else:
+                        bucket["losses_with"] += 1
+            else:
+                bucket["games_against"] += 1
+                if winner_team is not None:
+                    if winner_team == subject_team:
+                        bucket["wins_against"] += 1
+                    else:
+                        bucket["losses_against"] += 1
+
+    rows: list[dict[str, Any]] = []
+    for b in agg.values():
+        total = int(b["games_with"]) + int(b["games_against"])
+        if total < 2:
+            continue
+        sid64 = steamid3_to_steamid64(str(b["steamid3"]))
+        rows.append(
+            {
+                "steamid3": b["steamid3"],
+                "steamid64": sid64,
+                "name": b["name"],
+                "games_with": int(b["games_with"]),
+                "wins_with": int(b["wins_with"]),
+                "losses_with": int(b["losses_with"]),
+                "games_against": int(b["games_against"]),
+                "wins_against": int(b["wins_against"]),
+                "losses_against": int(b["losses_against"]),
+                "total_games": total,
+            }
+        )
+
+    rows.sort(key=lambda r: -r["total_games"])
     return rows, frozenset(log_ids_used)
 
 

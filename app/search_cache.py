@@ -35,7 +35,7 @@ def _is_valid(entry: dict[str, Any], mode: str, key_tuple: tuple[Any, ...]) -> b
             return False
         cached_ids: frozenset[int] = entry["log_ids"]
         logs_dir = Path(LOGS_DIR)
-        if mode == "chat" or mode == "stats":
+        if mode == "chat" or mode == "stats" or mode == "coplayers":
             steamid64 = key_tuple[0]
             current = local_log_ids_for_player(steamid64, logs_dir)
             if current != cached_ids:

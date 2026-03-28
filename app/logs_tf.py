@@ -1,4 +1,5 @@
 """logs.tf API helpers and Steam ID conversion."""
+import re
 import time
 from typing import Any
 
@@ -11,11 +12,25 @@ REQUEST_TIMEOUT = 30
 
 STEAMID64_OFFSET = 76561197960265728
 
+_STEAMID3_RE = re.compile(r"^\[U:1:(\d+)\]$")
+
 
 def steamid64_to_steamid3(steamid64: str | int) -> str:
     """Convert SteamID64 to SteamID3 format [U:1:xxx]."""
     a = int(steamid64) - STEAMID64_OFFSET
     return f"[U:1:{a}]"
+
+
+def steamid3_to_steamid64(steamid3: str) -> str | None:
+    """Parse logs.tf SteamID3 string to 17-digit SteamID64, or None if invalid."""
+    m = _STEAMID3_RE.match((steamid3 or "").strip())
+    if not m:
+        return None
+    try:
+        account_id = int(m.group(1))
+    except ValueError:
+        return None
+    return str(STEAMID64_OFFSET + account_id)
 
 
 def get_log_list_for_player(steamid64: str, max_logs: int = 30000) -> list[int]:

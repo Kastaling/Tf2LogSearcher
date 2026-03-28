@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 
 from app.config import LOGS_DIR, REQUEST_LOG_PATH, DOWNLOADER_STATE_DIR, STEAM_WEB_API_KEY
 from app.request_log import append_request_log
-from app.search.search import chat_search, stats_search, log_match
+from app.search.search import chat_search, coplayers_search, stats_search, log_match
 from app.search_cache import get as cache_get, set_ as cache_set
 from app.steam_resolver import resolve_to_steamid64
 from app.subscriptions import add_subscription, deactivate_by_token, is_valid_discord_webhook_url, send_welcome_message
@@ -267,6 +267,82 @@ def _api_search_stats_impl(
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/search/stats", 500, duration_ms, steamid=steamid64, gamemode=gamemode, classes=classes)
         return JSONResponse({"rows": [], "error": str(e)}, status_code=500)
+
+
+def _api_search_coplayers_impl(
+    request: Request,
+    steamid: str,
+    gamemode: str,
+    map_query_raw: str,
+) -> JSONResponse:
+    """Shared impl for POST/GET frequent co-players search."""
+    start = time.perf_counter()
+    steamid_input = (steamid or "").strip()
+    if not steamid_input:
+        return JSONResponse({"rows": [], "error": "Steam ID is required."}, status_code=400)
+    steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+    if resolve_error is not None:
+        return JSONResponse({"rows": [], "error": resolve_error}, status_code=400)
+    assert steamid64 is not None
+    map_query = (map_query_raw or "").strip()
+    if len(map_query) > MAP_QUERY_MAX_LENGTH:
+        return JSONResponse({"rows": [], "error": "Map filter is too long."}, status_code=400)
+    gm = (gamemode or "").strip()
+    if gm not in ("", "hl", "7s", "6s", "ud"):
+        gm = ""
+    cache_key = (steamid64, gm, map_query.lower())
+    cached = cache_get("coplayers", cache_key)
+    if cached is not None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/search/coplayers",
+            200,
+            duration_ms,
+            result_count=len(cached.get("rows", [])),
+            steamid=steamid64,
+            gamemode=gm,
+        )
+        return JSONResponse(cached)
+    try:
+        rows, log_ids_used = coplayers_search(steamid64, LOGS_DIR, gamemode=gm, map_query=map_query)
+        payload = {"rows": rows, "logs_searched": len(log_ids_used)}
+        cache_set("coplayers", cache_key, payload, log_ids_used)
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/search/coplayers",
+            200,
+            duration_ms,
+            result_count=len(rows),
+            steamid=steamid64,
+            gamemode=gm,
+        )
+        return JSONResponse(payload)
+    except Exception as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/search/coplayers", 500, duration_ms, steamid=steamid64, gamemode=gm)
+        return JSONResponse({"rows": [], "error": str(e)}, status_code=500)
+
+
+@router.post("/api/search/coplayers")
+async def api_search_coplayers(
+    request: Request,
+    steamid: str = Form(""),
+    gamemode: str = Form(""),
+    map_query: str = Form(""),
+):
+    return _api_search_coplayers_impl(request, steamid or "", gamemode or "", map_query or "")
+
+
+@router.get("/api/search/coplayers")
+async def api_search_coplayers_get(
+    request: Request,
+    steamid: str = Query(""),
+    gamemode: str = Query(""),
+    map_query: str = Query(""),
+):
+    return _api_search_coplayers_impl(request, steamid or "", gamemode or "", map_query or "")
 
 
 @router.post("/api/search/stats")
