@@ -58,6 +58,7 @@ docker-compose up downloader
 |-------------------|------------------------|----------------------------------|
 | Log JSON files    | `./logs`               | Filled by downloader; read by web |
 | Downloader state  | `./downloader_state`   | Offset, skip list, progress JSON  |
+| Chat SQLite DB    | `./downloader_state/chat.db` | Chat index written by downloader/backfill |
 | Request log (web)| `./request_logs`       | CSV of API requests (web only)   |
 
 - **Web port:** 8027 (host) → 8000 (container). Change the left number in `docker-compose.yml` if needed.
@@ -71,6 +72,24 @@ See `.env.example` for all options. Important ones:
 - `REQUEST_DELAY_MS`, `MAX_REQUESTS_BEFORE_BACKOFF`, `BACKOFF_SEC` — rate limiting for the logs.tf API.
 - `STEAM_WEB_API_KEY` — Steam Web API key for vanity URL/name resolution.
 - `REQUEST_LOG_PATH` — path to the request log CSV file.
+- `CHAT_DB_PATH` — path to SQLite DB where chat rows are indexed.
+
+## Chat DB backfill (one-time migration)
+
+If you already have downloaded JSON logs, run this once to import existing chat into SQLite:
+
+```bash
+# stop downloader first so DB writes are single-writer
+docker-compose stop downloader
+
+# run backfill inside downloader container environment
+docker-compose run --rm downloader python -m app.chat_backfill --batch-size 500
+
+# start downloader again (new logs will be indexed automatically)
+docker-compose up -d downloader
+```
+
+The downloader now indexes chat for every newly fetched log into `CHAT_DB_PATH`.
 
 ---
 

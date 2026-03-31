@@ -1,6 +1,7 @@
 """Auto-downloader: fetch newest logs from logs.tf using offset cursor, skip list, and rate limiting."""
 import json
 import logging
+import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
@@ -15,7 +16,9 @@ from app.config import (
     MAX_REQUESTS_BEFORE_BACKOFF,
     BACKOFF_SEC,
     RETRY_ATTEMPTS,
+    CHAT_DB_PATH,
 )
+from app.chat_db import connect_chat_db, init_chat_db, replace_chat_for_log
 from app.logs_tf import fetch_log_list, fetch_log_json
 from app.subscriptions import check_log_for_subscriptions
 
@@ -344,7 +347,18 @@ def fetch_log_json_with_retry(log_id: int):
     return None, False
 
 
-def run_catch_up_newest(logs_dir: Path, state_dir: Path, skipped: set[int], request_count_ref: list[int], recent_writes: list[tuple[float, int]], last_progress_write_ref: list[float], downloads_since_progress_ref: list[int], session_start_time_ref: list[float], session_downloads_ref: list[int]) -> int:
+def run_catch_up_newest(
+    logs_dir: Path,
+    state_dir: Path,
+    skipped: set[int],
+    request_count_ref: list[int],
+    recent_writes: list[tuple[float, int]],
+    last_progress_write_ref: list[float],
+    downloads_since_progress_ref: list[int],
+    session_start_time_ref: list[float],
+    session_downloads_ref: list[int],
+    chat_db_conn: sqlite3.Connection | None = None,
+) -> int:
     """Phase 1: Fetch offset=0 (newest logs). Download any we don't have. Does not change next_offset."""
     logger.info("Phase 1: Checking offset=0 for NEW logs (catch up newest first)")
     logs = fetch_log_list(0, LIMIT)
@@ -372,6 +386,13 @@ def run_catch_up_newest(logs_dir: Path, state_dir: Path, skipped: set[int], requ
         if success and data:
             logs_dir.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            if chat_db_conn is not None:
+                try:
+                    with chat_db_conn:
+                        n_chat = replace_chat_for_log(chat_db_conn, log_id, data)
+                    logger.info("Indexed chat for log %s (%s message(s))", log_id, n_chat)
+                except Exception as e:
+                    logger.warning("Chat DB indexing failed for log %s: %s", log_id, e)
             size_bytes = path.stat().st_size
             recent_writes.append((time.time(), log_id))
             downloads_since_progress_ref[0] += 1
@@ -395,7 +416,17 @@ def run_catch_up_newest(logs_dir: Path, state_dir: Path, skipped: set[int], requ
 
 
 def run_backfill_from_offset(
-    logs_dir: Path, state_dir: Path, skipped: set[int], next_offset: int, request_count_ref: list[int], recent_writes: list[tuple[float, int]], last_progress_write_ref: list[float], downloads_since_progress_ref: list[int], session_start_time_ref: list[float], session_downloads_ref: list[int]
+    logs_dir: Path,
+    state_dir: Path,
+    skipped: set[int],
+    next_offset: int,
+    request_count_ref: list[int],
+    recent_writes: list[tuple[float, int]],
+    last_progress_write_ref: list[float],
+    downloads_since_progress_ref: list[int],
+    session_start_time_ref: list[float],
+    session_downloads_ref: list[int],
+    chat_db_conn: sqlite3.Connection | None = None,
 ) -> int:
     """Phase 2: Continue from next_offset toward older logs (work toward 1st/oldest log). Returns new next_offset."""
     logger.info("Phase 2: Continuing backfill from offset=%s toward oldest logs", next_offset)
@@ -433,6 +464,13 @@ def run_backfill_from_offset(
             if success and data:
                 logs_dir.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                if chat_db_conn is not None:
+                    try:
+                        with chat_db_conn:
+                            n_chat = replace_chat_for_log(chat_db_conn, log_id, data)
+                        logger.info("Indexed chat for log %s (%s message(s))", log_id, n_chat)
+                    except Exception as e:
+                        logger.warning("Chat DB indexing failed for log %s: %s", log_id, e)
                 size_bytes = path.stat().st_size
                 recent_writes.append((time.time(), log_id))
                 downloads_since_progress_ref[0] += 1
@@ -463,13 +501,28 @@ def run_backfill_from_offset(
 def run_once(logs_dir: Path, state_dir: Path, skipped: set[int], next_offset: int) -> int:
     """Legacy helper: run backfill only (no Phase 1). Returns new next_offset."""
     request_count_ref = [0]
-    return run_backfill_from_offset(logs_dir, state_dir, skipped, next_offset, request_count_ref, [], [0.0], [0], [0.0], [0])
+    return run_backfill_from_offset(
+        logs_dir, state_dir, skipped, next_offset, request_count_ref, [], [0.0], [0], [0.0], [0], None
+    )
 
 
 def main() -> None:
     logs_dir = LOGS_DIR
     state_dir = DOWNLOADER_STATE_DIR
-    logger.info("Downloader started. LOGS_DIR=%s (log files only) STATE_DIR=%s", logs_dir, state_dir)
+    chat_db_path = CHAT_DB_PATH
+    logger.info(
+        "Downloader started. LOGS_DIR=%s (log files only) STATE_DIR=%s CHAT_DB_PATH=%s",
+        logs_dir,
+        state_dir,
+        chat_db_path,
+    )
+    chat_db_conn: sqlite3.Connection | None = None
+    try:
+        chat_db_conn = connect_chat_db(chat_db_path)
+        init_chat_db(chat_db_conn)
+    except Exception as e:
+        logger.exception("Failed to open/init chat DB (%s). Continuing without DB indexing: %s", chat_db_path, e)
+        chat_db_conn = None
     recent_writes: list[tuple[float, int]] = []  # sliding window for ETA rate (fallback)
     last_progress_write_ref: list[float] = [0.0]  # last time we wrote progress.json
     downloads_since_progress_ref: list[int] = [0]  # count of logs written since last progress update
@@ -482,9 +535,32 @@ def main() -> None:
         request_count_ref = [0]  # shared across Phase 1 and Phase 2 for backoff
         try:
             # Phase 1: always check offset=0 for new logs first (even if we're millions of logs behind)
-            run_catch_up_newest(logs_dir, state_dir, skipped, request_count_ref, recent_writes, last_progress_write_ref, downloads_since_progress_ref, session_start_time_ref, session_downloads_ref)
+            run_catch_up_newest(
+                logs_dir,
+                state_dir,
+                skipped,
+                request_count_ref,
+                recent_writes,
+                last_progress_write_ref,
+                downloads_since_progress_ref,
+                session_start_time_ref,
+                session_downloads_ref,
+                chat_db_conn,
+            )
             # Phase 2: continue backfill from saved offset toward oldest log
-            next_offset = run_backfill_from_offset(logs_dir, state_dir, skipped, next_offset, request_count_ref, recent_writes, last_progress_write_ref, downloads_since_progress_ref, session_start_time_ref, session_downloads_ref)
+            next_offset = run_backfill_from_offset(
+                logs_dir,
+                state_dir,
+                skipped,
+                next_offset,
+                request_count_ref,
+                recent_writes,
+                last_progress_write_ref,
+                downloads_since_progress_ref,
+                session_start_time_ref,
+                session_downloads_ref,
+                chat_db_conn,
+            )
         except Exception as e:
             logger.exception("Run failed: %s", e)
         logger.info("Cycle complete. Sleeping %s s until next run.", DOWNLOAD_INTERVAL_SEC)

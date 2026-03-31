@@ -47,3 +47,6 @@ RETRY_ATTEMPTS = _int("RETRY_ATTEMPTS", 3)
 
 # Web app: request log CSV path (keep separate from LOGS_DIR to avoid mixing with many JSON files)
 REQUEST_LOG_PATH = Path(_str("REQUEST_LOG_PATH", "/data/request_logs/request_log.csv"))
+
+# Chat SQLite database file (populated by downloader and backfill script)
+CHAT_DB_PATH = Path(_str("CHAT_DB_PATH", "/data/chat/chat.db"))
