@@ -607,8 +607,192 @@ async def index(request: Request):
 
 @router.get("/results")
 async def results_page(request: Request):
-    """Serve the results page (same HTML; client reads URL params and fetches API)."""
-    return await _serve_index(request, "/results")
+    """
+    Serve results page HTML with social meta tags.
+
+    Discord/Twitter/Slack do not execute JS; embeds require server-rendered meta tags.
+    """
+    return await _serve_results_with_embed(request)
+
+
+def _escape_meta(s: str) -> str:
+    """Escape for HTML attribute meta content."""
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _truncate(s: str, n: int) -> str:
+    s = s or ""
+    return s if len(s) <= n else (s[: n - 1] + "…")
+
+
+def _build_results_embed_meta(request: Request) -> str:
+    """
+    Build OpenGraph/Twitter meta tags for /results based on query params + cached payloads.
+
+    Never raises; returns empty string on any error.
+    """
+    try:
+        qp = dict(request.query_params)
+        mode = (qp.get("mode") or "").strip()
+        # Canonical full URL for embed
+        base = str(request.base_url).rstrip("/")
+        full_url = f"{base}{request.url.path}"
+        if request.url.query:
+            full_url += f"?{request.url.query}"
+
+        title = "TF2 Log Searcher"
+        desc = "TF2 logs.tf search results."
+
+        # Try to pull cached payloads to include counts without doing heavy work.
+        if mode == "chat":
+            steamid_in = (qp.get("steamid") or "").strip()
+            word = (qp.get("word") or "").strip()
+            date_from = (qp.get("date_from") or "").strip()
+            date_to = (qp.get("date_to") or "").strip()
+            map_query = (qp.get("map_query") or "").strip()
+            if not steamid_in:
+                # leaderboard
+                title = f'Chat leaderboard: "{word}"'
+                ck = (word.lower(), date_from, date_to, map_query.lower())
+                cached = cache_get("chatlb", ck) or {}
+                logs_s = cached.get("logs_searched")
+                n_rows = len(cached.get("rows") or [])
+                desc = f'Top {n_rows} player(s) for "{word}".'
+                if isinstance(logs_s, (int, float)) and logs_s:
+                    desc = f'Top {n_rows} player(s) for "{word}" across {int(logs_s)} log(s).'
+            else:
+                title = "Chat search results"
+                # Best effort resolve for cache lookup; if it fails, still show generic embed.
+                steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
+                if err is None and steamid64:
+                    ck = (steamid64, word, date_from, date_to, map_query.lower())
+                    cached = cache_get("chat", ck) or {}
+                    total = cached.get("total")
+                    logs_s = cached.get("logs_searched")
+                    name = cached.get("searched_user_name") or steamid64
+                    if isinstance(total, (int, float)):
+                        if word:
+                            desc = f'"{word}" said {int(total)} time(s) by {name}.'
+                        else:
+                            desc = f"Chat history for {name}."
+                        if isinstance(logs_s, (int, float)) and logs_s:
+                            desc += f" Across {int(logs_s)} log(s)."
+                else:
+                    desc = "Chat search results."
+        elif mode == "stats":
+            steamid_in = (qp.get("steamid") or "").strip()
+            gamemode = (qp.get("gamemode") or "").strip()
+            classes = (qp.get("classes") or "").strip()
+            date_from = (qp.get("date_from") or "").strip()
+            date_to = (qp.get("date_to") or "").strip()
+            map_query = (qp.get("map_query") or "").strip()
+            title = "Stats Sorter results"
+            if steamid_in:
+                steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
+                if err is None and steamid64:
+                    class_tuple = tuple(sorted(c.lower() for c in classes.split(",") if c.strip()))
+                    ck = (steamid64, gamemode, class_tuple, date_from, date_to, map_query.lower())
+                    cached = cache_get("stats", ck) or {}
+                    n = len(cached.get("rows") or [])
+                    desc = f"Found {n} row(s) of stats."
+            # Add filter summary (safe and short)
+            bits = []
+            if gamemode:
+                bits.append(f"mode {gamemode}")
+            if classes:
+                bits.append(f"classes {classes}")
+            if map_query:
+                bits.append(f'map "{map_query}"')
+            if date_from or date_to:
+                bits.append(f"{date_from or '…'} to {date_to or '…'}")
+            if bits:
+                desc = f"{desc} ({', '.join(bits)})."
+        elif mode == "coplayers":
+            steamid_in = (qp.get("steamid") or "").strip()
+            gamemode = (qp.get("gamemode") or "").strip()
+            map_query = (qp.get("map_query") or "").strip()
+            title = "Frequent co-players"
+            if steamid_in:
+                steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
+                if err is None and steamid64:
+                    gm = gamemode if gamemode in ("", "hl", "7s", "6s", "ud") else ""
+                    ck = (steamid64, gm, map_query.lower())
+                    cached = cache_get("coplayers", ck) or {}
+                    n = len(cached.get("rows") or [])
+                    logs_s = cached.get("logs_searched")
+                    desc = f"Found {n} co-player(s)."
+                    if isinstance(logs_s, (int, float)) and logs_s:
+                        desc += f" Across {int(logs_s)} log(s)."
+        elif mode == "logmatch":
+            steamids = (qp.get("steamids") or "").strip()
+            map_query = (qp.get("map_query") or "").strip()
+            title = "Multi-party log search"
+            if steamids:
+                raw_list = [s.strip() for s in steamids.replace(",", " ").split() if s.strip()]
+                sid_list: list[str] = []
+                for raw in raw_list[:20]:  # hard cap for embed work
+                    sid64, err = resolve_to_steamid64(raw, STEAM_WEB_API_KEY)
+                    if err is None and sid64:
+                        sid_list.append(sid64)
+                sid_tuple = tuple(sorted(sid_list))
+                if sid_tuple:
+                    ck = (sid_tuple, map_query.lower())
+                    cached = cache_get("logmatch", ck) or {}
+                    total = cached.get("total")
+                    if isinstance(total, (int, float)):
+                        desc = f"Found {int(total)} matching log(s)."
+
+        title = _truncate(title, 80)
+        desc = _truncate(desc, 220)
+
+        esc_title = _escape_meta(title)
+        esc_desc = _escape_meta(desc)
+        esc_url = _escape_meta(full_url)
+        # Minimal OG/Twitter tags (no images for now)
+        return (
+            f'\n  <meta property="og:type" content="website">'
+            f'\n  <meta property="og:site_name" content="TF2 Log Searcher">'
+            f'\n  <meta property="og:title" content="{esc_title}">'
+            f'\n  <meta property="og:description" content="{esc_desc}">'
+            f'\n  <meta property="og:url" content="{esc_url}">'
+            f'\n  <meta name="twitter:card" content="summary">'
+            f'\n  <meta name="twitter:title" content="{esc_title}">'
+            f'\n  <meta name="twitter:description" content="{esc_desc}">\n'
+        )
+    except Exception:
+        return ""
+
+
+async def _serve_results_with_embed(request: Request) -> HTMLResponse:
+    start = time.perf_counter()
+    static_path = Path(__file__).resolve().parent.parent / "static" / "index.html"
+    try:
+        if not static_path.is_file():
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            _log_request(request, "/results", 200, duration_ms)
+            return HTMLResponse("<html><body><h1>Tf2LogSearcher</h1><p>ok</p></body></html>")
+        raw = static_path.read_text(encoding="utf-8", errors="replace")
+        meta = _build_results_embed_meta(request)
+        if meta:
+            # Insert immediately after <title> tag if present, else after <head>.
+            needle = "<title>TF2 Log Searcher</title>"
+            if needle in raw:
+                raw = raw.replace(needle, needle + meta, 1)
+            else:
+                raw = raw.replace("<head>", "<head>" + meta, 1)
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/results", 200, duration_ms)
+        return HTMLResponse(raw, media_type="text/html")
+    except Exception:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/results", 500, duration_ms)
+        raise
 
 
 async def _serve_index(request: Request, path: str):
