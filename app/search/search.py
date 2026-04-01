@@ -1,5 +1,6 @@
 """Search logic: chat search, stats search, log match. Pure Python, no HTTP."""
 import json
+import re
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -49,6 +50,7 @@ def _class_playtime_for_logmatch(stats: dict[str, Any]) -> list[dict[str, Any]]:
 # Limits to prevent runaway queries and huge responses
 CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID = 5000   # when showing one player's chat (with or without word filter)
 CHAT_CONTEXT_PREVIEW_MAX_CHARS = 220
+CHAT_SEARCH_LEADERBOARD_MAX_ROWS = 500
 
 
 def local_log_ids_for_player(steamid64: str, logs_dir: str | Path) -> frozenset[int]:
@@ -133,6 +135,24 @@ def _ctx_from_db_row(name: Any, msg: Any, team: Any) -> dict[str, Any] | None:
     return {"name": n, "msg": t, "team": tm}
 
 
+def _sqlite_has_chat_fts(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_messages_fts' LIMIT 1"
+    ).fetchone()
+    return bool(row)
+
+
+def _fts_phrase_query(raw: str) -> str:
+    """Literal phrase query for FTS5 MATCH (double quotes escaped)."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    # Keep alnum / underscore terms to avoid malformed MATCH syntax.
+    cleaned = re.sub(r"\s+", " ", s)
+    cleaned = cleaned.replace('"', '""').strip()
+    return f"\"{cleaned}\""
+
+
 def chat_search_sqlite(
     word: str,
     steamid: str,
@@ -155,7 +175,7 @@ def chat_search_sqlite(
     map_q = (map_query or "").strip().lower()
     start_ts, end_ts = _date_range_to_unix_bounds(date_from, date_to)
 
-    sql = """
+    base_select = """
         SELECT
           cm.log_id,
           cm.alias,
@@ -175,29 +195,60 @@ def chat_search_sqlite(
         LEFT JOIN chat_messages AS n
           ON n.log_id = cm.log_id
          AND n.message_idx = cm.message_idx + 1
+    """
+
+    where_tail = """
         WHERE cm.steamid3 = ?
-          AND (? = '' OR instr(lower(cm.msg), ?) > 0)
           AND (? IS NULL OR cl.log_date_ts >= ?)
           AND (? IS NULL OR cl.log_date_ts <= ?)
           AND (? = '' OR instr(lower(cl.map), ?) > 0)
         ORDER BY cm.log_id DESC, cm.message_idx ASC
         LIMIT ?
     """
-    params: tuple[Any, ...] = (
-        steamid3,
-        word_lower,
-        word_lower,
-        start_ts,
-        start_ts,
-        end_ts,
-        end_ts,
-        map_q,
-        map_q,
-        CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID,
-    )
 
     conn = sqlite3.connect(str(db_path), timeout=30)
     try:
+        has_fts = has_word and _sqlite_has_chat_fts(conn)
+        if has_fts:
+            fts_q = _fts_phrase_query(word)
+            sql = (
+                base_select
+                + """
+                JOIN chat_messages_fts AS fts ON fts.rowid = cm.id
+                """
+                + where_tail.replace("WHERE cm.steamid3 = ?", "WHERE cm.steamid3 = ? AND fts.msg MATCH ?")
+            )
+            params: tuple[Any, ...] = (
+                steamid3,
+                fts_q,
+                start_ts,
+                start_ts,
+                end_ts,
+                end_ts,
+                map_q,
+                map_q,
+                CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID,
+            )
+        else:
+            sql = (
+                base_select
+                + where_tail.replace(
+                    "WHERE cm.steamid3 = ?",
+                    "WHERE cm.steamid3 = ? AND (? = '' OR instr(lower(cm.msg), ?) > 0)",
+                )
+            )
+            params = (
+                steamid3,
+                word_lower,
+                word_lower,
+                start_ts,
+                start_ts,
+                end_ts,
+                end_ts,
+                map_q,
+                map_q,
+                CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID,
+            )
         rows = conn.execute(sql, params).fetchall()
         log_rows = conn.execute(
             "SELECT DISTINCT log_id FROM chat_messages WHERE steamid3 = ?",
@@ -228,6 +279,156 @@ def chat_search_sqlite(
         searched_name = None
     log_ids_used = frozenset(int(x[0]) for x in log_rows if x and x[0] is not None)
     return results, len(results), searched_name, log_ids_used
+
+
+def chat_leaderboard_search_sqlite(
+    word: str,
+    db_path: str | Path,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    map_query: str = "",
+) -> tuple[list[dict[str, Any]], int, int]:
+    """
+    Global word leaderboard in chat DB (no SteamID filter).
+
+    Returns (rows, total_rows, logs_searched_for_match_set).
+    """
+    q = (word or "").strip()
+    q_lower = q.lower()
+    mq = (map_query or "").strip().lower()
+    start_ts, end_ts = _date_range_to_unix_bounds(date_from, date_to)
+
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    try:
+        has_fts = _sqlite_has_chat_fts(conn)
+        if has_fts:
+            where_filter = "fts.msg MATCH ?"
+            query_word = _fts_phrase_query(q)
+            from_clause = """
+                FROM chat_messages AS cm
+                JOIN chat_logs AS cl ON cl.log_id = cm.log_id
+                JOIN chat_messages_fts AS fts ON fts.rowid = cm.id
+            """
+        else:
+            where_filter = "instr(lower(cm.msg), ?) > 0"
+            query_word = q_lower
+            from_clause = """
+                FROM chat_messages AS cm
+                JOIN chat_logs AS cl ON cl.log_id = cm.log_id
+            """
+
+        rows_sql = f"""
+            WITH matches AS (
+              SELECT
+                cm.steamid64 AS steamid64,
+                cm.steamid3 AS steamid3,
+                cm.alias AS alias,
+                cm.log_id AS log_id
+              {from_clause}
+              WHERE {where_filter}
+                AND cm.steamid64 IS NOT NULL
+                AND (? IS NULL OR cl.log_date_ts >= ?)
+                AND (? IS NULL OR cl.log_date_ts <= ?)
+                AND (? = '' OR instr(lower(cl.map), ?) > 0)
+            ),
+            agg AS (
+              SELECT
+                steamid64,
+                steamid3,
+                COALESCE(NULLIF(MAX(alias), ''), steamid3) AS name,
+                COUNT(*) AS occurrences,
+                COUNT(DISTINCT log_id) AS logs_count
+              FROM matches
+              GROUP BY steamid64, steamid3
+            ),
+            per_log AS (
+              SELECT
+                steamid64,
+                log_id,
+                COUNT(*) AS occurrences_in_log,
+                ROW_NUMBER() OVER (
+                  PARTITION BY steamid64
+                  ORDER BY COUNT(*) DESC, log_id DESC
+                ) AS rn
+              FROM matches
+              GROUP BY steamid64, log_id
+            ),
+            latest_log AS (
+              SELECT steamid64, MAX(log_id) AS latest_log_id
+              FROM matches
+              GROUP BY steamid64
+            )
+            SELECT
+              agg.steamid64,
+              agg.steamid3,
+              agg.name,
+              agg.occurrences,
+              agg.logs_count,
+              COALESCE(per_log.log_id, latest_log.latest_log_id) AS top_log_id
+            FROM agg
+            LEFT JOIN per_log
+              ON per_log.steamid64 = agg.steamid64
+             AND per_log.rn = 1
+            LEFT JOIN latest_log
+              ON latest_log.steamid64 = agg.steamid64
+            ORDER BY agg.occurrences DESC, agg.logs_count DESC, agg.name ASC
+            LIMIT ?
+        """
+        logs_sql = f"""
+            SELECT COUNT(DISTINCT cm.log_id)
+            {from_clause}
+            WHERE {where_filter}
+              AND (? IS NULL OR cl.log_date_ts >= ?)
+              AND (? IS NULL OR cl.log_date_ts <= ?)
+              AND (? = '' OR instr(lower(cl.map), ?) > 0)
+        """
+        params: tuple[Any, ...] = (
+            query_word,
+            start_ts,
+            start_ts,
+            end_ts,
+            end_ts,
+            mq,
+            mq,
+            CHAT_SEARCH_LEADERBOARD_MAX_ROWS,
+        )
+        log_params: tuple[Any, ...] = (
+            query_word,
+            start_ts,
+            start_ts,
+            end_ts,
+            end_ts,
+            mq,
+            mq,
+        )
+        out_rows = conn.execute(rows_sql, params).fetchall()
+        logs_searched = int(conn.execute(logs_sql, log_params).fetchone()[0] or 0)
+    finally:
+        conn.close()
+
+    rows: list[dict[str, Any]] = []
+    for r in out_rows:
+        sid64 = str(r[0] or "").strip()
+        if not sid64:
+            continue
+        occurrences = int(r[3] or 0)
+        logs_count = int(r[4] or 0)
+        top_log_id = int(r[5] or 0)
+        rows.append(
+            {
+                "steamid64": sid64,
+                "steamid3": str(r[1] or ""),
+                "name": str(r[2] or ""),
+                "occurrences": occurrences,
+                "logs_count": logs_count,
+                "word_per_log": (occurrences / logs_count) if logs_count > 0 else 0.0,
+                "top_log_id": top_log_id if top_log_id > 0 else None,
+                "top_log_url": f"{LOGS_TF_URL_BASE}/{top_log_id}" if top_log_id > 0 else "",
+                "profile_url": f"{LOGS_TF_URL_BASE}/profile/{sid64}",
+            }
+        )
+    return rows, len(rows), logs_searched
 
 
 def chat_search(

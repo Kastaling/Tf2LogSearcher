@@ -147,6 +147,40 @@ def local_chat_log_ids_for_player(steamid64: str, db_path: str | Path) -> frozen
     return frozenset(int(r[0]) for r in rows if r and r[0] is not None)
 
 
+def local_all_chat_log_ids(db_path: str | Path) -> frozenset[int]:
+    """All log IDs currently present in chat DB."""
+    path = Path(db_path)
+    if not path.is_file():
+        return frozenset()
+    conn = sqlite3.connect(str(path), timeout=30)
+    try:
+        rows = conn.execute("SELECT log_id FROM chat_logs").fetchall()
+    finally:
+        conn.close()
+    return frozenset(int(r[0]) for r in rows if r and r[0] is not None)
+
+
+def chat_log_fingerprint(db_path: str | Path) -> frozenset[int]:
+    """
+    Lightweight cache fingerprint for chat DB contents.
+
+    Encodes (row_count, max_log_id) as a frozenset for compatibility with cache API.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return frozenset()
+    conn = sqlite3.connect(str(path), timeout=30)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(log_id), 0) FROM chat_logs"
+        ).fetchone()
+    finally:
+        conn.close()
+    count = int(row[0] or 0) if row else 0
+    max_id = int(row[1] or 0) if row else 0
+    return frozenset((count, max_id))
+
+
 def _extract_chat_rows(log_id: int, logtext: dict[str, Any]) -> tuple[int | None, str, list[tuple[Any, ...]]]:
     """Return (log_date_ts, map_name, rows_for_chat_messages)."""
     info = logtext.get("info") if isinstance(logtext, dict) else None

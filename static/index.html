@@ -535,9 +535,9 @@
   <h1>TF2 Logs.tf Advanced Searcher</h1>
 
   <h2>Chat Searcher</h2>
-  <p>Search for a word or phrase in a player's chat, or leave the word blank to see their full chat history. You can enter SteamID64, profile URL, vanity URL, or vanity name.</p>
+  <p>Search for a word or phrase in a player's chat, or leave Steam ID empty to see a global word leaderboard. Steam ID accepts SteamID64, profile URL, vanity URL, or vanity name.</p>
   <form id="frmChat">
-    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label>
+    <label>Steam ID (optional for leaderboard): <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64"></label>
     <label>Word or phrase (optional): <input type="text" name="word" placeholder="Leave empty for full chat history"></label>
     <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
     <label>Date from (optional): <input type="date" name="date_from"></label>
@@ -696,10 +696,10 @@
       mode = (mode || '').trim();
       if (mode === 'chat') {
         var sid = (params.get('steamid') || '').trim();
-        if (!sid) return null;
-        if (sid.length > MAX_STEAMID_INPUT_LEN) sid = sid.slice(0, MAX_STEAMID_INPUT_LEN);
         var word = (params.get('word') || '').trim();
         if (word.length > MAX_CHAT_WORD_LEN) word = word.slice(0, MAX_CHAT_WORD_LEN);
+        if (sid.length > MAX_STEAMID_INPUT_LEN) sid = sid.slice(0, MAX_STEAMID_INPUT_LEN);
+        if (!sid && word.length < 3) return null;
         return {
           mode: 'chat',
           steamid: sid,
@@ -1234,6 +1234,104 @@
       }
     }
 
+    var chatLbSortCol = 'occurrences';
+    var chatLbSortDir = -1;
+    var CHAT_LB_COLUMNS = [
+      { key: 'name', label: 'Name', type: 'text' },
+      { key: 'occurrences', label: 'Occurrences', type: 'number' },
+      { key: 'logs_count', label: 'Logs', type: 'number' },
+      { key: 'word_per_log', label: 'Word / log', type: 'number' },
+      { key: 'top_log_id', label: 'Top log', type: 'number' }
+    ];
+
+    function getSortedChatLeaderboardRows(rows) {
+      var out = rows.slice();
+      var col = chatLbSortCol;
+      var dir = chatLbSortDir;
+      var def = CHAT_LB_COLUMNS.find(function(c) { return c.key === col; });
+      if (!def) return out;
+      out.sort(function(a, b) {
+        var va = a[col];
+        var vb = b[col];
+        if (def.type === 'number') {
+          va = Number(va);
+          vb = Number(vb);
+          if (!Number.isFinite(va)) va = -Infinity;
+          if (!Number.isFinite(vb)) vb = -Infinity;
+          if (va < vb) return -dir;
+          if (va > vb) return dir;
+          return 0;
+        }
+        va = va != null ? String(va).toLowerCase() : '';
+        vb = vb != null ? String(vb).toLowerCase() : '';
+        if (va < vb) return -dir;
+        if (va > vb) return dir;
+        return 0;
+      });
+      return out;
+    }
+
+    function renderChatLeaderboard(el, data, wordParam, elapsedMs) {
+      var rows = data && Array.isArray(data.rows) ? data.rows : [];
+      if (rows !== el._chatLbRows) {
+        el._chatLbRows = rows;
+        chatLbSortCol = 'occurrences';
+        chatLbSortDir = -1;
+      }
+      var sorted = getSortedChatLeaderboardRows(el._chatLbRows || []);
+      var logsSearched = (data && Number.isFinite(Number(data.logs_searched))) ? Number(data.logs_searched) : null;
+      var word = (wordParam || '').trim();
+      if (!sorted.length) {
+        el.innerHTML = 'No matches.' + requestTimingFooter(elapsedMs);
+        return;
+      }
+
+      var thead = '<tr>';
+      CHAT_LB_COLUMNS.forEach(function(c) {
+        var cls = 'sortable';
+        if (c.key === chatLbSortCol) cls += chatLbSortDir === 1 ? ' sorted-asc' : ' sorted-desc';
+        thead += '<th class="' + cls + '" data-col="' + escapeHtml(c.key) + '" scope="col">' + escapeHtml(c.label) + '</th>';
+      });
+      thead += '</tr>';
+
+      var tbody = '';
+      sorted.forEach(function(r) {
+        var sid64 = r.steamid64 != null ? String(r.steamid64).trim() : '';
+        var displayName = r.name != null ? String(r.name) : '';
+        if (!displayName) displayName = sid64 || 'Unknown';
+        var profile = /^\d{17}$/.test(sid64) ? ('https://logs.tf/profile/' + encodeURIComponent(sid64)) : '';
+        var nameCell = profile
+          ? ('<a href="' + escapeAttr(profile) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(displayName) + '</a>')
+          : escapeHtml(displayName);
+        var opl = Number(r.word_per_log);
+        var oplCell = Number.isFinite(opl) ? opl.toFixed(2) : '0.00';
+        var topLogId = (r.top_log_id != null) ? String(r.top_log_id) : '';
+        var topLogUrl = (r.top_log_url != null) ? String(r.top_log_url) : '';
+        var topLogCell = (topLogId && topLogUrl)
+          ? ('<a href="' + escapeAttr(topLogUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(topLogId) + '</a>')
+          : '—';
+        tbody += '<tr><td>' + nameCell + '</td><td>' + escapeHtml(String(r.occurrences != null ? r.occurrences : 0)) + '</td><td>' + escapeHtml(String(r.logs_count != null ? r.logs_count : 0)) + '</td><td>' + escapeHtml(oplCell) + '</td><td>' + topLogCell + '</td></tr>';
+      });
+
+      var summary = 'Top ' + escapeHtml(String(sorted.length)) + ' player(s) for "' + escapeHtml(word) + '"';
+      if (logsSearched != null) summary += ' across ' + escapeHtml(String(logsSearched)) + ' log(s)';
+      summary += '.';
+      el.innerHTML =
+        '<p class="chat-summary-line">' + summary + '</p>' +
+        '<div class="stats-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' +
+        requestTimingFooter(elapsedMs);
+
+      el.querySelectorAll('th.sortable').forEach(function(th) {
+        th.addEventListener('click', function() {
+          var col = th.getAttribute('data-col');
+          if (!col) return;
+          if (chatLbSortCol === col) chatLbSortDir = chatLbSortDir === 1 ? -1 : 1;
+          else { chatLbSortCol = col; chatLbSortDir = 1; }
+          renderChatLeaderboard(el, { rows: el._chatLbRows, logs_searched: logsSearched }, word, elapsedMs);
+        });
+      });
+    }
+
     function renderChatResult(el, data, steamidParam, wordParam, showWebhookBox, elapsedMs) {
       disconnectChatLazyObserver(el);
       el._chatLazyState = null;
@@ -1337,12 +1435,12 @@
       var mapQuery = sanitizeMapQueryInput(form.map_query && form.map_query.value ? form.map_query.value : '');
       var dateFrom = (form.date_from && form.date_from.value) ? String(form.date_from.value).trim() : '';
       var dateTo = (form.date_to && form.date_to.value) ? String(form.date_to.value).trim() : '';
-      if (!steamid) {
-        document.getElementById('chatResults').innerHTML = '<span class="error">Steam ID is required.</span>';
-        return;
-      }
       if (word.length > 200) {
         document.getElementById('chatResults').innerHTML = '<span class="error">Search word is too long.</span>';
+        return;
+      }
+      if (!steamid && word.length < 3) {
+        document.getElementById('chatResults').innerHTML = '<span class="error">When Steam ID is empty, search word must be at least 3 characters.</span>';
         return;
       }
       if (dateFrom && dateTo && dateFrom > dateTo) {
@@ -2527,7 +2625,11 @@
             return;
           }
           if (mode === 'chat') {
-            renderChatResult(resultsContent, data, params.get('steamid'), params.get('word'), true, ms);
+            if (data && data.leaderboard) {
+              renderChatLeaderboard(resultsContent, data, params.get('word'), ms);
+            } else {
+              renderChatResult(resultsContent, data, params.get('steamid'), params.get('word'), true, ms);
+            }
           } else if (mode === 'stats') {
             var rows = data.rows || [];
             if (rows.length === 0) {

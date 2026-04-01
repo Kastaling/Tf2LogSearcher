@@ -10,8 +10,16 @@ from fastapi import APIRouter, Request, Form, Query
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 
 from app.config import LOGS_DIR, REQUEST_LOG_PATH, DOWNLOADER_STATE_DIR, STEAM_WEB_API_KEY, CHAT_DB_PATH
+from app.chat_db import chat_log_fingerprint
 from app.request_log import append_request_log
-from app.search.search import chat_search, chat_search_sqlite, coplayers_search, stats_search, log_match
+from app.search.search import (
+    chat_leaderboard_search_sqlite,
+    chat_search,
+    chat_search_sqlite,
+    coplayers_search,
+    log_match,
+    stats_search,
+)
 from app.search_cache import get as cache_get, set_ as cache_set
 from app.steam_resolver import resolve_to_steamid64
 from app.subscriptions import add_subscription, deactivate_by_token, is_valid_discord_webhook_url, send_welcome_message
@@ -91,14 +99,17 @@ def _api_search_chat_impl(
 ) -> JSONResponse:
     """Shared implementation for POST and GET chat search. Returns JSONResponse."""
     start = time.perf_counter()
-    if not steamid_input:
-        return JSONResponse(
-            {"results": [], "total": 0, "error": "Steam ID is required."},
-            status_code=400,
-        )
+    steamid_input = (steamid_input or "").strip()
+    word = (word or "").strip()
+    is_leaderboard = steamid_input == ""
     if len(word) > CHAT_SEARCH_MAX_WORD_LENGTH:
         return JSONResponse(
             {"results": [], "total": 0, "error": "Search word is too long."},
+            status_code=400,
+        )
+    if is_leaderboard and len(word) < 3:
+        return JSONResponse(
+            {"results": [], "total": 0, "error": "Search word must be at least 3 characters when Steam ID is empty."},
             status_code=400,
         )
     map_query = (map_query_raw or "").strip()
@@ -116,22 +127,34 @@ def _api_search_chat_impl(
     if date_from is not None and date_to is not None and date_from > date_to:
         return JSONResponse({"results": [], "total": 0, "error": "date_from must be before or equal to date_to."}, status_code=400)
 
-    steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
-    if resolve_error is not None:
-        return JSONResponse(
-            {"results": [], "total": 0, "error": resolve_error},
-            status_code=400,
-        )
-    assert steamid64 is not None
+    steamid64 = ""
+    if not is_leaderboard:
+        steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+        if resolve_error is not None:
+            return JSONResponse(
+                {"results": [], "total": 0, "error": resolve_error},
+                status_code=400,
+            )
+        assert steamid64 is not None
 
-    cache_key = (
-        steamid64,
-        word,
-        date_from.isoformat() if date_from else "",
-        date_to.isoformat() if date_to else "",
-        map_query.lower(),
-    )
-    cached = cache_get("chat", cache_key)
+    if is_leaderboard:
+        cache_key = (
+            word.lower(),
+            date_from.isoformat() if date_from else "",
+            date_to.isoformat() if date_to else "",
+            map_query.lower(),
+        )
+        cache_mode = "chatlb"
+    else:
+        cache_key = (
+            steamid64,
+            word,
+            date_from.isoformat() if date_from else "",
+            date_to.isoformat() if date_to else "",
+            map_query.lower(),
+        )
+        cache_mode = "chat"
+    cached = cache_get(cache_mode, cache_key)
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/search/chat", 200, duration_ms, result_count=cached.get("total", 0), word=word, steamid=steamid64)
@@ -140,34 +163,52 @@ def _api_search_chat_impl(
     status_code = 200
     result_count = 0
     try:
-        try:
-            results, result_count, searched_user_name, log_ids_used = chat_search_sqlite(
+        if is_leaderboard:
+            rows, result_count, logs_searched = chat_leaderboard_search_sqlite(
                 word,
-                steamid64,
                 CHAT_DB_PATH,
                 date_from=date_from,
                 date_to=date_to,
                 map_query=map_query,
             )
-        except Exception as db_err:
-            # Safety fallback: preserve legacy behavior if DB is unavailable/corrupt.
-            logger.warning("SQLite chat search failed; falling back to JSON scan: %s", db_err)
-            results, result_count, searched_user_name, log_ids_used = chat_search(
-                word,
-                steamid64,
-                LOGS_DIR,
-                date_from=date_from,
-                date_to=date_to,
-                map_query=map_query,
-            )
-        payload = {
-            "results": results,
-            "total": result_count,
-            "searched_user_name": searched_user_name,
-            "resolved_steamid64": steamid64,
-            "logs_searched": len(log_ids_used),
-        }
-        cache_set("chat", cache_key, payload, log_ids_used)
+            payload = {
+                "leaderboard": True,
+                "rows": rows,
+                "total": result_count,
+                "word": word,
+                "logs_searched": logs_searched,
+            }
+            cache_set("chatlb", cache_key, payload, chat_log_fingerprint(CHAT_DB_PATH))
+        else:
+            try:
+                results, result_count, searched_user_name, log_ids_used = chat_search_sqlite(
+                    word,
+                    steamid64,
+                    CHAT_DB_PATH,
+                    date_from=date_from,
+                    date_to=date_to,
+                    map_query=map_query,
+                )
+            except Exception as db_err:
+                # Safety fallback: preserve legacy behavior if DB is unavailable/corrupt.
+                logger.warning("SQLite chat search failed; falling back to JSON scan: %s", db_err)
+                results, result_count, searched_user_name, log_ids_used = chat_search(
+                    word,
+                    steamid64,
+                    LOGS_DIR,
+                    date_from=date_from,
+                    date_to=date_to,
+                    map_query=map_query,
+                )
+            payload = {
+                "leaderboard": False,
+                "results": results,
+                "total": result_count,
+                "searched_user_name": searched_user_name,
+                "resolved_steamid64": steamid64,
+                "logs_searched": len(log_ids_used),
+            }
+            cache_set("chat", cache_key, payload, log_ids_used)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/search/chat", status_code, duration_ms, result_count=result_count, word=word, steamid=steamid64)
         return JSONResponse(payload)
