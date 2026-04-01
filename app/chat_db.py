@@ -114,6 +114,39 @@ def _steamid3_to_steamid64(steamid3: str) -> str | None:
         return None
 
 
+def _steamid64_to_steamid3(steamid64: str | int) -> str | None:
+    try:
+        a = int(steamid64) - _STEAMID64_OFFSET
+    except (TypeError, ValueError):
+        return None
+    if a < 0:
+        return None
+    return f"[U:1:{a}]"
+
+
+def local_chat_log_ids_for_player(steamid64: str, db_path: str | Path) -> frozenset[int]:
+    """
+    Distinct log IDs in chat DB where the player has chat rows.
+
+    Used by chat cache invalidation to avoid expensive logs.tf + filesystem scans.
+    """
+    steamid3 = _steamid64_to_steamid3(steamid64)
+    if not steamid3:
+        return frozenset()
+    path = Path(db_path)
+    if not path.is_file():
+        return frozenset()
+    conn = sqlite3.connect(str(path), timeout=30)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT log_id FROM chat_messages WHERE steamid3 = ?",
+            (steamid3,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return frozenset(int(r[0]) for r in rows if r and r[0] is not None)
+
+
 def _extract_chat_rows(log_id: int, logtext: dict[str, Any]) -> tuple[int | None, str, list[tuple[Any, ...]]]:
     """Return (log_date_ts, map_name, rows_for_chat_messages)."""
     info = logtext.get("info") if isinstance(logtext, dict) else None

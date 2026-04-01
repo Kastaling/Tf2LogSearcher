@@ -1,5 +1,6 @@
 """Search logic: chat search, stats search, log match. Pure Python, no HTTP."""
 import json
+import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -101,6 +102,132 @@ def _map_matches_query(map_name: Any, map_query: str | None) -> bool:
     if not m:
         return False
     return q in m
+
+
+def _date_range_to_unix_bounds(
+    date_from: date | None,
+    date_to: date | None,
+) -> tuple[int | None, int | None]:
+    """Inclusive UTC second bounds for [date_from, date_to]."""
+    start_ts: int | None = None
+    end_ts: int | None = None
+    if date_from is not None:
+        start_dt = datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc)
+        start_ts = int(start_dt.timestamp())
+    if date_to is not None:
+        # End of day inclusive.
+        end_dt = datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=timezone.utc)
+        end_ts = int(end_dt.timestamp())
+    return start_ts, end_ts
+
+
+def _ctx_from_db_row(name: Any, msg: Any, team: Any) -> dict[str, Any] | None:
+    """Context payload matching existing chat API shape."""
+    t = str(msg or "").strip()
+    if not t:
+        return None
+    if len(t) > CHAT_CONTEXT_PREVIEW_MAX_CHARS:
+        t = t[: CHAT_CONTEXT_PREVIEW_MAX_CHARS - 1] + "…"
+    n = str(name or "").strip()
+    tm = "Red" if team == "Red" else ("Blue" if team == "Blue" else None)
+    return {"name": n, "msg": t, "team": tm}
+
+
+def chat_search_sqlite(
+    word: str,
+    steamid: str,
+    db_path: str | Path,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    map_query: str = "",
+) -> tuple[list[dict[str, Any]], int, str | None, frozenset[int]]:
+    """
+    Search chat in SQLite DB. Same return shape as ``chat_search``.
+
+    ``log_ids_used`` is the set of log IDs where this player has chat rows in DB.
+    """
+    word = (word or "").strip()
+    steamid = (steamid or "").strip()
+    has_word = bool(word)
+    word_lower = word.lower() if has_word else ""
+    steamid3 = steamid64_to_steamid3(steamid)
+    map_q = (map_query or "").strip().lower()
+    start_ts, end_ts = _date_range_to_unix_bounds(date_from, date_to)
+
+    sql = """
+        SELECT
+          cm.log_id,
+          cm.alias,
+          cm.msg,
+          cm.team,
+          p.alias AS prev_alias,
+          p.msg AS prev_msg,
+          p.team AS prev_team,
+          n.alias AS next_alias,
+          n.msg AS next_msg,
+          n.team AS next_team
+        FROM chat_messages AS cm
+        JOIN chat_logs AS cl ON cl.log_id = cm.log_id
+        LEFT JOIN chat_messages AS p
+          ON p.log_id = cm.log_id
+         AND p.message_idx = cm.message_idx - 1
+        LEFT JOIN chat_messages AS n
+          ON n.log_id = cm.log_id
+         AND n.message_idx = cm.message_idx + 1
+        WHERE cm.steamid3 = ?
+          AND (? = '' OR instr(lower(cm.msg), ?) > 0)
+          AND (? IS NULL OR cl.log_date_ts >= ?)
+          AND (? IS NULL OR cl.log_date_ts <= ?)
+          AND (? = '' OR instr(lower(cl.map), ?) > 0)
+        ORDER BY cm.log_id DESC, cm.message_idx ASC
+        LIMIT ?
+    """
+    params: tuple[Any, ...] = (
+        steamid3,
+        word_lower,
+        word_lower,
+        start_ts,
+        start_ts,
+        end_ts,
+        end_ts,
+        map_q,
+        map_q,
+        CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID,
+    )
+
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    try:
+        rows = conn.execute(sql, params).fetchall()
+        log_rows = conn.execute(
+            "SELECT DISTINCT log_id FROM chat_messages WHERE steamid3 = ?",
+            (steamid3,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    results: list[dict[str, Any]] = []
+    for r in rows:
+        log_id = int(r[0])
+        alias = str(r[1] or "")
+        msg = str(r[2] or "")
+        team = "Red" if r[3] == "Red" else ("Blue" if r[3] == "Blue" else None)
+        results.append(
+            {
+                "log_id": log_id,
+                "alias": alias,
+                "msg": msg,
+                "context_prev": _ctx_from_db_row(r[4], r[5], r[6]),
+                "context_next": _ctx_from_db_row(r[7], r[8], r[9]),
+                "url": f"{LOGS_TF_URL_BASE}/{log_id}",
+                "team": team,
+            }
+        )
+    searched_name = results[0]["alias"].strip() if results else None
+    if searched_name == "":
+        searched_name = None
+    log_ids_used = frozenset(int(x[0]) for x in log_rows if x and x[0] is not None)
+    return results, len(results), searched_name, log_ids_used
 
 
 def chat_search(

@@ -1,5 +1,6 @@
 """API routes for search endpoints and request logging."""
 import json
+import logging
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -8,9 +9,9 @@ from typing import Any
 from fastapi import APIRouter, Request, Form, Query
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 
-from app.config import LOGS_DIR, REQUEST_LOG_PATH, DOWNLOADER_STATE_DIR, STEAM_WEB_API_KEY
+from app.config import LOGS_DIR, REQUEST_LOG_PATH, DOWNLOADER_STATE_DIR, STEAM_WEB_API_KEY, CHAT_DB_PATH
 from app.request_log import append_request_log
-from app.search.search import chat_search, coplayers_search, stats_search, log_match
+from app.search.search import chat_search, chat_search_sqlite, coplayers_search, stats_search, log_match
 from app.search_cache import get as cache_get, set_ as cache_set
 from app.steam_resolver import resolve_to_steamid64
 from app.subscriptions import add_subscription, deactivate_by_token, is_valid_discord_webhook_url, send_welcome_message
@@ -21,6 +22,7 @@ STEAMID64_LEN = 17
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _client_ip(request: Request) -> str:
@@ -138,14 +140,26 @@ def _api_search_chat_impl(
     status_code = 200
     result_count = 0
     try:
-        results, result_count, searched_user_name, log_ids_used = chat_search(
-            word,
-            steamid64,
-            LOGS_DIR,
-            date_from=date_from,
-            date_to=date_to,
-            map_query=map_query,
-        )
+        try:
+            results, result_count, searched_user_name, log_ids_used = chat_search_sqlite(
+                word,
+                steamid64,
+                CHAT_DB_PATH,
+                date_from=date_from,
+                date_to=date_to,
+                map_query=map_query,
+            )
+        except Exception as db_err:
+            # Safety fallback: preserve legacy behavior if DB is unavailable/corrupt.
+            logger.warning("SQLite chat search failed; falling back to JSON scan: %s", db_err)
+            results, result_count, searched_user_name, log_ids_used = chat_search(
+                word,
+                steamid64,
+                LOGS_DIR,
+                date_from=date_from,
+                date_to=date_to,
+                map_query=map_query,
+            )
         payload = {
             "results": results,
             "total": result_count,
