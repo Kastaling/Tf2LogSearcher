@@ -41,7 +41,7 @@ def _is_valid(entry: dict[str, Any], mode: str, key_tuple: tuple[Any, ...]) -> b
             current = local_chat_log_ids_for_player(steamid64, CHAT_DB_PATH)
             if current != cached_ids:
                 return False
-        elif mode == "chatlb":
+        elif mode == "chatlb" or mode == "playername":
             current = chat_log_fingerprint(CHAT_DB_PATH)
             if current != cached_ids:
                 return False

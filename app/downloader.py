@@ -18,7 +18,15 @@ from app.config import (
     RETRY_ATTEMPTS,
     CHAT_DB_PATH,
 )
-from app.chat_db import connect_chat_db, init_chat_db, replace_chat_for_log
+from app.chat_db import (
+    ALIAS_FTS_CYCLE_BUSY_ATTEMPTS,
+    ALIAS_FTS_PROGRESS_HEARTBEAT_SEC,
+    alias_fts_rebuild_pending,
+    connect_chat_db,
+    init_chat_db,
+    replace_chat_for_log,
+    run_alias_fts_rebuild_if_needed,
+)
 from app.logs_tf import fetch_log_list, fetch_log_json
 from app.subscriptions import check_log_for_subscriptions
 
@@ -520,6 +528,29 @@ def main() -> None:
     try:
         chat_db_conn = connect_chat_db(chat_db_path)
         init_chat_db(chat_db_conn)
+        if alias_fts_rebuild_pending(chat_db_conn):
+            logger.info("")
+            logger.info("%s", "=" * 80)
+            logger.info(
+                "CHAT DB: Player-name index rebuild required — log downloads wait until it completes."
+            )
+            logger.info(
+                "CHAT DB: First run or post-upgrade; large DBs may need many minutes for this step."
+            )
+            logger.info(
+                "CHAT DB: Heartbeat messages every ~%ss while SQLite rebuilds the alias index.",
+                int(ALIAS_FTS_PROGRESS_HEARTBEAT_SEC),
+            )
+            logger.info("%s", "=" * 80)
+            logger.info("")
+        run_alias_fts_rebuild_if_needed(chat_db_conn, log_progress=True)
+        if alias_fts_rebuild_pending(chat_db_conn):
+            logger.warning(
+                "CHAT DB: Alias FTS still not marked ready (e.g. lock contention). "
+                "Player-name search may stay unavailable; will retry at the start of each download cycle."
+            )
+        else:
+            logger.info("CHAT DB: Player-name index ready — proceeding with log downloads.")
     except Exception as e:
         logger.exception("Failed to open/init chat DB (%s). Continuing without DB indexing: %s", chat_db_path, e)
         chat_db_conn = None
@@ -529,6 +560,15 @@ def main() -> None:
     session_start_time_ref: list[float] = [time.time()]  # process start for aggregated ETA rate
     session_downloads_ref: list[int] = [0]  # total logs written this run for aggregated ETA rate
     while True:
+        if chat_db_conn is not None and alias_fts_rebuild_pending(chat_db_conn):
+            logger.info(
+                "CHAT DB: Retrying alias FTS rebuild before this cycle (downloads wait until done or skipped)."
+            )
+            run_alias_fts_rebuild_if_needed(
+                chat_db_conn,
+                log_progress=True,
+                busy_attempts=ALIAS_FTS_CYCLE_BUSY_ATTEMPTS,
+            )
         skipped = load_skip_list(state_dir)
         next_offset = load_next_offset(state_dir, logs_dir)
         logger.info("Resuming: next_offset=%s skip_list_size=%s", next_offset, len(skipped))

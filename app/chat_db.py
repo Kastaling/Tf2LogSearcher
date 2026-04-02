@@ -11,6 +11,15 @@ from typing import Any
 logger = logging.getLogger(__name__)
 _STEAMID64_OFFSET = 76561197960265728
 _STEAMID3_RE = re.compile(r"^\[U:1:(\d+)\]$")
+# Set in chat_app_meta after a full alias FTS rebuild; player-name search uses FTS only when value is "1".
+CHAT_ALIAS_FTS_READY_META_KEY = "alias_fts_ready"
+_ALIAS_FTS_REBUILD_ATTEMPTS = 90
+_ALIAS_FTS_REBUILD_SLEEP_SEC = 2.0
+# Downloader retries pending rebuild once per cycle; cap busy retries so each cycle does not stall minutes.
+ALIAS_FTS_CYCLE_BUSY_ATTEMPTS = 20
+# Progress handler: invoke every N VM instructions; throttle logs to this wall-clock interval.
+_ALIAS_FTS_PROGRESS_OPCODE_INTERVAL = 2_000_000
+ALIAS_FTS_PROGRESS_HEARTBEAT_SEC = 15.0
 
 
 def connect_chat_db(db_path: str | Path) -> sqlite3.Connection:
@@ -56,6 +65,209 @@ def _init_fts_if_available(conn: sqlite3.Connection) -> None:
         logger.warning("FTS5 unavailable for chat DB; continuing without full-text index: %s", e)
 
 
+def _alias_fts_mark_ready(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO chat_app_meta(key, value) VALUES(?, ?)",
+        (CHAT_ALIAS_FTS_READY_META_KEY, "1"),
+    )
+
+
+def alias_fts_rebuild_pending(conn: sqlite3.Connection) -> bool:
+    """True if chat_app_meta does not mark the alias trigram index as ready."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM chat_app_meta WHERE key = ? LIMIT 1",
+            (CHAT_ALIAS_FTS_READY_META_KEY,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    return row is None or row[0] != "1"
+
+
+def _execute_alias_fts_rebuild_insert(conn: sqlite3.Connection, *, log_progress: bool) -> None:
+    """Run FTS5 external-content rebuild; optional SQLite progress-handler heartbeats."""
+    if not log_progress:
+        conn.execute(
+            "INSERT INTO chat_messages_alias_fts(chat_messages_alias_fts) VALUES('rebuild')"
+        )
+        return
+
+    last_mono: list[float] = [0.0]
+
+    def on_progress() -> int:
+        now = time.monotonic()
+        if now - last_mono[0] >= ALIAS_FTS_PROGRESS_HEARTBEAT_SEC:
+            last_mono[0] = now
+            logger.info(
+                "Alias FTS: rebuild still running (SQLite VM active — large databases can take tens of minutes)"
+            )
+        return 0
+
+    conn.set_progress_handler(on_progress, _ALIAS_FTS_PROGRESS_OPCODE_INTERVAL)
+    try:
+        conn.execute(
+            "INSERT INTO chat_messages_alias_fts(chat_messages_alias_fts) VALUES('rebuild')"
+        )
+    finally:
+        # Some sqlite3 builds require n even when clearing the handler (handler=None).
+        conn.set_progress_handler(None, 0)
+
+
+def _maybe_rebuild_alias_fts(
+    conn: sqlite3.Connection,
+    *,
+    log_progress: bool = False,
+    busy_attempts: int | None = None,
+) -> None:
+    """
+    Ensure alias trigram FTS is fully populated and mark ready in chat_app_meta.
+
+    Retries on SQLITE_BUSY / locked (e.g. another container briefly holds the DB).
+    Must not be called from the web app while the downloader writes continuously —
+    use the downloader or backfill process to run init_chat_db.
+
+    busy_attempts: max BEGIN IMMEDIATE retries; default is _ALIAS_FTS_REBUILD_ATTEMPTS.
+    """
+    if not alias_fts_rebuild_pending(conn):
+        return
+
+    attempts_total = (
+        busy_attempts if busy_attempts is not None else _ALIAS_FTS_REBUILD_ATTEMPTS
+    )
+    attempts_total = max(1, min(attempts_total, _ALIAS_FTS_REBUILD_ATTEMPTS))
+
+    for attempt in range(attempts_total):
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            n_msgs = int(conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0])
+            if n_msgs == 0:
+                _alias_fts_mark_ready(conn)
+            else:
+                logger.info(
+                    "Alias FTS: starting INSERT rebuild over %s chat_messages rows (single long transaction)...",
+                    n_msgs,
+                )
+                _execute_alias_fts_rebuild_insert(conn, log_progress=log_progress)
+                logger.info(
+                    "Alias FTS: INSERT rebuild step finished for %s source rows",
+                    n_msgs,
+                )
+                _alias_fts_mark_ready(conn)
+            conn.commit()
+            return
+        except sqlite3.OperationalError as e:
+            try:
+                conn.rollback()
+            except sqlite3.OperationalError:
+                pass
+            err = str(e).lower()
+            if "locked" not in err and "busy" not in err:
+                logger.warning("chat_messages_alias_fts rebuild failed: %s", e)
+                return
+            if attempt + 1 >= attempts_total:
+                logger.warning(
+                    "chat_messages_alias_fts rebuild skipped after %s attempts: %s",
+                    attempts_total,
+                    e,
+                )
+                return
+            logger.info(
+                "Alias FTS: database busy (attempt %s/%s); retrying in %ss...",
+                attempt + 1,
+                attempts_total,
+                _ALIAS_FTS_REBUILD_SLEEP_SEC,
+            )
+            time.sleep(_ALIAS_FTS_REBUILD_SLEEP_SEC)
+        except Exception:
+            try:
+                conn.rollback()
+            except sqlite3.OperationalError:
+                pass
+            raise
+
+
+def run_alias_fts_rebuild_if_needed(
+    conn: sqlite3.Connection,
+    *,
+    log_progress: bool = False,
+    busy_attempts: int | None = None,
+) -> None:
+    """
+    Blocking alias FTS rebuild on an existing connection (single writer).
+
+    Use the downloader's shared chat connection so no second handle contends for the DB.
+    """
+    _maybe_rebuild_alias_fts(conn, log_progress=log_progress, busy_attempts=busy_attempts)
+
+
+def rebuild_alias_fts_if_needed(
+    db_path: str | Path,
+    *,
+    log_progress: bool = True,
+    busy_attempts: int | None = None,
+) -> None:
+    """
+    Open the chat DB and run rebuild when the ready flag is unset.
+
+    Used by backfill, `python -m app.rebuild_alias_fts`, and one-off maintenance.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return
+    conn = connect_chat_db(path)
+    try:
+        _maybe_rebuild_alias_fts(
+            conn, log_progress=log_progress, busy_attempts=busy_attempts
+        )
+    finally:
+        conn.close()
+
+
+def _init_alias_trigram_fts(conn: sqlite3.Connection) -> None:
+    """
+    FTS5 trigram index on chat alias for fast substring player-name search.
+
+    Without this, instr(lower(alias), ?) scans the entire chat_messages table.
+    """
+    try:
+        conn.executescript(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_alias_fts
+            USING fts5(
+              alias,
+              tokenize = 'trigram',
+              content='chat_messages',
+              content_rowid='id'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS chat_messages_ai_alias AFTER INSERT ON chat_messages BEGIN
+              INSERT INTO chat_messages_alias_fts(rowid, alias) VALUES (new.id, new.alias);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS chat_messages_ad_alias AFTER DELETE ON chat_messages BEGIN
+              INSERT INTO chat_messages_alias_fts(chat_messages_alias_fts, rowid, alias)
+                VALUES('delete', old.id, old.alias);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS chat_messages_au_alias AFTER UPDATE ON chat_messages BEGIN
+              INSERT INTO chat_messages_alias_fts(chat_messages_alias_fts, rowid, alias)
+                VALUES('delete', old.id, old.alias);
+              INSERT INTO chat_messages_alias_fts(rowid, alias) VALUES (new.id, new.alias);
+            END;
+            """
+        )
+    except sqlite3.OperationalError as e:
+        logger.warning(
+            "FTS5 trigram alias index unavailable (older SQLite or no FTS5); "
+            "player-name search may be slow: %s",
+            e,
+        )
+        return
+
+    # Do not rebuild here: full FTS rebuild can take a long time. The downloader runs it on its
+    # shared connection before downloads; use rebuild_alias_fts_if_needed() for CLI/backfill.
+
+
 def init_chat_db(conn: sqlite3.Connection) -> None:
     """Create schema + indexes (idempotent)."""
     conn.executescript(
@@ -85,9 +297,15 @@ def init_chat_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_chat_messages_steamid3 ON chat_messages(steamid3);
         CREATE INDEX IF NOT EXISTS idx_chat_messages_steamid64 ON chat_messages(steamid64);
         CREATE INDEX IF NOT EXISTS idx_chat_logs_log_date_ts ON chat_logs(log_date_ts);
+
+        CREATE TABLE IF NOT EXISTS chat_app_meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
         """
     )
     _init_fts_if_available(conn)
+    _init_alias_trigram_fts(conn)
 
 
 def _team_from_players(players: Any, steamid3: str) -> str | None:

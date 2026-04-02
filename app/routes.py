@@ -1,6 +1,8 @@
 """API routes for search endpoints and request logging."""
+import asyncio
 import json
 import logging
+import sqlite3
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -13,11 +15,13 @@ from app.config import LOGS_DIR, REQUEST_LOG_PATH, DOWNLOADER_STATE_DIR, STEAM_W
 from app.chat_db import chat_log_fingerprint
 from app.request_log import append_request_log
 from app.search.search import (
+    PlayerNameIndexNotReadyError,
     chat_leaderboard_search_sqlite,
     chat_search,
     chat_search_sqlite,
     coplayers_search,
     log_match,
+    player_name_search_sqlite,
     stats_search,
 )
 from app.search_cache import get as cache_get, set_ as cache_set
@@ -27,6 +31,9 @@ from app.subscriptions import add_subscription, deactivate_by_token, is_valid_di
 CHAT_SEARCH_MAX_WORD_LENGTH = 200
 MAP_QUERY_MAX_LENGTH = 100
 STEAMID64_LEN = 17
+PLAYER_NAME_QUERY_MIN_LENGTH = 2
+PLAYER_NAME_QUERY_MAX_LENGTH = 64
+PLAYER_NAME_RESULT_LIMIT = 200
 
 
 router = APIRouter()
@@ -400,6 +407,140 @@ async def api_search_coplayers_get(
     return _api_search_coplayers_impl(request, steamid or "", gamemode or "", map_query or "")
 
 
+def _api_search_player_name_impl(request: Request, q_raw: str) -> JSONResponse:
+    """Substring search on chat aliases; returns SteamID64 + counts per account."""
+    start = time.perf_counter()
+    q = (q_raw or "").strip()
+    if len(q) < PLAYER_NAME_QUERY_MIN_LENGTH:
+        return JSONResponse(
+            {
+                "rows": [],
+                "error": f"Query must be at least {PLAYER_NAME_QUERY_MIN_LENGTH} characters.",
+            },
+            status_code=400,
+        )
+    if len(q) > PLAYER_NAME_QUERY_MAX_LENGTH:
+        return JSONResponse({"rows": [], "error": "Query is too long."}, status_code=400)
+    if any(ord(c) < 32 for c in q):
+        return JSONResponse({"rows": [], "error": "Invalid query."}, status_code=400)
+
+    cache_key = (q.lower(),)
+    cached = cache_get("playername", cache_key)
+    if cached is not None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/search/player-name",
+            200,
+            duration_ms,
+            result_count=len(cached.get("rows", [])),
+            word=q[:CHAT_SEARCH_MAX_WORD_LENGTH],
+        )
+        return JSONResponse(cached)
+
+    if not CHAT_DB_PATH.is_file():
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/search/player-name",
+            200,
+            duration_ms,
+            result_count=0,
+            word=q[:CHAT_SEARCH_MAX_WORD_LENGTH],
+        )
+        return JSONResponse({
+            "rows": [],
+            "limit": PLAYER_NAME_RESULT_LIMIT,
+            "note": "Chat database not available.",
+        })
+
+    try:
+        rows = player_name_search_sqlite(q, CHAT_DB_PATH, limit=PLAYER_NAME_RESULT_LIMIT)
+        payload: dict[str, Any] = {"rows": rows, "limit": PLAYER_NAME_RESULT_LIMIT}
+        cache_set("playername", cache_key, payload, chat_log_fingerprint(CHAT_DB_PATH))
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/search/player-name",
+            200,
+            duration_ms,
+            result_count=len(rows),
+            word=q[:CHAT_SEARCH_MAX_WORD_LENGTH],
+        )
+        return JSONResponse(payload)
+    except PlayerNameIndexNotReadyError as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/search/player-name",
+            503,
+            duration_ms,
+            word=q[:CHAT_SEARCH_MAX_WORD_LENGTH],
+        )
+        return JSONResponse(
+            {
+                "rows": [],
+                "limit": PLAYER_NAME_RESULT_LIMIT,
+                "error": str(e),
+                "index_status": "building",
+            },
+            status_code=503,
+        )
+    except sqlite3.OperationalError as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        err = str(e).lower()
+        if "locked" in err or "busy" in err:
+            _log_request(
+                request,
+                "/api/search/player-name",
+                503,
+                duration_ms,
+                word=q[:CHAT_SEARCH_MAX_WORD_LENGTH],
+            )
+            return JSONResponse(
+                {
+                    "rows": [],
+                    "limit": PLAYER_NAME_RESULT_LIMIT,
+                    "error": "Chat database is busy. Try again in a few seconds.",
+                },
+                status_code=503,
+            )
+        _log_request(
+            request,
+            "/api/search/player-name",
+            500,
+            duration_ms,
+            word=q[:CHAT_SEARCH_MAX_WORD_LENGTH],
+        )
+        return JSONResponse({"rows": [], "error": str(e)}, status_code=500)
+    except Exception as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/search/player-name",
+            500,
+            duration_ms,
+            word=q[:CHAT_SEARCH_MAX_WORD_LENGTH],
+        )
+        return JSONResponse({"rows": [], "error": str(e)}, status_code=500)
+
+
+@router.post("/api/search/player-name")
+async def api_search_player_name(
+    request: Request,
+    q: str = Form(""),
+):
+    return await asyncio.to_thread(_api_search_player_name_impl, request, q or "")
+
+
+@router.get("/api/search/player-name")
+async def api_search_player_name_get(
+    request: Request,
+    q: str = Query(""),
+):
+    return await asyncio.to_thread(_api_search_player_name_impl, request, q or "")
+
+
 @router.post("/api/search/stats")
 async def api_search_stats(
     request: Request,
@@ -729,6 +870,15 @@ def _build_results_embed_meta(request: Request) -> str:
                     desc = f"Found {n} co-player(s)."
                     if isinstance(logs_s, (int, float)) and logs_s:
                         desc += f" Across {int(logs_s)} log(s)."
+        elif mode == "playername":
+            q = (qp.get("q") or "").strip()
+            title = "Player name search"
+            if len(q) >= PLAYER_NAME_QUERY_MIN_LENGTH and len(q) <= PLAYER_NAME_QUERY_MAX_LENGTH:
+                ck = (q.lower(),)
+                cached = cache_get("playername", ck) or {}
+                n = len(cached.get("rows") or [])
+                title = f'Players named like "{_truncate(q, 40)}"'
+                desc = f"Found {n} matching account(s) in chat history."
         elif mode == "logmatch":
             steamids = (qp.get("steamids") or "").strip()
             map_query = (qp.get("map_query") or "").strip()

@@ -598,6 +598,14 @@
   </form>
   <div id="coplayers-results" class="results"></div>
 
+  <h2>Player search by name</h2>
+  <p>Find Steam accounts by a substring of the in-game name used in chat we have indexed. Names link to Steam profiles; rows are sorted by how many different logs include that name. Use at least three characters for fast search (two-character queries scan the database directly).</p>
+  <form id="frmPlayerName">
+    <label>Name contains: <input type="search" name="q" minlength="2" maxlength="64" required placeholder="e.g. frag" autocomplete="off"></label>
+    <button type="submit">Search</button>
+  </form>
+  <div id="playerNameResults" class="results"></div>
+
   <h2>Log library</h2>
   <p>Progress is updated periodically.</p>
   <div id="downloadProgress" class="download-progress" aria-live="polite">Loading…</div>
@@ -645,6 +653,8 @@
     var MAX_STEAMID_INPUT_LEN = 2048;
     var MAX_CHAT_WORD_LEN = 200;
     var MAX_MAP_QUERY_LEN = 100;
+    var MAX_PLAYER_NAME_QUERY_LEN = 64;
+    var MIN_PLAYER_NAME_QUERY_LEN = 2;
     var MAX_LOGMATCH_STEAMIDS_LEN = 32768;
     var VALID_STATS_GAMEMODES = { hl: 1, '7s': 1, '6s': 1, ud: 1 };
     var VALID_STATS_CLASSES = { scout: 1, soldier: 1, pyro: 1, demoman: 1, heavyweapons: 1, engineer: 1, medic: 1, sniper: 1, spy: 1 };
@@ -690,7 +700,7 @@
 
     /**
      * Build a safe state object from URL-style params (no HTML; length-limited).
-     * mode: chat | stats | logmatch | coplayers
+     * mode: chat | stats | logmatch | coplayers | playername
      */
     function buildSanitizedSearchState(mode, params) {
       mode = (mode || '').trim();
@@ -739,6 +749,13 @@
           gamemode: sanitizeCoplayersGamemodeInput(params.get('gamemode')),
           map_query: sanitizeMapQueryInput(params.get('map_query')),
         };
+      }
+      if (mode === 'playername') {
+        var pnq = (params.get('q') || '').trim();
+        if (pnq.length > MAX_PLAYER_NAME_QUERY_LEN) pnq = pnq.slice(0, MAX_PLAYER_NAME_QUERY_LEN);
+        pnq = pnq.replace(/[\u0000-\u001F\u007F]/g, '');
+        if (pnq.length < MIN_PLAYER_NAME_QUERY_LEN) return null;
+        return { mode: 'playername', q: pnq };
       }
       return null;
     }
@@ -794,6 +811,12 @@
         if (fcp.steamid) fcp.steamid.value = state.steamid || '';
         if (fcp.gamemode) fcp.gamemode.value = sanitizeCoplayersGamemodeInput(state.gamemode);
         if (fcp.elements.map_query) fcp.elements.map_query.value = state.map_query || '';
+        return;
+      }
+      if (state.mode === 'playername') {
+        var fpn = document.getElementById('frmPlayerName');
+        if (!fpn || !fpn.q) return;
+        fpn.q.value = state.q != null ? String(state.q) : '';
       }
     }
 
@@ -850,6 +873,8 @@
         p2.set('steamid', parsed.steamid != null ? String(parsed.steamid) : '');
         p2.set('gamemode', parsed.gamemode != null ? String(parsed.gamemode) : '');
         p2.set('map_query', parsed.map_query != null ? String(parsed.map_query) : '');
+      } else if (parsed.mode === 'playername') {
+        p2.set('q', parsed.q != null ? String(parsed.q) : '');
       } else {
         return;
       }
@@ -1530,6 +1555,23 @@
         gamemode: gamemode,
         map_query: mapQuery,
       });
+      window.location.href = '/results?' + params.toString();
+    });
+
+    document.getElementById('frmPlayerName').addEventListener('submit', function(e) {
+      e.preventDefault();
+      var form = e.target;
+      var q = (form.q && form.q.value ? String(form.q.value) : '').trim();
+      q = q.replace(/[\u0000-\u001F\u007F]/g, '');
+      if (q.length > MAX_PLAYER_NAME_QUERY_LEN) q = q.slice(0, MAX_PLAYER_NAME_QUERY_LEN);
+      if (q.length < MIN_PLAYER_NAME_QUERY_LEN) {
+        document.getElementById('playerNameResults').innerHTML = '<span class="error">Enter at least ' + MIN_PLAYER_NAME_QUERY_LEN + ' characters.</span>';
+        return;
+      }
+      var pnParams = new URLSearchParams({ q: q });
+      var pnState = buildSanitizedSearchState('playername', pnParams);
+      if (pnState) persistSearchState(pnState);
+      var params = new URLSearchParams({ mode: 'playername', q: q });
       window.location.href = '/results?' + params.toString();
     });
 
@@ -2563,6 +2605,39 @@
       }
     }
 
+    function playerNameSteamProfileHref(steamid64) {
+      var s = String(steamid64 || '').trim();
+      return /^\d{17}$/.test(s) ? ('https://steamcommunity.com/profiles/' + s) : '';
+    }
+
+    function renderPlayerNameResult(el, data, queryLabel, elapsedMs) {
+      var rows = data.rows || [];
+      var cap = data.limit != null && Number.isFinite(Number(data.limit)) ? Number(data.limit) : 200;
+      var meta = '<p class="stats-summary-meta">Found ' + escapeHtml(String(rows.length)) + ' account(s)';
+      if (queryLabel) {
+        meta += ' matching <strong>' + escapeHtml(queryLabel) + '</strong>';
+      }
+      meta += ' (up to ' + escapeHtml(String(cap)) + ' shown).</p>';
+      if (rows.length === 0) {
+        var emptyNote = data.note ? String(data.note) : 'No matches in indexed chat.';
+        el.innerHTML = meta + '<p>' + escapeHtml(emptyNote) + '</p>' + requestTimingFooter(elapsedMs);
+        return;
+      }
+      var thead = '<tr><th scope="col">Name</th><th scope="col">SteamID64</th><th scope="col">Logs</th><th scope="col">Chat lines</th></tr>';
+      var tbody = '';
+      for (var i = 0; i < rows.length; i++) {
+        var x = rows[i];
+        var sid = x.steamid64 != null ? String(x.steamid64) : '';
+        var name = x.display_name != null ? String(x.display_name) : '';
+        var href = playerNameSteamProfileHref(sid);
+        var nameCell = href
+          ? ('<a href="' + escapeHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(name) + '</a>')
+          : escapeHtml(name || sid);
+        tbody += '<tr><td>' + nameCell + '</td><td>' + escapeHtml(sid) + '</td><td>' + escapeHtml(String(x.logs_count != null ? x.logs_count : '')) + '</td><td>' + escapeHtml(String(x.messages_count != null ? x.messages_count : '')) + '</td></tr>';
+      }
+      el.innerHTML = meta + '<div class="stats-table-wrap"><table class="stats-table playername-results-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' + requestTimingFooter(elapsedMs);
+    }
+
     (function initResultsPage() {
       var pathname = window.location.pathname;
       if (pathname !== '/results' && pathname !== '/results/') return;
@@ -2612,14 +2687,60 @@
           gamemode: cpGm,
           map_query: sanitizeMapQueryInput(params.get('map_query') || ''),
         }).toString();
+      } else if (mode === 'playername') {
+        var pnQ = (params.get('q') || '').trim().replace(/[\u0000-\u001F\u007F]/g, '');
+        if (pnQ.length > MAX_PLAYER_NAME_QUERY_LEN) pnQ = pnQ.slice(0, MAX_PLAYER_NAME_QUERY_LEN);
+        if (pnQ.length < MIN_PLAYER_NAME_QUERY_LEN) {
+          resultsContent.innerHTML = '<span class="error">Enter a name query of at least ' + MIN_PLAYER_NAME_QUERY_LEN + ' characters.</span>';
+          return;
+        }
+        apiUrl = '/api/search/player-name?' + new URLSearchParams({ q: pnQ }).toString();
       } else {
         resultsContent.innerHTML = '<span class="error">Unknown search mode.</span>';
         return;
       }
       fetch(apiUrl)
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
+        .then(function(r) {
+          return r.text().then(function(text) {
+            return { r: r, text: text };
+          });
+        })
+        .then(function(bundle) {
           var ms = performance.now() - t0;
+          var r = bundle.r;
+          var text = bundle.text || '';
+          if (!r.ok) {
+            var errParsed = null;
+            try {
+              errParsed = JSON.parse(text);
+            } catch (e) {}
+            if (errParsed && errParsed.error) {
+              resultsContent.innerHTML = '<span class="error">' + escapeHtml(String(errParsed.error)) + '</span>' + requestTimingFooter(ms);
+              return;
+            }
+            var extra = '';
+            if (r.status === 524) {
+              extra = ' Origin timeout (e.g. Cloudflare) — the server took too long to respond. If player name search is still indexing, wait for the downloader log "Alias FTS: rebuild finished" or use a 3+ character query only after indexing completes.';
+            } else if (r.status === 504 || r.status === 502) {
+              extra = ' Gateway or upstream timeout — try again or use a shorter or more specific name.';
+            } else if (r.status === 503) {
+              extra = ' Service temporarily unavailable — often the chat database is locked or the name index is still building; retry shortly.';
+            }
+            resultsContent.innerHTML = '<span class="error">HTTP ' + escapeHtml(String(r.status)) + escapeHtml(extra) + '</span>' + requestTimingFooter(ms);
+            return;
+          }
+          var ct = (r.headers.get('content-type') || '').toLowerCase();
+          if (ct.indexOf('application/json') < 0 && text.trim().charAt(0) !== '{') {
+            resultsContent.innerHTML = '<span class="error">The server returned a non-JSON page (often a proxy timeout). Try again in a moment.</span>' + requestTimingFooter(ms);
+            return;
+          }
+          var data;
+          try {
+            data = JSON.parse(text);
+          } catch (e) {
+            resultsContent.innerHTML = '<span class="error">Invalid response from server (expected JSON).</span>' + requestTimingFooter(ms);
+            return;
+          }
           if (data.error) {
             resultsContent.innerHTML = '<span class="error">' + escapeHtml(data.error) + '</span>' + requestTimingFooter(ms);
             return;
@@ -2650,11 +2771,16 @@
             } else {
               renderCoplayers(resultsContent, data, ms);
             }
+          } else if (mode === 'playername') {
+            var qShown = (params.get('q') || '').trim();
+            if (qShown.length > MAX_PLAYER_NAME_QUERY_LEN) qShown = qShown.slice(0, MAX_PLAYER_NAME_QUERY_LEN);
+            renderPlayerNameResult(resultsContent, data, qShown, ms);
           }
         })
         .catch(function(err) {
           var ms = performance.now() - t0;
-          resultsContent.innerHTML = '<span class="error">' + escapeHtml(err.message) + '</span>' + requestTimingFooter(ms);
+          var msg = err && err.message ? String(err.message) : 'Request failed.';
+          resultsContent.innerHTML = '<span class="error">' + escapeHtml(msg) + '</span>' + requestTimingFooter(ms);
         });
     })();
   </script>

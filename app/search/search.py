@@ -2,10 +2,12 @@
 import json
 import re
 import sqlite3
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.chat_db import CHAT_ALIAS_FTS_READY_META_KEY
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
 
 LOGS_TF_URL_BASE = "https://logs.tf"
@@ -968,3 +970,177 @@ def log_match_matching_log_ids(steamids: list[str], logs_dir: str | Path) -> fro
         if steamid3_set.issubset(set(names.keys())):
             out.add(log_id)
     return frozenset(out)
+
+
+# Player-by-name search (chat DB): substring match on alias, bounded result size.
+PLAYER_NAME_SEARCH_MAX_ROWS = 200
+# Trigram FTS5 matches substrings reliably for needles of this length or more.
+_PLAYER_NAME_FTS_MIN_LEN = 3
+
+
+class PlayerNameIndexNotReadyError(Exception):
+    """chat_messages has rows but alias FTS was not rebuilt / chat_app_meta.alias_fts_ready is unset."""
+
+
+def _fts5_trigram_phrase(needle_lower: str) -> str:
+    """Double-quoted FTS5 phrase for trigram tokenizer (substring, ASCII case-fold)."""
+    return '"' + needle_lower.replace('"', '""') + '"'
+
+
+def _player_name_use_alias_fts(conn: sqlite3.Connection) -> bool:
+    """
+    Use trigram FTS only when downloader/backfill marked the index complete in chat_app_meta.
+
+    Avoids MATCH when the FTS table is empty or only partially filled (triggers without rebuild).
+    """
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_messages_alias_fts'"
+    ).fetchone()
+    if row is None:
+        return False
+    if conn.execute("SELECT 1 FROM chat_messages LIMIT 1").fetchone() is None:
+        return True
+    try:
+        ready = conn.execute(
+            "SELECT value FROM chat_app_meta WHERE key = ? LIMIT 1",
+            (CHAT_ALIAS_FTS_READY_META_KEY,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return ready is not None and ready[0] == "1"
+
+
+def _player_name_require_index_ready(conn: sqlite3.Connection) -> None:
+    """
+    Refuse to run a full-table scan: if we have chat rows, the alias index must be marked ready.
+
+    Empty database: no-op.
+    """
+    if conn.execute("SELECT 1 FROM chat_messages LIMIT 1").fetchone() is None:
+        return
+    try:
+        ready = conn.execute(
+            "SELECT value FROM chat_app_meta WHERE key = ? LIMIT 1",
+            (CHAT_ALIAS_FTS_READY_META_KEY,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        ready = None
+    if ready is None or ready[0] != "1":
+        raise PlayerNameIndexNotReadyError(
+            "Player name index is still building. Try again after the downloader finishes the alias FTS step, "
+            "or run: python -m app.rebuild_alias_fts (stop the downloader first for fastest rebuild)."
+        )
+
+
+def _player_name_fetchall_retry(
+    conn: sqlite3.Connection,
+    sql: str,
+    params: tuple[Any, ...],
+    *,
+    attempts: int = 12,
+    sleep_sec: float = 0.35,
+) -> list[Any]:
+    last: sqlite3.OperationalError | None = None
+    for _ in range(attempts):
+        try:
+            return conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError as e:
+            last = e
+            err = str(e).lower()
+            if "locked" not in err and "busy" not in err:
+                raise
+            time.sleep(sleep_sec)
+    assert last is not None
+    raise last
+
+
+def player_name_search_sqlite(
+    name_substr: str,
+    db_path: str | Path,
+    *,
+    limit: int = PLAYER_NAME_SEARCH_MAX_ROWS,
+) -> list[dict[str, Any]]:
+    """
+    Find players whose chat alias contains name_substr (case-insensitive).
+
+    One row per Steam account (steamid3), sorted by number of distinct logs with a
+    matching alias, then by total matching chat lines.
+
+    Uses FTS5 trigram on alias when the index is ready and needle length >= 3; otherwise
+    uses instr() on alias for short queries (only after the index is marked ready — never full-scans
+    an unindexed multi-million-row table).
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return []
+    needle = (name_substr or "").strip().lower()
+    if not needle:
+        return []
+    lim = max(1, min(int(limit), PLAYER_NAME_SEARCH_MAX_ROWS))
+
+    conn = sqlite3.connect(
+        path.resolve().as_uri() + "?mode=ro",
+        uri=True,
+        timeout=60.0,
+        check_same_thread=False,
+    )
+    try:
+        conn.execute("PRAGMA busy_timeout=60000")
+        _player_name_require_index_ready(conn)
+        use_fts = len(needle) >= _PLAYER_NAME_FTS_MIN_LEN and _player_name_use_alias_fts(conn)
+        if use_fts:
+            match_arg = _fts5_trigram_phrase(needle)
+            # FTS5 MATCH must use the virtual table name; some SQLite builds reject a table
+            # alias here ("no such column: af").
+            filter_clause = (
+                "INNER JOIN chat_messages_alias_fts "
+                "ON chat_messages_alias_fts.rowid = cm.id "
+                "WHERE chat_messages_alias_fts MATCH ? AND TRIM(cm.steamid3) != ''"
+            )
+            params: tuple[Any, ...] = (match_arg, lim)
+        else:
+            filter_clause = (
+                "WHERE instr(lower(cm.alias), ?) > 0 AND TRIM(cm.steamid3) != ''"
+            )
+            params = (needle, lim)
+
+        sql = (
+            "WITH filtered AS ("
+            "  SELECT cm.steamid3, NULLIF(TRIM(cm.steamid64), '') AS steamid64,"
+            "    cm.alias, cm.log_id, cm.message_idx, cl.log_date_ts"
+            "  FROM chat_messages cm"
+            "  INNER JOIN chat_logs cl ON cl.log_id = cm.log_id "
+            + filter_clause +
+            "), ranked AS ("
+            "  SELECT steamid3, steamid64, alias, log_id, message_idx,"
+            "    ROW_NUMBER() OVER ("
+            "      PARTITION BY steamid3"
+            "      ORDER BY log_date_ts DESC, log_id DESC, message_idx DESC"
+            "    ) AS rn"
+            "  FROM filtered"
+            ") "
+            "SELECT steamid3, MAX(steamid64) AS steamid64_raw,"
+            "  MAX(CASE WHEN rn = 1 THEN alias END) AS display_name,"
+            "  COUNT(DISTINCT log_id) AS logs_count, COUNT(*) AS messages_count "
+            "FROM ranked GROUP BY steamid3 "
+            "ORDER BY logs_count DESC, messages_count DESC, steamid3 ASC LIMIT ?"
+        )
+        rows = _player_name_fetchall_retry(conn, sql, params)
+    finally:
+        conn.close()
+
+    out: list[dict[str, Any]] = []
+    for steamid3, steamid64_raw, display_name, logs_count, messages_count in rows:
+        sid64 = (str(steamid64_raw).strip() if steamid64_raw else "")
+        if len(sid64) != 17 or not sid64.isdigit():
+            sid64 = steamid3_to_steamid64(steamid3) or ""
+        if not sid64:
+            continue
+        disp = (display_name or "").strip() or sid64
+        out.append({
+            "steamid64": sid64,
+            "display_name": disp,
+            "logs_count": int(logs_count or 0),
+            "messages_count": int(messages_count or 0),
+        })
+    return out

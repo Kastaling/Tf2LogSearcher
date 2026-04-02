@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from app.chat_db import connect_chat_db, init_chat_db, replace_chat_for_log
+from app.chat_db import connect_chat_db, init_chat_db, rebuild_alias_fts_if_needed, replace_chat_for_log
 from app.config import CHAT_DB_PATH, LOGS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
@@ -79,6 +79,8 @@ def run_backfill(logs_dir: Path, db_path: Path, batch_size: int) -> None:
         elapsed,
         processed / elapsed,
     )
+    logger.info("Rebuilding alias FTS index (may take a long time on large imports)...")
+    rebuild_alias_fts_if_needed(db_path)
 
 
 def main() -> None:
