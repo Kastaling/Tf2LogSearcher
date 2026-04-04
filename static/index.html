@@ -347,6 +347,41 @@
     [data-theme="dark"] .stats-trend-btn.active {
       color: var(--link);
     }
+    .playername-results-table td.playername-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      align-items: center;
+      vertical-align: middle;
+    }
+    .playername-results-table a.playername-action-link {
+      display: inline-block;
+      padding: 0.22rem 0.45rem;
+      font-size: 0.82em;
+      border: 1px solid var(--accent);
+      border-radius: var(--standard-border-radius, 5px);
+      text-decoration: none;
+      font-family: inherit;
+      line-height: 1.2;
+      background-color: var(--accent);
+      color: var(--accent-text);
+    }
+    .playername-results-table a.playername-action-link:hover {
+      background-color: var(--accent-hover);
+      border-color: var(--accent-hover);
+      color: var(--accent-text);
+    }
+    .playername-results-table a.playername-action-link:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .steam-avatar-wrap {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      vertical-align: middle;
+      margin-right: 0.35em;
+    }
     .stats-trend-canvas-wrap {
       position: relative;
       height: 200px;
@@ -599,9 +634,9 @@
   <div id="coplayers-results" class="results"></div>
 
   <h2>Player search by name</h2>
-  <p>Find Steam accounts by a substring of the in-game name used in chat we have indexed. Names link to Steam profiles; rows are sorted by how many different logs include that name. Use at least three characters for fast search (two-character queries scan the database directly).</p>
+  <p>Find Steam accounts by a substring of the in-game name used in chat we have indexed. Names link to Steam profiles; rows are sorted by how many different logs include that name. Use at least three characters for fast search.</p>
   <form id="frmPlayerName">
-    <label>Name contains: <input type="search" name="q" minlength="2" maxlength="64" required placeholder="e.g. frag" autocomplete="off"></label>
+    <label>Name contains: <input type="search" name="q" minlength="3" maxlength="64" required placeholder="e.g. frag" autocomplete="off"></label>
     <button type="submit">Search</button>
   </form>
   <div id="playerNameResults" class="results"></div>
@@ -654,7 +689,7 @@
     var MAX_CHAT_WORD_LEN = 200;
     var MAX_MAP_QUERY_LEN = 100;
     var MAX_PLAYER_NAME_QUERY_LEN = 64;
-    var MIN_PLAYER_NAME_QUERY_LEN = 2;
+    var MIN_PLAYER_NAME_QUERY_LEN = 3;
     var MAX_LOGMATCH_STEAMIDS_LEN = 32768;
     var VALID_STATS_GAMEMODES = { hl: 1, '7s': 1, '6s': 1, ud: 1 };
     var VALID_STATS_CLASSES = { scout: 1, soldier: 1, pyro: 1, demoman: 1, heavyweapons: 1, engineer: 1, medic: 1, sniper: 1, spy: 1 };
@@ -825,6 +860,23 @@
       return p === '/' || p === '/index.html';
     }
 
+    /** Scroll the relevant search form into view after deep-link prefills (e.g. from player name results). */
+    function scrollHomeFormIntoView(mode) {
+      mode = (mode || '').trim();
+      var id = null;
+      if (mode === 'chat') id = 'frmChat';
+      else if (mode === 'stats') id = 'frmStats';
+      else if (mode === 'logmatch') id = 'frmLogmatch';
+      else if (mode === 'coplayers') id = 'frmCoplayers';
+      else if (mode === 'playername') id = 'frmPlayerName';
+      if (!id) return;
+      var el = document.getElementById(id);
+      if (!el) return;
+      requestAnimationFrame(function() {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
+
     /** Restore chat / stats / logmatch forms from ?query or sessionStorage. */
     function restoreHomeForms() {
       if (!isHomePathname()) return;
@@ -835,6 +887,7 @@
         if (fromUrl) {
           applySearchStateToForms(fromUrl);
           persistSearchState(fromUrl);
+          scrollHomeFormIntoView(mode);
         }
         return;
       }
@@ -1325,9 +1378,10 @@
         var displayName = r.name != null ? String(r.name) : '';
         if (!displayName) displayName = sid64 || 'Unknown';
         var profile = /^\d{17}$/.test(sid64) ? ('https://logs.tf/profile/' + encodeURIComponent(sid64)) : '';
-        var nameCell = profile
-          ? ('<a href="' + escapeAttr(profile) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(displayName) + '</a>')
-          : escapeHtml(displayName);
+        var nameCell = steamAvatarPlaceholder(sid64) + (
+          profile
+            ? ('<a href="' + escapeAttr(profile) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(displayName) + '</a>')
+            : escapeHtml(displayName));
         var opl = Number(r.word_per_log);
         var oplCell = Number.isFinite(opl) ? opl.toFixed(2) : '0.00';
         var topLogId = (r.top_log_id != null) ? String(r.top_log_id) : '';
@@ -1345,6 +1399,8 @@
         '<p class="chat-summary-line">' + summary + '</p>' +
         '<div class="stats-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' +
         requestTimingFooter(elapsedMs);
+
+      loadAvatarsInContainer(el);
 
       el.querySelectorAll('th.sortable').forEach(function(th) {
         th.addEventListener('click', function() {
@@ -1374,6 +1430,8 @@
       }
       var resolved64 = data.resolved_steamid64 && /^\d{17}$/.test(String(data.resolved_steamid64)) ? String(data.resolved_steamid64) : null;
       var profileUrl = resolved64 ? ('https://steamcommunity.com/profiles/' + resolved64) : ((steamid && /^\d{17}$/.test(steamid)) ? ('https://steamcommunity.com/profiles/' + steamid) : '#');
+      var sidForAvatar = resolved64;
+      if (!sidForAvatar && steamid && /^\d{17}$/.test(String(steamid).trim())) sidForAvatar = String(steamid).trim();
       var label = data.searched_user_name ? escapeHtml(data.searched_user_name) : (profileUrl !== '#' ? profileUrl : escapeHtml(steamid));
       var logsAcross = null;
       if (data && typeof data.logs_searched === 'number' && Number.isFinite(data.logs_searched)) {
@@ -1389,7 +1447,7 @@
         return;
       }
 
-      html += '<p class="chat-summary-line">Total ' + escapeHtml(String(data.total || 0)) + ' occurrence(s) for <a href="' + profileUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a> across ' + escapeHtml(String(logsAcross)) + ' log(s).</p>';
+      html += '<p class="chat-summary-line">Total ' + escapeHtml(String(data.total || 0)) + ' occurrence(s) for ' + steamAvatarPlaceholder(sidForAvatar) + '<a href="' + escapeAttr(profileUrl) + '" target="_blank" rel="noopener noreferrer">' + label + '</a> across ' + escapeHtml(String(logsAcross)) + ' log(s).</p>';
       var firstN = Math.min(CHAT_LAZY_CHUNK_SIZE, results.length);
       var listHtml = '';
       for (var j = 0; j < firstN; j++) {
@@ -1404,6 +1462,7 @@
       html += requestTimingFooter(elapsedMs);
 
       el.innerHTML = html;
+      loadAvatarsInContainer(el);
       el._chatLazyState = {
         results: results,
         renderedCount: firstN,
@@ -1585,6 +1644,69 @@
     function escapeAttr(str) {
       if (str == null) return '';
       return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    }
+
+    var _avatarCache = {};
+
+    function steamAvatarPlaceholder(steamid64) {
+      if (!steamid64 || !/^\d{17}$/.test(String(steamid64))) return '';
+      return '<span class="steam-avatar-wrap" data-steamid64="' + escapeAttr(steamid64) + '"></span>';
+    }
+
+    function loadAvatarsInContainer(container) {
+      if (!container || !container.querySelectorAll) return;
+      var wraps = container.querySelectorAll('.steam-avatar-wrap[data-steamid64]:not([data-avatar-loaded])');
+      var bySid = {};
+      for (var i = 0; i < wraps.length; i++) {
+        var w = wraps[i];
+        var sid = w.getAttribute('data-steamid64');
+        if (!sid || !/^\d{17}$/.test(sid)) {
+          w.setAttribute('data-avatar-loaded', '1');
+          continue;
+        }
+        if (!bySid[sid]) bySid[sid] = [];
+        bySid[sid].push(w);
+      }
+      var sids = Object.keys(bySid);
+      if (!sids.length) return;
+
+      function applySid(sid, url) {
+        var list = bySid[sid];
+        if (!list) return;
+        for (var j = 0; j < list.length; j++) {
+          var elw = list[j];
+          if (url) {
+            elw.innerHTML = '<img src="' + escapeAttr(url) + '" width="24" height="24" alt="" loading="lazy" style="border-radius:4px;vertical-align:middle;margin-right:0.35em" onerror="this.style.display=\'none\'">';
+          }
+          elw.setAttribute('data-avatar-loaded', '1');
+        }
+      }
+
+      var fetchPromises = [];
+      sids.forEach(function(sid2) {
+        if (Object.prototype.hasOwnProperty.call(_avatarCache, sid2)) {
+          applySid(sid2, _avatarCache[sid2]);
+          return;
+        }
+        fetchPromises.push(
+          fetch('/api/avatar/' + encodeURIComponent(sid2))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+              var url = data && data.url != null ? data.url : null;
+              _avatarCache[sid2] = url;
+              return { sid: sid2, url: url };
+            })
+            .catch(function() {
+              _avatarCache[sid2] = null;
+              return { sid: sid2, url: null };
+            })
+        );
+      });
+      return Promise.all(fetchPromises).then(function(results) {
+        for (var r = 0; r < results.length; r++) {
+          applySid(results[r].sid, results[r].url);
+        }
+      });
     }
 
     function logmatchAliasTooltip(row) {
@@ -1929,11 +2051,12 @@
       var name = row.name != null ? String(row.name) : '';
       var sid64 = row.steamid64 != null ? String(row.steamid64).trim() : '';
       var display = name.trim() ? name : (sid64 || '\u2014');
+      var avatar = steamAvatarPlaceholder(sid64);
       if (/^\d{17}$/.test(sid64)) {
         var href = 'https://steamcommunity.com/profiles/' + encodeURIComponent(sid64);
-        return '<a href="' + escapeAttr(href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(display) + '</a>';
+        return avatar + '<a href="' + escapeAttr(href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(display) + '</a>';
       }
-      return escapeHtml(display);
+      return avatar + escapeHtml(display);
     }
 
     function coplayersWinPctSortValue(row, which) {
@@ -2103,6 +2226,7 @@
       container._coplayersRows = originalRows;
 
       bindCoplayersCsvDownload(container);
+      loadAvatarsInContainer(container);
 
       container.querySelectorAll('th.sortable').forEach(function(th) {
         th.addEventListener('click', function() {
@@ -2623,19 +2747,30 @@
         el.innerHTML = meta + '<p>' + escapeHtml(emptyNote) + '</p>' + requestTimingFooter(elapsedMs);
         return;
       }
-      var thead = '<tr><th scope="col">Name</th><th scope="col">SteamID64</th><th scope="col">Logs</th><th scope="col">Chat lines</th></tr>';
+      var thead = '<tr><th scope="col">Name</th><th scope="col">SteamID64</th><th scope="col">Logs</th><th scope="col">Chat lines</th><th scope="col">Search</th></tr>';
+      var base = window.location.origin + '/';
       var tbody = '';
       for (var i = 0; i < rows.length; i++) {
         var x = rows[i];
         var sid = x.steamid64 != null ? String(x.steamid64) : '';
         var name = x.display_name != null ? String(x.display_name) : '';
         var href = playerNameSteamProfileHref(sid);
-        var nameCell = href
-          ? ('<a href="' + escapeHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(name) + '</a>')
-          : escapeHtml(name || sid);
-        tbody += '<tr><td>' + nameCell + '</td><td>' + escapeHtml(sid) + '</td><td>' + escapeHtml(String(x.logs_count != null ? x.logs_count : '')) + '</td><td>' + escapeHtml(String(x.messages_count != null ? x.messages_count : '')) + '</td></tr>';
+        var nameCell = steamAvatarPlaceholder(sid) + (
+          href
+            ? ('<a href="' + escapeAttr(href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(name) + '</a>')
+            : escapeHtml(name || sid));
+        var chatHref = base + '?mode=chat&steamid=' + encodeURIComponent(sid);
+        var statsHref = base + '?mode=stats&steamid=' + encodeURIComponent(sid);
+        var coplayHref = base + '?mode=coplayers&steamid=' + encodeURIComponent(sid);
+        var actionsCell = '<td class="playername-actions">' +
+          '<a class="playername-action-link" href="' + escapeAttr(chatHref) + '">Chat</a>' +
+          '<a class="playername-action-link" href="' + escapeAttr(statsHref) + '">Stats</a>' +
+          '<a class="playername-action-link" href="' + escapeAttr(coplayHref) + '">Co-players</a>' +
+          '</td>';
+        tbody += '<tr><td>' + nameCell + '</td><td>' + escapeHtml(sid) + '</td><td>' + escapeHtml(String(x.logs_count != null ? x.logs_count : '')) + '</td><td>' + escapeHtml(String(x.messages_count != null ? x.messages_count : '')) + '</td>' + actionsCell + '</tr>';
       }
       el.innerHTML = meta + '<div class="stats-table-wrap"><table class="stats-table playername-results-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' + requestTimingFooter(elapsedMs);
+      loadAvatarsInContainer(el);
     }
 
     (function initResultsPage() {

@@ -1067,14 +1067,16 @@ def player_name_search_sqlite(
     matching alias, then by total matching chat lines.
 
     Uses FTS5 trigram on alias when the index is ready and needle length >= 3; otherwise
-    uses instr() on alias for short queries (only after the index is marked ready — never full-scans
-    an unindexed multi-million-row table).
+    uses instr() on alias (only after the index is marked ready — never full-scans
+    an unindexed multi-million-row table). Needles shorter than 3 characters return no rows.
     """
     path = Path(db_path)
     if not path.is_file():
         return []
     needle = (name_substr or "").strip().lower()
     if not needle:
+        return []
+    if len(needle) < _PLAYER_NAME_FTS_MIN_LEN:
         return []
     lim = max(1, min(int(limit), PLAYER_NAME_SEARCH_MAX_ROWS))
 

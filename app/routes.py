@@ -2,16 +2,26 @@
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import requests
 from fastapi import APIRouter, Request, Form, Query
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 
-from app.config import LOGS_DIR, REQUEST_LOG_PATH, DOWNLOADER_STATE_DIR, STEAM_WEB_API_KEY, CHAT_DB_PATH
+from app.config import (
+    AVATAR_DB_PATH,
+    CHAT_DB_PATH,
+    DOWNLOADER_STATE_DIR,
+    LOGS_DIR,
+    REQUEST_LOG_PATH,
+    STEAM_WEB_API_KEY,
+)
+from app.avatar_db import connect_avatar_db, get_cached_avatar, init_avatar_db, set_cached_avatar
 from app.chat_db import chat_log_fingerprint
 from app.request_log import append_request_log
 from app.search.search import (
@@ -31,13 +41,39 @@ from app.subscriptions import add_subscription, deactivate_by_token, is_valid_di
 CHAT_SEARCH_MAX_WORD_LENGTH = 200
 MAP_QUERY_MAX_LENGTH = 100
 STEAMID64_LEN = 17
-PLAYER_NAME_QUERY_MIN_LENGTH = 2
+PLAYER_NAME_QUERY_MIN_LENGTH = 3
 PLAYER_NAME_QUERY_MAX_LENGTH = 64
 PLAYER_NAME_RESULT_LIMIT = 200
 
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _fetch_steam_avatar_url_sync(steamid64: str) -> str | None:
+    """Call Steam GetPlayerSummaries; return avatarfull URL or None. Used via asyncio.to_thread."""
+    if not STEAM_WEB_API_KEY:
+        return None
+    url = (
+        "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/"
+        f"?key={STEAM_WEB_API_KEY}&steamids={steamid64}"
+    )
+    try:
+        r = requests.get(url, timeout=5)
+        r.raise_for_status()
+        data = r.json()
+        players = data.get("response", {}).get("players") or []
+        if not players:
+            return None
+        avatar = players[0].get("avatarfull")
+        if not isinstance(avatar, str):
+            return None
+        avatar = avatar.strip()
+        if not avatar.startswith("https://"):
+            return None
+        return avatar
+    except Exception:
+        return None
 
 
 def _client_ip(request: Request) -> str:
@@ -539,6 +575,27 @@ async def api_search_player_name_get(
     q: str = Query(""),
 ):
     return await asyncio.to_thread(_api_search_player_name_impl, request, q or "")
+
+
+@router.get("/api/avatar/{steamid64}")
+async def api_avatar(steamid64: str):
+    """Return cached or freshly fetched Steam avatar URL (not logged to request CSV)."""
+    if not re.fullmatch(r"\d{17}", steamid64):
+        return JSONResponse({"error": "steamid64 must be exactly 17 digits"}, status_code=400)
+    conn = connect_avatar_db(AVATAR_DB_PATH)
+    try:
+        init_avatar_db(conn)
+        cached = get_cached_avatar(conn, steamid64)
+        if cached:
+            return JSONResponse({"url": cached})
+        if not STEAM_WEB_API_KEY:
+            return JSONResponse({"url": None, "error": "Steam API key not configured"})
+        new_url = await asyncio.to_thread(_fetch_steam_avatar_url_sync, steamid64)
+        if new_url:
+            set_cached_avatar(conn, steamid64, new_url)
+        return JSONResponse({"url": new_url})
+    finally:
+        conn.close()
 
 
 @router.post("/api/search/stats")
