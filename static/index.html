@@ -257,6 +257,104 @@
       border-radius: var(--standard-border-radius, 5px);
       border: 1px solid var(--progress-border);
     }
+    .download-progress--panel {
+      padding: 1rem 1.25rem;
+    }
+    .download-progress-inner {
+      width: 100%;
+      max-width: min(100%, 52rem);
+      margin: 0 auto;
+      text-align: center;
+    }
+    .download-progress-inner--center {
+      text-align: center;
+    }
+    .download-progress-complete-msg {
+      margin: 0;
+      color: var(--text);
+      line-height: 1.45;
+    }
+    .download-progress-bar-section {
+      margin-bottom: 0.85rem;
+    }
+    .download-progress-bar-track {
+      height: 14px;
+      border-radius: 7px;
+      background: var(--border);
+      overflow: hidden;
+      margin: 0 auto 0.5rem;
+      max-width: 100%;
+    }
+    .download-progress-bar-fill {
+      height: 100%;
+      min-width: 0;
+      background: linear-gradient(90deg, var(--accent), var(--link));
+      border-radius: 6px;
+      transition: width 0.45s ease;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    }
+    .download-progress-pct-label {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text);
+      font-family: var(--heading-font);
+    }
+    .download-progress-stats {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 1rem;
+      margin-top: 0.35rem;
+      text-align: left;
+      table-layout: fixed;
+    }
+    .download-progress-stats th {
+      padding: 0.55rem 0.85rem 0.55rem 0.75rem;
+      color: var(--text-muted);
+      font-weight: 600;
+      width: 38%;
+      max-width: 14rem;
+      vertical-align: middle;
+      text-align: right;
+      border-bottom: 1px solid var(--progress-border);
+      background: var(--accent-bg);
+    }
+    .download-progress-stats td {
+      padding: 0.55rem 0.5rem 0.55rem 0.85rem;
+      color: var(--text);
+      font-weight: 600;
+      font-size: 1.05rem;
+      word-break: break-word;
+      vertical-align: middle;
+      text-align: left;
+      border-bottom: 1px solid var(--progress-border);
+    }
+    .download-progress-stats tr:last-child th,
+    .download-progress-stats tr:last-child td {
+      border-bottom: none;
+    }
+    .download-progress-stats .download-progress-value {
+      font-variant-numeric: tabular-nums;
+    }
+    @media (max-width: 640px) {
+      .download-progress--panel {
+        padding: 0.75rem 0.6rem;
+      }
+      .download-progress-stats {
+        font-size: 0.92rem;
+      }
+      .download-progress-stats th {
+        width: 44%;
+        padding: 0.45rem 0.5rem 0.45rem 0.4rem;
+        font-size: 0.88rem;
+      }
+      .download-progress-stats td {
+        padding: 0.45rem 0.35rem 0.45rem 0.5rem;
+        font-size: 0.95rem;
+      }
+      .download-progress-pct-label {
+        font-size: 0.98rem;
+      }
+    }
     table.stats-table { border-collapse: collapse; width: 100%; }
     table.stats-table th, table.stats-table td { border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: left; }
     table.stats-table th.sortable { cursor: pointer; user-select: none; }
@@ -942,65 +1040,188 @@
       });
     })();
 
+    function fmtProgressNum(n) {
+      if (n == null || typeof n !== 'number' || !Number.isFinite(n)) return '\u2014';
+      try {
+        return Math.trunc(n).toLocaleString();
+      } catch (_) {
+        return String(Math.trunc(n));
+      }
+    }
+
+    function appendProgressRow(tbody, label, valueText) {
+      const tr = document.createElement('tr');
+      const th = document.createElement('th');
+      th.scope = 'row';
+      th.textContent = label;
+      const td = document.createElement('td');
+      td.className = 'download-progress-value';
+      td.textContent = valueText;
+      tr.appendChild(th);
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+
+    function appendChatPlaceholderRow(tbody) {
+      const tr = document.createElement('tr');
+      tr.id = 'downloadProgressChatRow';
+      tr.className = 'download-progress-chat-row';
+      const th = document.createElement('th');
+      th.scope = 'row';
+      th.textContent = 'Indexed chat lines (chat.db)';
+      const td = document.createElement('td');
+      td.className = 'download-progress-value';
+      td.setAttribute('aria-busy', 'true');
+      td.textContent = 'Loading…';
+      tr.appendChild(th);
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+
+    function fetchChatMessageCountAndPatch() {
+      const row = document.getElementById('downloadProgressChatRow');
+      if (!row) return;
+      const td = row.querySelector('td.download-progress-value');
+      fetch('/api/chat-message-count')
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(d) {
+          if (!row.isConnected || !td) return;
+          td.removeAttribute('aria-busy');
+          if (d && d.chat_message_count != null && typeof d.chat_message_count === 'number' && Number.isFinite(d.chat_message_count)) {
+            td.textContent = fmtProgressNum(d.chat_message_count);
+          } else {
+            td.textContent = '\u2014';
+          }
+        })
+        .catch(function() {
+          if (!row.isConnected || !td) return;
+          td.removeAttribute('aria-busy');
+          td.textContent = '\u2014';
+        });
+    }
+
     function renderProgress(data) {
       const el = document.getElementById('downloadProgress');
       if (!el) return;
+
       if (data.backfill_complete) {
+        el.className = 'download-progress download-progress--panel';
         el.innerHTML = '';
-        el.appendChild(document.createTextNode('Full backfill complete. New logs are added periodically. You can search across all logs we have. ('));
+        const wrap = document.createElement('div');
+        wrap.className = 'download-progress-inner download-progress-inner--center';
+        const p = document.createElement('p');
+        p.className = 'download-progress-complete-msg';
+        p.appendChild(document.createTextNode('Full backfill complete. New logs are added periodically. You can search across all logs we have. ('));
         const strong = document.createElement('strong');
         strong.textContent = '100% complete';
-        el.appendChild(strong);
-        el.appendChild(document.createTextNode(')'));
+        p.appendChild(strong);
+        p.appendChild(document.createTextNode(')'));
+        wrap.appendChild(p);
+        el.appendChild(wrap);
         return;
       }
-      /** Each part is an array of segments: string (normal) or { b: string } (bold). */
-      const parts = [];
-      if (data.total_files != null) parts.push([{ b: String(data.total_files) }, ' log(s)']);
-      if (data.min_id != null && data.max_id != null) parts.push(['Range (', { b: String(data.max_id) }, ' \u2013 ', { b: String(data.min_id) }, ')']);
-      if (data.remaining != null && data.remaining > 0) parts.push([{ b: String(data.remaining) }, ' remaining to log 1']);
-      if (data.eta_human) parts.push(['ETA ', { b: data.eta_human }]);
-      if (data.rate_logs_per_sec != null || data.rate_logs_per_sec_aggregated != null) {
-        if (data.rate_logs_per_sec_aggregated != null && data.rate_logs_per_sec != null) {
-          parts.push(['(', { b: String(data.rate_logs_per_sec) }, ' logs/s, avg ', { b: String(data.rate_logs_per_sec_aggregated) }, ')']);
-        } else if (data.rate_logs_per_sec_aggregated != null) {
-          parts.push(['(', { b: String(data.rate_logs_per_sec_aggregated) }, ' logs/s avg)']);
-        } else {
-          parts.push(['(', { b: String(data.rate_logs_per_sec) }, ' logs/s)']);
-        }
-      }
-      if (data.updated_at) parts.push(['Updated ', { b: formatUpdatedAt(data.updated_at) }]);
-      if (data.earliest_log_timestamp != null) {
-        const earliestStr = formatEarliestLogDate(data.earliest_log_timestamp);
-        if (earliestStr) parts.push(['Earliest log: ', { b: earliestStr }]);
-      }
-      if (data.logs_downloaded_since_last_update != null && typeof data.logs_downloaded_since_last_update === 'number') {
-        parts.push([{ b: String(data.logs_downloaded_since_last_update) }, ' logs this update']);
-      } else {
-        parts.push(['Logs this update: ', { b: 'N/A' }]);
-      }
+
+      let pct = null;
       if (data.max_id != null && data.max_id > 0) {
-        const remaining = data.remaining != null ? data.remaining : 0;
-        const pct = ((data.max_id - remaining) / data.max_id) * 100;
-        parts.push([{ b: pct.toFixed(2) + '%' }, ' complete']);
+        const remaining = data.remaining != null ? Number(data.remaining) : 0;
+        const maxId = Number(data.max_id);
+        pct = ((maxId - remaining) / maxId) * 100;
+        if (!Number.isFinite(pct)) pct = null;
+        else pct = Math.max(0, Math.min(100, pct));
       }
-      el.innerHTML = '';
-      if (parts.length === 0) {
+
+      const hasStats =
+        data.total_files != null ||
+        (data.min_id != null && data.max_id != null) ||
+        (data.remaining != null && data.remaining > 0) ||
+        data.eta_human ||
+        data.rate_logs_per_sec != null ||
+        data.rate_logs_per_sec_aggregated != null ||
+        data.updated_at ||
+        data.earliest_log_timestamp != null ||
+        data.logs_downloaded_since_last_update != null;
+
+      if (!hasStats && pct == null) {
+        el.className = 'download-progress';
         el.textContent = 'Progress not available yet.';
         return;
       }
-      parts.forEach((part, i) => {
-        if (i > 0) el.appendChild(document.createTextNode(' \u00b7 '));
-        part.forEach(seg => {
-          if (typeof seg === 'string') {
-            el.appendChild(document.createTextNode(seg));
-          } else {
-            const strong = document.createElement('strong');
-            strong.textContent = seg.b;
-            el.appendChild(strong);
-          }
-        });
-      });
+
+      el.className = 'download-progress download-progress--panel';
+      el.innerHTML = '';
+      const wrap = document.createElement('div');
+      wrap.className = 'download-progress-inner';
+
+      if (pct != null) {
+        const barSection = document.createElement('div');
+        barSection.className = 'download-progress-bar-section';
+        const track = document.createElement('div');
+        track.className = 'download-progress-bar-track';
+        track.setAttribute('role', 'progressbar');
+        track.setAttribute('aria-valuenow', String(Math.round(pct * 100) / 100));
+        track.setAttribute('aria-valuemin', '0');
+        track.setAttribute('aria-valuemax', '100');
+        track.setAttribute('aria-label', 'Log backfill progress');
+        const fill = document.createElement('div');
+        fill.className = 'download-progress-bar-fill';
+        fill.style.width = pct.toFixed(2) + '%';
+        track.appendChild(fill);
+        const pctLabel = document.createElement('div');
+        pctLabel.className = 'download-progress-pct-label';
+        pctLabel.textContent = pct.toFixed(2) + '% complete';
+        barSection.appendChild(track);
+        barSection.appendChild(pctLabel);
+        wrap.appendChild(barSection);
+      }
+
+      const table = document.createElement('table');
+      table.className = 'download-progress-stats';
+      const tbody = document.createElement('tbody');
+
+      if (data.total_files != null) {
+        appendProgressRow(tbody, 'Log files', fmtProgressNum(Number(data.total_files)) + ' indexed');
+      }
+      if (data.min_id != null && data.max_id != null) {
+        appendProgressRow(
+          tbody,
+          'ID range',
+          fmtProgressNum(Number(data.max_id)) + ' \u2013 ' + fmtProgressNum(Number(data.min_id))
+        );
+      }
+      if (data.remaining != null && data.remaining > 0) {
+        appendProgressRow(tbody, 'Remaining to log 1', fmtProgressNum(Number(data.remaining)));
+      }
+      if (data.eta_human) {
+        appendProgressRow(tbody, 'ETA', String(data.eta_human));
+      }
+      if (data.rate_logs_per_sec != null || data.rate_logs_per_sec_aggregated != null) {
+        let rateText = '';
+        if (data.rate_logs_per_sec_aggregated != null && data.rate_logs_per_sec != null) {
+          rateText = String(data.rate_logs_per_sec) + ' logs/s, avg ' + String(data.rate_logs_per_sec_aggregated);
+        } else if (data.rate_logs_per_sec_aggregated != null) {
+          rateText = String(data.rate_logs_per_sec_aggregated) + ' logs/s avg';
+        } else {
+          rateText = String(data.rate_logs_per_sec) + ' logs/s';
+        }
+        appendProgressRow(tbody, 'Download rate', rateText);
+      }
+      if (data.updated_at) {
+        appendProgressRow(tbody, 'Last updated', formatUpdatedAt(data.updated_at));
+      }
+      if (data.earliest_log_timestamp != null) {
+        const earliestStr = formatEarliestLogDate(data.earliest_log_timestamp);
+        if (earliestStr) appendProgressRow(tbody, 'Earliest log', earliestStr);
+      }
+      if (data.logs_downloaded_since_last_update != null && typeof data.logs_downloaded_since_last_update === 'number') {
+        appendProgressRow(tbody, 'Logs this update', fmtProgressNum(data.logs_downloaded_since_last_update));
+      } else {
+        appendProgressRow(tbody, 'Logs this update', 'N/A');
+      }
+      appendChatPlaceholderRow(tbody);
+
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      el.appendChild(wrap);
     }
 
     function formatUpdatedAt(isoString) {
@@ -1052,6 +1273,7 @@
           return null;
         }
         renderProgress(data);
+        fetchChatMessageCountAndPatch();
         return data;
       } catch (_) {
         const el = document.getElementById('downloadProgress');

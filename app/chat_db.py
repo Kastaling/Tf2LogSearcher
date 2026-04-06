@@ -38,6 +38,27 @@ def connect_chat_db(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def count_chat_messages(db_path: str | Path) -> int | None:
+    """Return total rows in chat_messages, or None if the DB is missing or unreadable."""
+    path = Path(db_path)
+    if not path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(
+            path.resolve().as_uri() + "?mode=ro",
+            uri=True,
+            timeout=10.0,
+            check_same_thread=False,
+        )
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, TypeError, ValueError):
+        return None
+
+
 def _init_fts_if_available(conn: sqlite3.Connection) -> None:
     """Create optional FTS5 index for fast word lookups if the build supports it."""
     try:

@@ -28,7 +28,7 @@ from app.avatar_db import (
     set_cached_avatar,
     set_cached_avatars_bulk,
 )
-from app.chat_db import chat_log_fingerprint
+from app.chat_db import chat_log_fingerprint, count_chat_messages
 from app.request_log import append_request_log
 from app.search.search import (
     PlayerNameIndexNotReadyError,
@@ -861,6 +861,24 @@ async def api_download_progress(request: Request):
     }
     out = {k: data[k] for k in allowed if k in data}
     return JSONResponse(out)
+
+
+# Heavy COUNT(*) on chat_messages — cache so /api/download-progress stays fast (reads progress.json only).
+_CHAT_MESSAGE_COUNT_CACHE_TTL_SEC = 300.0
+_chat_message_count_cache: dict[str, Any] = {"n": None, "ts": 0.0}
+
+
+@router.get("/api/chat-message-count")
+async def api_chat_message_count():
+    """Total rows in chat_messages; cached ~5 min. Not logged to request CSV."""
+    now = time.time()
+    ts = float(_chat_message_count_cache["ts"])
+    if ts > 0 and (now - ts) < _CHAT_MESSAGE_COUNT_CACHE_TTL_SEC:
+        return JSONResponse({"chat_message_count": _chat_message_count_cache["n"]})
+    n = await asyncio.to_thread(count_chat_messages, CHAT_DB_PATH)
+    _chat_message_count_cache["n"] = n
+    _chat_message_count_cache["ts"] = now
+    return JSONResponse({"chat_message_count": n})
 
 
 def _static_path(name: str) -> Path:
