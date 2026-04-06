@@ -21,7 +21,13 @@ from app.config import (
     REQUEST_LOG_PATH,
     STEAM_WEB_API_KEY,
 )
-from app.avatar_db import connect_avatar_db, get_cached_avatar, init_avatar_db, set_cached_avatar
+from app.avatar_db import (
+    connect_avatar_db,
+    get_cached_avatar,
+    get_cached_avatars_bulk,
+    set_cached_avatar,
+    set_cached_avatars_bulk,
+)
 from app.chat_db import chat_log_fingerprint
 from app.request_log import append_request_log
 from app.search.search import (
@@ -49,31 +55,52 @@ PLAYER_NAME_RESULT_LIMIT = 200
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+_AVATAR_BATCH_MAX = 100
 
-def _fetch_steam_avatar_url_sync(steamid64: str) -> str | None:
-    """Call Steam GetPlayerSummaries; return avatarfull URL or None. Used via asyncio.to_thread."""
-    if not STEAM_WEB_API_KEY:
-        return None
+
+def _fetch_steam_avatar_urls_sync(steamid64s: list[str]) -> dict[str, str]:
+    """
+    Call Steam GetPlayerSummaries with comma-separated steamids (max 100 per Steam API).
+    Returns {steamid64: avatarfull URL} for valid https avatar URLs only.
+    """
+    if not STEAM_WEB_API_KEY or not steamid64s:
+        return {}
+    steamids_param = ",".join(steamid64s[:_AVATAR_BATCH_MAX])
     url = (
         "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/"
-        f"?key={STEAM_WEB_API_KEY}&steamids={steamid64}"
+        f"?key={STEAM_WEB_API_KEY}&steamids={steamids_param}"
     )
     try:
         r = requests.get(url, timeout=5)
         r.raise_for_status()
         data = r.json()
         players = data.get("response", {}).get("players") or []
-        if not players:
-            return None
-        avatar = players[0].get("avatarfull")
-        if not isinstance(avatar, str):
-            return None
-        avatar = avatar.strip()
-        if not avatar.startswith("https://"):
-            return None
-        return avatar
+        out: dict[str, str] = {}
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            sid = p.get("steamid")
+            avatar = p.get("avatarfull")
+            if sid is None:
+                continue
+            sid_s = str(sid).strip()
+            if not re.fullmatch(r"\d{17}", sid_s):
+                continue
+            if not isinstance(avatar, str):
+                continue
+            avatar = avatar.strip()
+            if not avatar.startswith("https://"):
+                continue
+            out[sid_s] = avatar
+        return out
     except Exception:
-        return None
+        return {}
+
+
+def _fetch_steam_avatar_url_sync(steamid64: str) -> str | None:
+    """Single-ID wrapper; used via asyncio.to_thread."""
+    m = _fetch_steam_avatar_urls_sync([steamid64])
+    return m.get(steamid64)
 
 
 def _client_ip(request: Request) -> str:
@@ -584,7 +611,6 @@ async def api_avatar(steamid64: str):
         return JSONResponse({"error": "steamid64 must be exactly 17 digits"}, status_code=400)
     conn = connect_avatar_db(AVATAR_DB_PATH)
     try:
-        init_avatar_db(conn)
         cached = get_cached_avatar(conn, steamid64)
         if cached:
             return JSONResponse({"url": cached})
@@ -594,6 +620,58 @@ async def api_avatar(steamid64: str):
         if new_url:
             set_cached_avatar(conn, steamid64, new_url)
         return JSONResponse({"url": new_url})
+    finally:
+        conn.close()
+
+
+@router.get("/api/avatars/batch")
+async def api_avatars_batch(steamids: str = Query("")):
+    """Batch avatar URLs (cache + Steam); not logged to request CSV."""
+    raw_parts = [p.strip() for p in (steamids or "").split(",") if p.strip()]
+    seen: set[str] = set()
+    valid: list[str] = []
+    for p in raw_parts:
+        if not re.fullmatch(r"\d{17}", p):
+            continue
+        if p in seen:
+            continue
+        seen.add(p)
+        valid.append(p)
+        if len(valid) >= _AVATAR_BATCH_MAX:
+            break
+
+    if not valid:
+        return JSONResponse({"avatars": {}})
+
+    conn = connect_avatar_db(AVATAR_DB_PATH)
+    try:
+        try:
+            cached = get_cached_avatars_bulk(conn, valid)
+        except Exception:
+            cached = {}
+        missing = [s for s in valid if s not in cached]
+
+        new_from_steam: dict[str, str] = {}
+        if missing and STEAM_WEB_API_KEY:
+            try:
+                new_from_steam = await asyncio.to_thread(_fetch_steam_avatar_urls_sync, missing)
+            except Exception:
+                new_from_steam = {}
+            if new_from_steam:
+                try:
+                    set_cached_avatars_bulk(conn, new_from_steam)
+                except Exception:
+                    pass
+
+        avatars: dict[str, str | None] = {}
+        for sid in valid:
+            if sid in cached:
+                avatars[sid] = cached[sid]
+            elif sid in new_from_steam:
+                avatars[sid] = new_from_steam[sid]
+            else:
+                avatars[sid] = None
+        return JSONResponse({"avatars": avatars})
     finally:
         conn.close()
 

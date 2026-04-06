@@ -56,3 +56,44 @@ def set_cached_avatar(conn: sqlite3.Connection, steamid64: str, avatar_url: str)
         (steamid64, avatar_url, int(time.time())),
     )
     conn.commit()
+
+
+def get_cached_avatars_bulk(conn: sqlite3.Connection, steamid64s: list[str]) -> dict[str, str]:
+    """
+    Return a dict of {steamid64: avatar_url} for all IDs that are cached and within TTL.
+    IDs not in cache or past TTL are omitted from the result.
+    """
+    if not steamid64s:
+        return {}
+    placeholders = ",".join("?" * len(steamid64s))
+    rows = conn.execute(
+        f"SELECT steamid64, avatar_url, fetched_at FROM avatars WHERE steamid64 IN ({placeholders})",
+        tuple(steamid64s),
+    ).fetchall()
+    now = time.time()
+    out: dict[str, str] = {}
+    for steamid64, avatar_url, fetched_at in rows:
+        try:
+            age = now - int(fetched_at)
+        except (TypeError, ValueError):
+            continue
+        if age > _AVATAR_CACHE_TTL_SEC:
+            continue
+        if avatar_url:
+            out[str(steamid64)] = str(avatar_url)
+    return out
+
+
+def set_cached_avatars_bulk(conn: sqlite3.Connection, avatars: dict[str, str]) -> None:
+    """
+    Upsert multiple avatar URLs at once in a single transaction.
+    """
+    if not avatars:
+        return
+    ts = int(time.time())
+    rows = [(sid, url, ts) for sid, url in avatars.items()]
+    conn.executemany(
+        "INSERT OR REPLACE INTO avatars (steamid64, avatar_url, fetched_at) VALUES (?, ?, ?)",
+        rows,
+    )
+    conn.commit()

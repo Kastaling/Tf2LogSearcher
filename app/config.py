@@ -52,4 +52,4 @@ REQUEST_LOG_PATH = Path(_str("REQUEST_LOG_PATH", "/data/request_logs/request_log
 CHAT_DB_PATH = Path(_str("CHAT_DB_PATH", "/data/chat/chat.db"))
 
 # Avatar URL cache (Steam Web API; separate SQLite file)
-AVATAR_DB_PATH = Path(_str("AVATAR_DB_PATH", "/data/avatars/avatars.db"))
+AVATAR_DB_PATH = Path(_str("AVATAR_DB_PATH", "./downloader_state/avatars.db"))

@@ -1682,31 +1682,45 @@
         }
       }
 
-      var fetchPromises = [];
+      var uncached = [];
       sids.forEach(function(sid2) {
         if (Object.prototype.hasOwnProperty.call(_avatarCache, sid2)) {
           applySid(sid2, _avatarCache[sid2]);
-          return;
-        }
-        fetchPromises.push(
-          fetch('/api/avatar/' + encodeURIComponent(sid2))
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-              var url = data && data.url != null ? data.url : null;
-              _avatarCache[sid2] = url;
-              return { sid: sid2, url: url };
-            })
-            .catch(function() {
-              _avatarCache[sid2] = null;
-              return { sid: sid2, url: null };
-            })
-        );
-      });
-      return Promise.all(fetchPromises).then(function(results) {
-        for (var r = 0; r < results.length; r++) {
-          applySid(results[r].sid, results[r].url);
+        } else {
+          uncached.push(sid2);
         }
       });
+
+      if (!uncached.length) return;
+
+      var AVATAR_BATCH_MAX = 100;
+      var promises = [];
+      for (var c = 0; c < uncached.length; c += AVATAR_BATCH_MAX) {
+        (function(chunk) {
+          var sp = new URLSearchParams();
+          sp.set('steamids', chunk.join(','));
+          promises.push(
+            fetch('/api/avatars/batch?' + sp.toString())
+              .then(function(r) { return r.json(); })
+              .then(function(data) {
+                var map = data && data.avatars && typeof data.avatars === 'object' ? data.avatars : {};
+                chunk.forEach(function(sid) {
+                  var url = Object.prototype.hasOwnProperty.call(map, sid) ? map[sid] : null;
+                  if (url != null && typeof url !== 'string') url = null;
+                  _avatarCache[sid] = url;
+                  applySid(sid, url);
+                });
+              })
+              .catch(function() {
+                chunk.forEach(function(sid) {
+                  _avatarCache[sid] = null;
+                  applySid(sid, null);
+                });
+              })
+          );
+        })(uncached.slice(c, c + AVATAR_BATCH_MAX));
+      }
+      return Promise.all(promises);
     }
 
     function logmatchAliasTooltip(row) {
