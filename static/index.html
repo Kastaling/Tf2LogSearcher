@@ -2043,6 +2043,7 @@
       { key: 'wins_against', label: 'Wins against', type: 'number' },
       { key: 'losses_against', label: 'Losses against', type: 'number' },
       { key: 'winpct_against', label: 'Win% against', type: 'winpct' },
+      { key: 'actions', label: 'Search', type: 'actions' },
     ];
 
     var COPLAYERS_CSV_COLUMNS = [
@@ -2099,6 +2100,9 @@
     }
 
     function getCoplayersSortValue(row, colKey, type) {
+      if (type === 'actions') {
+        return '';
+      }
       if (type === 'winpct') {
         return coplayersWinPctSortValue(row, colKey === 'winpct_with' ? 'with' : 'against');
       }
@@ -2133,7 +2137,7 @@
       var sortCol = coplayersSortCol;
       var sortDir = coplayersSortDir;
       var colDef = COPLAYERS_COLUMNS.find(function(c) { return c.key === sortCol; });
-      if (colDef) {
+      if (colDef && colDef.type !== 'actions') {
         sortedRows.sort(function(a, b) {
           var va = getCoplayersSortValue(a, sortCol, colDef.type);
           var vb = getCoplayersSortValue(b, sortCol, colDef.type);
@@ -2179,6 +2183,37 @@
       });
     }
 
+    /** Home URL for logmatch with searched player + co-player (newline-separated steamids param). */
+    function coplayersLogmatchUrl(searchedSteamid64, rowSteamid64) {
+      var base = window.location.origin + '/';
+      var a = searchedSteamid64 != null ? String(searchedSteamid64).trim() : '';
+      var b = rowSteamid64 != null ? String(rowSteamid64).trim() : '';
+      if (!/^\d{17}$/.test(a) || !/^\d{17}$/.test(b)) return '';
+      return base + '?mode=logmatch&steamids=' + encodeURIComponent(a + '\n' + b);
+    }
+
+    function coplayersSearchActionsHtml(row, searchedSteamid64) {
+      var base = window.location.origin + '/';
+      var sid = row.steamid64 != null ? String(row.steamid64).trim() : '';
+      if (!/^\d{17}$/.test(sid)) return '';
+      var chatHref = base + '?mode=chat&steamid=' + encodeURIComponent(sid);
+      var statsHref = base + '?mode=stats&steamid=' + encodeURIComponent(sid);
+      var coplayHref = base + '?mode=coplayers&steamid=' + encodeURIComponent(sid);
+      var parts = [
+        '<a class="playername-action-link" href="' + escapeAttr(chatHref) + '">Chat</a>',
+        '<a class="playername-action-link" href="' + escapeAttr(statsHref) + '">Stats</a>',
+        '<a class="playername-action-link" href="' + escapeAttr(coplayHref) + '">Co-players</a>'
+      ];
+      var searched = searchedSteamid64 != null ? String(searchedSteamid64).trim() : '';
+      if (/^\d{17}$/.test(searched)) {
+        var logmatchHref = coplayersLogmatchUrl(searched, sid);
+        if (logmatchHref) {
+          parts.push('<a class="playername-action-link" href="' + escapeAttr(logmatchHref) + '">Logmatch</a>');
+        }
+      }
+      return parts.join('');
+    }
+
     function coplayersSummaryLine(nCo, logsSearched) {
       var n = Number(nCo) || 0;
       var base = 'Found ' + n + ' co-player' + (n === 1 ? '' : 's');
@@ -2189,7 +2224,11 @@
       return base + '.';
     }
 
-    function renderCoplayers(container, data, elapsedMs) {
+    function renderCoplayers(container, data, elapsedMs, searchedSteamid64) {
+      if (searchedSteamid64 !== undefined) {
+        container._coplayersSearchedSteamid64 = searchedSteamid64;
+      }
+      var searched = container._coplayersSearchedSteamid64;
       var rows = data && data.rows ? data.rows : [];
       if (rows !== container._coplayersRows) {
         container._coplayersRows = rows;
@@ -2210,6 +2249,10 @@
 
       var thead = '<tr>';
       COPLAYERS_COLUMNS.forEach(function(c) {
+        if (c.type === 'actions') {
+          thead += '<th scope="col">' + escapeHtml(c.label) + '</th>';
+          return;
+        }
         var cls = 'sortable';
         if (c.key === sortCol) cls += sortDir === 1 ? ' sorted-asc' : ' sorted-desc';
         thead += '<th class="' + cls + '" data-col="' + escapeHtml(c.key) + '" scope="col">' + escapeHtml(c.label) + '</th>';
@@ -2218,9 +2261,15 @@
 
       var tbody = '';
       sortedRows.forEach(function(x) {
-        tbody += '<tr>';
+        var lm = coplayersLogmatchUrl(searched, x.steamid64);
+        var trOpen = lm
+          ? '<tr data-logmatch-href="' + escapeAttr(lm) + '" style="cursor:pointer">'
+          : '<tr>';
+        tbody += trOpen;
         COPLAYERS_COLUMNS.forEach(function(c) {
-          if (c.key === 'name') {
+          if (c.type === 'actions') {
+            tbody += '<td class="playername-actions">' + coplayersSearchActionsHtml(x, searched) + '</td>';
+          } else if (c.key === 'name') {
             tbody += '<td>' + coplayersNameCellHtml(x) + '</td>';
           } else if (c.type === 'winpct') {
             tbody += '<td>' + escapeHtml(coplayersWinPctDisplay(x, c.key === 'winpct_with' ? 'with' : 'against')) + '</td>';
@@ -2235,12 +2284,20 @@
       container.innerHTML =
         summaryP +
         '<div class="stats-csv-toolbar"><button type="button" class="js-coplayers-csv-download" aria-label="Download co-players table as a CSV file">Download as CSV</button></div>' +
-        '<div class="stats-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' +
+        '<div class="stats-table-wrap"><table class="stats-table playername-results-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' +
         requestTimingFooter(container._coplayersRequestMs);
       container._coplayersRows = originalRows;
 
       bindCoplayersCsvDownload(container);
       loadAvatarsInContainer(container);
+
+      container.querySelectorAll('tbody tr[data-logmatch-href]').forEach(function(tr) {
+        tr.addEventListener('click', function(e) {
+          if (e.target.closest('a')) return;
+          var h = tr.getAttribute('data-logmatch-href');
+          if (h) window.location.href = h;
+        });
+      });
 
       container.querySelectorAll('th.sortable').forEach(function(th) {
         th.addEventListener('click', function() {
@@ -2918,7 +2975,10 @@
               }
               resultsContent.innerHTML = '<p class="stats-summary-meta">' + escapeHtml(emptyMsg) + '</p>' + requestTimingFooter(ms);
             } else {
-              renderCoplayers(resultsContent, data, ms);
+              var rs = data.resolved_steamid64 != null ? String(data.resolved_steamid64).trim() : '';
+              var paramSid = (params.get('steamid') || '').trim();
+              var searchedForCoplayers = /^\d{17}$/.test(rs) ? rs : (/^\d{17}$/.test(paramSid) ? paramSid : undefined);
+              renderCoplayers(resultsContent, data, ms, searchedForCoplayers);
             }
           } else if (mode === 'playername') {
             var qShown = (params.get('q') || '').trim();

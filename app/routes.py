@@ -428,10 +428,12 @@ def _api_search_coplayers_impl(
             steamid=steamid64,
             gamemode=gm,
         )
-        return JSONResponse(cached)
+        body = dict(cached)
+        body["resolved_steamid64"] = steamid64
+        return JSONResponse(body)
     try:
         rows, log_ids_used = coplayers_search(steamid64, LOGS_DIR, gamemode=gm, map_query=map_query)
-        payload = {"rows": rows, "logs_searched": len(log_ids_used)}
+        payload = {"rows": rows, "logs_searched": len(log_ids_used), "resolved_steamid64": steamid64}
         cache_set("coplayers", cache_key, payload, log_ids_used)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
