@@ -404,6 +404,71 @@
     .stats-summary-item.aliases {
       grid-column: 1 / -1;
     }
+    .logmatch-h2h {
+      margin: 0 0 0.75rem;
+      padding: 0.6rem 0.75rem;
+      background: var(--progress-bg);
+      border: 1px solid var(--progress-border);
+      border-radius: var(--standard-border-radius, 5px);
+    }
+    .logmatch-h2h-title {
+      margin: 0 0 0.45rem;
+      font-family: var(--heading-font);
+      font-size: 1rem;
+      color: var(--text);
+    }
+    .logmatch-h2h-panels {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem 1rem;
+      align-items: flex-start;
+    }
+    .logmatch-h2h-panel {
+      flex: 1 1 260px;
+      min-width: 0;
+    }
+    .logmatch-h2h-panel h4 {
+      margin: 0 0 0.35rem;
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .logmatch-h2h-vs {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.35rem 0.5rem;
+      margin: 0 0 0.35rem;
+      font-size: 0.9rem;
+    }
+    .logmatch-h2h-vs span { overflow-wrap: anywhere; }
+    .logmatch-h2h-wins {
+      margin: 0 0 0.35rem;
+      font-size: 0.88rem;
+      line-height: 1.35;
+    }
+    .logmatch-h2h-draw-note {
+      margin: 0.25rem 0 0.35rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+    .logmatch-h2h-diff-line {
+      margin: 0.35rem 0 0;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      color: var(--text-muted);
+    }
+    .logmatch-h2h-diff-line strong { color: var(--text); font-weight: 600; }
+    .logmatch-h2h-diff-chip {
+      display: inline-block;
+      margin: 0.1rem 0.35rem 0 0;
+      white-space: nowrap;
+    }
+    .h2h-diff-pos { color: #1b7f4a; font-weight: 600; }
+    .h2h-diff-neg { color: #b00020; font-weight: 600; }
+    .h2h-diff-zero { color: var(--text-muted); font-weight: 500; }
+    [data-theme="dark"] .h2h-diff-pos { color: #81c784; }
+    [data-theme="dark"] .h2h-diff-neg { color: #ef9a9a; }
     .stats-trend {
       margin-top: 0.7rem;
       border-top: 1px solid var(--progress-border);
@@ -3003,11 +3068,75 @@
       });
     }
 
+    var H2H_STAT_ORDER = ['kills', 'dpm', 'kdr', 'dmg', 'assists', 'deaths', 'kadr', 'ubers', 'drops'];
+    var H2H_STAT_LABELS = { kills: 'Kills', assists: 'Assists', deaths: 'Deaths', dpm: 'DPM', dmg: 'DMG', kdr: 'KDR', kadr: 'KADR', ubers: 'Ubers', drops: 'Drops' };
+
+    function h2hFormatDiffHtml(val) {
+      var v = Number(val);
+      if (!Number.isFinite(v)) return '<span class="h2h-diff-zero">\u2014</span>';
+      if (v === 0) return '<span class="h2h-diff-zero">0</span>';
+      var dec = (Math.abs(v % 1) < 1e-9) ? 0 : 2;
+      var raw = dec ? v.toFixed(2) : String(Math.round(v));
+      var cls = v > 0 ? 'h2h-diff-pos' : 'h2h-diff-neg';
+      var shown = (v > 0 ? '+' : '') + raw;
+      return '<span class="' + cls + '">' + escapeHtml(shown) + '</span>';
+    }
+
+    function renderLogmatchHeadToHeadCard(h2h) {
+      if (!h2h) return '';
+      var la = h2h.player_a_label != null ? String(h2h.player_a_label) : '';
+      var lb = h2h.player_b_label != null ? String(h2h.player_b_label) : '';
+      var opp = h2h.opposing || {};
+      var st = h2h.same_team || {};
+      var oppN = Number(opp.logs_count) || 0;
+      var stN = Number(st.logs_count) || 0;
+      var oppSection = '';
+      if (oppN === 0) {
+        oppSection += '<p class="logmatch-h2h-wins" style="color:var(--text-muted)">No opposing-team logs in these results.</p>';
+      } else {
+        oppSection += '<div class="logmatch-h2h-vs"><span>' + escapeHtml(la) + '</span> <span>vs</span> <span>' + escapeHtml(lb) + '</span></div>';
+        var aw = opp.player_a_wins != null ? opp.player_a_wins : 0;
+        var bw = opp.player_b_wins != null ? opp.player_b_wins : 0;
+        oppSection += '<p class="logmatch-h2h-wins">Wins: <strong>' + escapeHtml(String(aw)) + '</strong> (' + escapeHtml(la) + ') vs <strong>' + escapeHtml(String(bw)) + '</strong> (' + escapeHtml(lb) + ')</p>';
+        var draws = Number(opp.draws) || 0;
+        if (draws > 0) {
+          oppSection += '<p class="logmatch-h2h-draw-note">\u2014 ' + escapeHtml(String(draws)) + ' draw(s) \u2014</p>';
+        }
+        var avg = opp.avg_stat_diff || {};
+        var diffParts = [];
+        H2H_STAT_ORDER.forEach(function(key) {
+          if (avg[key] === undefined || avg[key] === null) return;
+          diffParts.push('<span class="logmatch-h2h-diff-chip"><strong>' + escapeHtml(H2H_STAT_LABELS[key] || key) + '</strong> ' + h2hFormatDiffHtml(avg[key]) + '</span>');
+        });
+        if (diffParts.length) {
+          oppSection += '<p class="logmatch-h2h-diff-line"><strong>Avg diff when opposing (A\u2212B):</strong></p><p class="logmatch-h2h-diff-line">' + diffParts.join(' ') + '</p>';
+        }
+      }
+      var stSection = '';
+      if (stN === 0) {
+        stSection += '<p class="logmatch-h2h-wins" style="color:var(--text-muted)">No same-team logs in these results.</p>';
+      } else {
+        var w = st.wins != null ? st.wins : 0;
+        var l = st.losses != null ? st.losses : 0;
+        var d = st.draws != null ? st.draws : 0;
+        stSection += '<p class="logmatch-h2h-wins">Together: <strong>' + escapeHtml(String(w)) + ' W</strong> / <strong>' + escapeHtml(String(l)) + ' L</strong> / <strong>' + escapeHtml(String(d)) + ' D</strong></p>';
+      }
+      return (
+        '<div class="stats-summary logmatch-h2h" role="region" aria-label="Head-to-head summary">' +
+        '<p class="logmatch-h2h-title">Head-to-head</p>' +
+        '<div class="logmatch-h2h-panels">' +
+        '<div class="logmatch-h2h-panel"><h4>Opposing teams</h4>' + oppSection + '</div>' +
+        '<div class="logmatch-h2h-panel"><h4>Same team</h4>' + stSection + '</div>' +
+        '</div></div>'
+      );
+    }
+
     function renderLogmatchResult(el, data, elapsedMs) {
       var results = data.results || [];
-      var html = '<p class="logmatch-total">Total ' + escapeHtml(String(data.total || 0)) + ' matching log(s).</p>';
+      var h2hHtml = data.head_to_head ? renderLogmatchHeadToHeadCard(data.head_to_head) : '';
+      var html = h2hHtml + '<p class="logmatch-total">Total ' + escapeHtml(String(data.total || 0)) + ' matching log(s).</p>';
       if (results.length === 0) {
-        el.innerHTML = 'No matches.' + requestTimingFooter(elapsedMs);
+        el.innerHTML = html + 'No matches.' + requestTimingFooter(elapsedMs);
         return;
       }
       results.forEach(function(x) {

@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import requests
+import httpx
 from fastapi import APIRouter, Request, Form, Query
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 
@@ -64,10 +64,10 @@ logger = logging.getLogger(__name__)
 _AVATAR_BATCH_MAX = 100
 
 
-def _fetch_steam_avatar_urls_sync(steamid64s: list[str]) -> dict[str, str]:
+async def _fetch_steam_avatar_urls(steamid64s: list[str]) -> dict[str, str]:
     """
-    Call Steam GetPlayerSummaries with comma-separated steamids (max 100 per Steam API).
-    Returns {steamid64: avatarfull URL} for valid https avatar URLs only.
+    Fetch avatar URLs from Steam GetPlayerSummaries (async).
+    Returns {steamid64: avatarfull_url} for valid https URLs only.
     """
     if not STEAM_WEB_API_KEY or not steamid64s:
         return {}
@@ -77,36 +77,28 @@ def _fetch_steam_avatar_urls_sync(steamid64s: list[str]) -> dict[str, str]:
         f"?key={STEAM_WEB_API_KEY}&steamids={steamids_param}"
     )
     try:
-        r = requests.get(url, timeout=5)
-        r.raise_for_status()
-        data = r.json()
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.json()
         players = data.get("response", {}).get("players") or []
         out: dict[str, str] = {}
         for p in players:
             if not isinstance(p, dict):
                 continue
-            sid = p.get("steamid")
-            avatar = p.get("avatarfull")
-            if sid is None:
+            sid = str(p.get("steamid", "")).strip()
+            if not re.fullmatch(r"\d{17}", sid):
                 continue
-            sid_s = str(sid).strip()
-            if not re.fullmatch(r"\d{17}", sid_s):
-                continue
+            avatar = p.get("avatarfull", "")
             if not isinstance(avatar, str):
                 continue
             avatar = avatar.strip()
-            if not avatar.startswith("https://"):
-                continue
-            out[sid_s] = avatar
+            if avatar.startswith("https://"):
+                out[sid] = avatar
         return out
     except Exception:
+        logger.exception("Steam avatar fetch failed")
         return {}
-
-
-def _fetch_steam_avatar_url_sync(steamid64: str) -> str | None:
-    """Single-ID wrapper; used via asyncio.to_thread."""
-    m = _fetch_steam_avatar_urls_sync([steamid64])
-    return m.get(steamid64)
 
 
 def _client_ip(request: Request) -> str:
@@ -624,7 +616,8 @@ async def api_avatar(steamid64: str):
             return JSONResponse({"url": cached})
         if not STEAM_WEB_API_KEY:
             return JSONResponse({"url": None, "error": "Steam API key not configured"})
-        new_url = await asyncio.to_thread(_fetch_steam_avatar_url_sync, steamid64)
+        fetched = await _fetch_steam_avatar_urls([steamid64])
+        new_url = fetched.get(steamid64)
         if new_url:
             set_cached_avatar(conn, steamid64, new_url)
         return JSONResponse({"url": new_url})
@@ -661,10 +654,7 @@ async def api_avatars_batch(steamids: str = Query("")):
 
         new_from_steam: dict[str, str] = {}
         if missing and STEAM_WEB_API_KEY:
-            try:
-                new_from_steam = await asyncio.to_thread(_fetch_steam_avatar_urls_sync, missing)
-            except Exception:
-                new_from_steam = {}
+            new_from_steam = await _fetch_steam_avatar_urls(missing)
             if new_from_steam:
                 try:
                     set_cached_avatars_bulk(conn, new_from_steam)
@@ -755,10 +745,10 @@ def _api_search_logmatch_impl(request: Request, steamids: str, map_query_raw: st
     status_code = 200
     result_count = 0
     try:
-        results, result_count, matching_log_ids = log_match(
+        results, result_count, matching_log_ids, head_to_head = log_match(
             sid_list, LOGS_DIR, search_inputs=raw_list, map_query=map_query
         )
-        payload = {"results": results, "total": result_count}
+        payload = {"results": results, "total": result_count, "head_to_head": head_to_head}
         cache_set("logmatch", (sid_tuple, map_query.lower()), payload, matching_log_ids)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/search/logmatch", status_code, duration_ms, result_count=result_count, steamids=",".join(sid_list))

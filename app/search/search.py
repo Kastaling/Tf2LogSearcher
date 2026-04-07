@@ -888,11 +888,11 @@ def log_match(
     *,
     search_inputs: list[str] | None = None,
     map_query: str = "",
-) -> tuple[list[dict[str, Any]], int, frozenset[int]]:
-    """Logs where all given players participated. Returns (results, total, matching_log_ids) for cache invalidation."""
+) -> tuple[list[dict[str, Any]], int, frozenset[int], dict[str, Any] | None]:
+    """Logs where all given players participated. Returns (results, total, matching_log_ids, head_to_head or None)."""
     logs_dir = Path(logs_dir)
     if not steamids:
-        return [], 0, frozenset()
+        return [], 0, frozenset(), None
     labels: list[str] = (
         list(search_inputs)
         if search_inputs is not None and len(search_inputs) == len(steamids)
@@ -944,8 +944,113 @@ def log_match(
             "date_ts": date_ts,
             "url": f"{LOGS_TF_URL_BASE}/{log_id}",
             "player_stats": player_stats,
+            "_winner_team": _winner_team_from_log(logtext),
         })
-    return results, len(results), frozenset(matching_log_ids)
+    head_to_head: dict[str, Any] | None = None
+    if len(steamids) == 2:
+        head_to_head = compute_head_to_head_summary(results, labels[0], labels[1])
+    for r in results:
+        r.pop("_winner_team", None)
+    return results, len(results), frozenset(matching_log_ids), head_to_head
+
+
+def compute_head_to_head_summary(
+    results: list[dict[str, Any]],
+    search_input_a: str,
+    search_input_b: str,
+) -> dict[str, Any]:
+    """
+    Head-to-head summary for exactly two players across log_match results.
+
+    Partitions logs into 'opposing' (different teams) and 'same_team' buckets.
+    Returns win/loss counts and average stat differentials (A minus B) for opposing logs.
+    stat_diff > 0 means player A is ahead for that stat.
+    """
+    # Stat fields to diff (opposing logs only)
+    DIFF_STATS = (
+        "kills",
+        "assists",
+        "deaths",
+        "dpm",
+        "dmg",
+        "kdr",
+        "kadr",
+        "ubers",
+        "drops",
+    )
+
+    opposing_logs: list[dict[str, Any]] = []
+    same_team_logs: list[dict[str, Any]] = []
+
+    for r in results:
+        stats = r.get("player_stats") or []
+        a = next((s for s in stats if s.get("search_input") == search_input_a), None)
+        b = next((s for s in stats if s.get("search_input") == search_input_b), None)
+        if a is None or b is None:
+            continue
+        a_team = a.get("team")
+        b_team = b.get("team")
+        if a_team and b_team and a_team != b_team:
+            opposing_logs.append({"a": a, "b": b, "winner": r.get("_winner_team")})
+        elif a_team and b_team and a_team == b_team:
+            same_team_logs.append(
+                {"a": a, "b": b, "winner": r.get("_winner_team"), "team": a_team}
+            )
+
+    # --- Opposing ---
+    opp_a_wins = opp_b_wins = opp_draws = 0
+    opp_stat_totals: dict[str, float] = {s: 0.0 for s in DIFF_STATS}
+
+    for entry in opposing_logs:
+        a, b, winner = entry["a"], entry["b"], entry["winner"]
+        a_team = a.get("team")
+        if winner is None:
+            opp_draws += 1
+        elif winner == a_team:
+            opp_a_wins += 1
+        else:
+            opp_b_wins += 1
+        for stat in DIFF_STATS:
+            try:
+                opp_stat_totals[stat] += float(a.get(stat) or 0) - float(b.get(stat) or 0)
+            except (TypeError, ValueError):
+                pass
+
+    n_opp = len(opposing_logs)
+    avg_diff = {
+        stat: round(opp_stat_totals[stat] / n_opp, 2) if n_opp else 0.0
+        for stat in DIFF_STATS
+    }
+
+    # --- Same team ---
+    same_wins = same_losses = same_draws = 0
+    for entry in same_team_logs:
+        winner = entry["winner"]
+        team = entry["team"]
+        if winner is None:
+            same_draws += 1
+        elif winner == team:
+            same_wins += 1
+        else:
+            same_losses += 1
+
+    return {
+        "player_a_label": search_input_a,
+        "player_b_label": search_input_b,
+        "opposing": {
+            "logs_count": n_opp,
+            "player_a_wins": opp_a_wins,
+            "player_b_wins": opp_b_wins,
+            "draws": opp_draws,
+            "avg_stat_diff": avg_diff,  # positive = A ahead
+        },
+        "same_team": {
+            "logs_count": len(same_team_logs),
+            "wins": same_wins,
+            "losses": same_losses,
+            "draws": same_draws,
+        },
+    }
 
 
 def log_match_matching_log_ids(steamids: list[str], logs_dir: str | Path) -> frozenset[int]:
