@@ -1571,6 +1571,44 @@
       return out;
     }
 
+    function chatLeaderboardWebhookSubscribeHtml(word) {
+      if (!word || word.length < 3) return '';
+      return (
+        '<div class="webhook-subscribe" data-steamid="" data-word="' + escapeHtml(word) + '">' +
+        '<label for="webhookUrlChatLb">Notify me when new logs contain this word (Discord webhook):</label><br>' +
+        '<input type="url" id="webhookUrlChatLb" class="js-webhook-url" placeholder="https://discord.com/api/webhooks/..." autocomplete="url"> ' +
+        '<button type="button" class="js-chat-subscribe">Subscribe</button>' +
+        '<div class="subscribe-msg js-subscribe-msg" aria-live="polite"></div>' +
+        '</div>'
+      );
+    }
+
+    function bindWebhookSubscribeBox(box) {
+      if (!box) return;
+      var btn = box.querySelector('.js-chat-subscribe');
+      var msgEl = box.querySelector('.js-subscribe-msg');
+      var inputEl = box.querySelector('.js-webhook-url');
+      if (!btn || !msgEl || !inputEl) return;
+      btn.addEventListener('click', function() {
+        var url = (inputEl.value || '').trim();
+        var sid = (box.getAttribute('data-steamid') || '').trim();
+        var w = (box.getAttribute('data-word') || '').trim();
+        msgEl.textContent = '';
+        if (!url) { msgEl.textContent = 'Enter a Discord webhook URL.'; msgEl.className = 'subscribe-msg js-subscribe-msg error'; return; }
+        btn.disabled = true;
+        var body = new URLSearchParams({ webhook_url: url, word: w });
+        if (sid) body.set('steamid', sid);
+        fetch('/api/chat-subscriptions', { method: 'POST', body: body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
+          .then(function(r) { return r.json(); })
+          .then(function(res) {
+            btn.disabled = false;
+            if (res.ok) { msgEl.textContent = 'Subscribed. You will get a Discord message when new logs match this search.'; msgEl.className = 'subscribe-msg js-subscribe-msg'; }
+            else { msgEl.textContent = res.error || 'Subscription failed.'; msgEl.className = 'subscribe-msg js-subscribe-msg error'; }
+          })
+          .catch(function(err) { btn.disabled = false; msgEl.textContent = err.message || 'Request failed.'; msgEl.className = 'subscribe-msg js-subscribe-msg error'; });
+      });
+    }
+
     function renderChatLeaderboard(el, data, wordParam, elapsedMs) {
       var rows = data && Array.isArray(data.rows) ? data.rows : [];
       if (rows !== el._chatLbRows) {
@@ -1581,8 +1619,10 @@
       var sorted = getSortedChatLeaderboardRows(el._chatLbRows || []);
       var logsSearched = (data && Number.isFinite(Number(data.logs_searched))) ? Number(data.logs_searched) : null;
       var word = (wordParam || '').trim();
+      var lbSubscribe = chatLeaderboardWebhookSubscribeHtml(word);
       if (!sorted.length) {
-        el.innerHTML = 'No matches.' + requestTimingFooter(elapsedMs);
+        el.innerHTML = 'No matches.' + lbSubscribe + requestTimingFooter(elapsedMs);
+        bindWebhookSubscribeBox(el.querySelector('.webhook-subscribe'));
         return;
       }
 
@@ -1620,9 +1660,11 @@
       el.innerHTML =
         '<p class="chat-summary-line">' + summary + '</p>' +
         '<div class="stats-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' +
+        lbSubscribe +
         requestTimingFooter(elapsedMs);
 
       loadAvatarsInContainer(el);
+      bindWebhookSubscribeBox(el.querySelector('.webhook-subscribe'));
 
       el.querySelectorAll('th.sortable').forEach(function(th) {
         th.addEventListener('click', function() {
@@ -1707,29 +1749,7 @@
       }
 
       if (showWebhookBox && word) {
-        var box = el.querySelector('.webhook-subscribe');
-        var btn = el.querySelector('.js-chat-subscribe');
-        var msgEl = el.querySelector('.js-subscribe-msg');
-        var inputEl = el.querySelector('.js-webhook-url');
-        if (box && btn && msgEl && inputEl) {
-          btn.addEventListener('click', function() {
-            var url = (inputEl.value || '').trim();
-            var sid = box.getAttribute('data-steamid') || '';
-            var w = box.getAttribute('data-word') || '';
-            msgEl.textContent = '';
-            if (!url) { msgEl.textContent = 'Enter a Discord webhook URL.'; msgEl.className = 'subscribe-msg js-subscribe-msg error'; return; }
-            btn.disabled = true;
-            var body = new URLSearchParams({ webhook_url: url, steamid: sid, word: w });
-            fetch('/api/chat-subscriptions', { method: 'POST', body: body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
-              .then(function(r) { return r.json(); })
-              .then(function(res) {
-                btn.disabled = false;
-                if (res.ok) { msgEl.textContent = 'Subscribed. You will get a Discord message when new logs match this search.'; msgEl.className = 'subscribe-msg js-subscribe-msg'; }
-                else { msgEl.textContent = res.error || 'Subscription failed.'; msgEl.className = 'subscribe-msg js-subscribe-msg error'; }
-              })
-              .catch(function(err) { btn.disabled = false; msgEl.textContent = err.message || 'Request failed.'; msgEl.className = 'subscribe-msg js-subscribe-msg error'; });
-          });
-        }
+        bindWebhookSubscribeBox(el.querySelector('.webhook-subscribe'));
       }
     }
 

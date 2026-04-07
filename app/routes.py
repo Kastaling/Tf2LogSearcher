@@ -42,7 +42,13 @@ from app.search.search import (
 )
 from app.search_cache import get as cache_get, set_ as cache_set
 from app.steam_resolver import resolve_to_steamid64
-from app.subscriptions import add_subscription, deactivate_by_token, is_valid_discord_webhook_url, send_welcome_message
+from app.subscriptions import (
+    LEADERBOARD_SUB_WORD_MIN_LEN,
+    add_subscription,
+    deactivate_by_token,
+    is_valid_discord_webhook_url,
+    send_welcome_message,
+)
 
 CHAT_SEARCH_MAX_WORD_LENGTH = 200
 MAP_QUERY_MAX_LENGTH = 100
@@ -782,25 +788,40 @@ async def api_add_chat_subscription(
     word: str = Form(""),
 ):
     """
-    Subscribe a Discord webhook to chat search alerts for (steamid, word).
-    Only valid when word is non-empty. Webhook URL is validated strictly.
+    Subscribe a Discord webhook to chat search alerts for (steamid, word), or for a global
+    leaderboard word alert when steamid is empty (same rules as leaderboard search: word length).
     """
     webhook_url = (webhook_url or "").strip()
     steamid_input = (steamid or "").strip()
     word = (word or "").strip()
     if not word:
         return JSONResponse({"ok": False, "error": "A search word is required (not full chat history)."}, status_code=400)
-    if not steamid_input:
-        return JSONResponse({"ok": False, "error": "Steam ID is required."}, status_code=400)
+    if len(word) > CHAT_SEARCH_MAX_WORD_LENGTH:
+        return JSONResponse({"ok": False, "error": "Search word is too long."}, status_code=400)
     if not is_valid_discord_webhook_url(webhook_url):
         return JSONResponse(
             {"ok": False, "error": "Invalid Discord webhook URL. Use a URL like https://discord.com/api/webhooks/123.../abc..."},
             status_code=400,
         )
-    steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
-    if resolve_error is not None:
-        return JSONResponse({"ok": False, "error": resolve_error}, status_code=400)
-    assert steamid64 is not None
+    if not steamid_input:
+        if len(word) < LEADERBOARD_SUB_WORD_MIN_LEN:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": (
+                        f"When Steam ID is empty, the word must be at least {LEADERBOARD_SUB_WORD_MIN_LEN} "
+                        "characters (same as chat leaderboard search)."
+                    ),
+                },
+                status_code=400,
+            )
+        steamid64 = ""
+    else:
+        resolved, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+        if resolve_error is not None:
+            return JSONResponse({"ok": False, "error": resolve_error}, status_code=400)
+        assert resolved is not None
+        steamid64 = resolved
     state_dir = DOWNLOADER_STATE_DIR.resolve()
     ok, err, deactivate_token = add_subscription(state_dir, webhook_url, steamid64, word)
     if not ok:
@@ -927,6 +948,17 @@ def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else (s[: n - 1] + "…")
 
 
+def _steam_profile_image_url(steamid64: str) -> str | None:
+    """
+    Public Steam avatar URL for Open Graph / Discord link previews.
+    Only accepts a validated 17-digit SteamID64; never interpolates untrusted strings.
+    """
+    s = (steamid64 or "").strip()
+    if len(s) != STEAMID64_LEN or not s.isdigit():
+        return None
+    return f"https://avatars.steamstatic.com/{s}.jpg"
+
+
 def _build_results_embed_meta(request: Request) -> str:
     """
     Build OpenGraph/Twitter meta tags for /results based on query params + cached payloads.
@@ -944,6 +976,7 @@ def _build_results_embed_meta(request: Request) -> str:
 
         title = "TF2 Log Searcher"
         desc = "TF2 logs.tf search results."
+        og_image_url: str | None = None
 
         # Try to pull cached payloads to include counts without doing heavy work.
         if mode == "chat":
@@ -967,6 +1000,7 @@ def _build_results_embed_meta(request: Request) -> str:
                 # Best effort resolve for cache lookup; if it fails, still show generic embed.
                 steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
                 if err is None and steamid64:
+                    og_image_url = _steam_profile_image_url(steamid64)
                     ck = (steamid64, word, date_from, date_to, map_query.lower())
                     cached = cache_get("chat", ck) or {}
                     total = cached.get("total")
@@ -992,6 +1026,7 @@ def _build_results_embed_meta(request: Request) -> str:
             if steamid_in:
                 steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
                 if err is None and steamid64:
+                    og_image_url = _steam_profile_image_url(steamid64)
                     class_tuple = tuple(sorted(c.lower() for c in classes.split(",") if c.strip()))
                     ck = (steamid64, gamemode, class_tuple, date_from, date_to, map_query.lower())
                     cached = cache_get("stats", ck) or {}
@@ -1017,6 +1052,7 @@ def _build_results_embed_meta(request: Request) -> str:
             if steamid_in:
                 steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
                 if err is None and steamid64:
+                    og_image_url = _steam_profile_image_url(steamid64)
                     gm = gamemode if gamemode in ("", "hl", "7s", "6s", "ud") else ""
                     ck = (steamid64, gm, map_query.lower())
                     cached = cache_get("coplayers", ck) or {}
@@ -1047,6 +1083,8 @@ def _build_results_embed_meta(request: Request) -> str:
                         sid_list.append(sid64)
                 sid_tuple = tuple(sorted(sid_list))
                 if sid_tuple:
+                    if len(sid_tuple) == 1:
+                        og_image_url = _steam_profile_image_url(sid_tuple[0])
                     ck = (sid_tuple, map_query.lower())
                     cached = cache_get("logmatch", ck) or {}
                     total = cached.get("total")
@@ -1059,7 +1097,15 @@ def _build_results_embed_meta(request: Request) -> str:
         esc_title = _escape_meta(title)
         esc_desc = _escape_meta(desc)
         esc_url = _escape_meta(full_url)
-        # Minimal OG/Twitter tags (no images for now)
+        # Open Graph / Twitter: Discord and other clients fetch og:image for link previews.
+        image_block = ""
+        if og_image_url:
+            esc_img = _escape_meta(og_image_url)
+            image_block = (
+                f'\n  <meta property="og:image" content="{esc_img}">'
+                f'\n  <meta property="og:image:secure_url" content="{esc_img}">'
+                f'\n  <meta name="twitter:image" content="{esc_img}">'
+            )
         return (
             f'\n  <meta property="og:type" content="website">'
             f'\n  <meta property="og:site_name" content="TF2 Log Searcher">'
@@ -1068,7 +1114,8 @@ def _build_results_embed_meta(request: Request) -> str:
             f'\n  <meta property="og:url" content="{esc_url}">'
             f'\n  <meta name="twitter:card" content="summary">'
             f'\n  <meta name="twitter:title" content="{esc_title}">'
-            f'\n  <meta name="twitter:description" content="{esc_desc}">\n'
+            f'\n  <meta name="twitter:description" content="{esc_desc}">'
+            f"{image_block}\n"
         )
     except Exception:
         return ""

@@ -9,9 +9,13 @@ from typing import Any, Callable
 
 import requests
 
-from app.logs_tf import steamid64_to_steamid3
+from app.logs_tf import steamid3_to_steamid64, steamid64_to_steamid3
 
 DEACTIVATE_TOKEN_BYTES = 32
+# Must match chat search API when Steam ID is empty (global leaderboard).
+LEADERBOARD_SUB_WORD_MIN_LEN = 3
+# Same cap as chat search word length in routes.
+CHAT_SUB_WORD_MAX_LEN = 200
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,13 @@ WEBHOOK_REQUEST_TIMEOUT = 8
 DEAD_WEBHOOK_STATUSES = {404, 410}
 LOGS_TF_URL_BASE = "https://logs.tf"
 STEAM_AVATAR_URL = "https://avatars.steamstatic.com/{steamid64}.jpg"
+WELCOME_EMBED_ICON_URL = "https://logs.tf/img/favicon.ico"
+
+
+def _discord_field_plain(s: str, max_len: int) -> str:
+    """Strip characters that break Discord markdown in embed field values."""
+    out = (s or "").replace("*", "").replace("_", "").replace("`", "").replace("\\", "")
+    return out[:max_len]
 
 
 def is_valid_discord_webhook_url(url: str) -> bool:
@@ -98,6 +109,7 @@ def add_subscription(
 ) -> tuple[bool, str, str | None]:
     """
     Add or reactivate a chat subscription. word must be non-empty.
+    If steamid64 is empty, this is a global leaderboard word alert (any player in new logs).
     Returns (success, error_message, deactivate_token). On success error_message is empty and token is set.
     """
     webhook_url = (webhook_url or "").strip()
@@ -105,7 +117,17 @@ def add_subscription(
     steamid64 = (steamid64 or "").strip()
     if not word:
         return False, "Subscription requires a search word (not full chat history).", None
-    if not steamid64 or len(steamid64) != 17 or not steamid64.isdigit():
+    if len(word) > CHAT_SUB_WORD_MAX_LEN:
+        return False, "Search word is too long.", None
+    is_leaderboard_only = steamid64 == ""
+    if is_leaderboard_only:
+        if len(word) < LEADERBOARD_SUB_WORD_MIN_LEN:
+            return (
+                False,
+                f"Global word alerts require at least {LEADERBOARD_SUB_WORD_MIN_LEN} characters (same as leaderboard search).",
+                None,
+            )
+    elif len(steamid64) != 17 or not steamid64.isdigit():
         return False, "Invalid Steam ID.", None
     if not is_valid_discord_webhook_url(webhook_url):
         return False, "Invalid Discord webhook URL. Use a URL like https://discord.com/api/webhooks/123.../abc...", None
@@ -118,10 +140,14 @@ def add_subscription(
                 continue
             if (
                 sub.get("webhook_url") == webhook_url
-                and sub.get("steamid64") == steamid64
+                and (sub.get("steamid64") or "") == steamid64
                 and sub.get("word") == word
             ):
                 sub["active"] = True
+                if is_leaderboard_only:
+                    sub["leaderboard_only"] = True
+                elif "leaderboard_only" in sub:
+                    del sub["leaderboard_only"]
                 if not sub.get("deactivate_token"):
                     sub["deactivate_token"] = secrets.token_urlsafe(DEACTIVATE_TOKEN_BYTES)
                 token_holder.append(sub["deactivate_token"])
@@ -129,14 +155,17 @@ def add_subscription(
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         token = secrets.token_urlsafe(DEACTIVATE_TOKEN_BYTES)
         token_holder.append(token)
-        data.append({
+        row: dict[str, Any] = {
             "webhook_url": webhook_url,
             "steamid64": steamid64,
             "word": word,
             "active": True,
             "created_at": now,
             "deactivate_token": token,
-        })
+        }
+        if is_leaderboard_only:
+            row["leaderboard_only"] = True
+        data.append(row)
 
     try:
         _with_lock(state_dir, do_add)
@@ -177,25 +206,51 @@ def send_welcome_message(
     player_name: str | None = None,
 ) -> bool:
     """Send a welcome/success message to the webhook with a deactivate link. Returns True if Discord accepted."""
-    name = (player_name or f"Steam ID {steamid64}")[:256]
-    avatar_url = STEAM_AVATAR_URL.format(steamid64=steamid64)
     word_safe = word[:100].replace("\\", "\\\\").replace("`", "\\`").replace("*", "\\*")  # avoid breaking Discord markdown
-    payload = {
-        "embeds": [
-            {
-                "author": {"name": "TF2 Log Searcher", "icon_url": avatar_url},
-                "title": "Subscription active",
-                "description": "You will get a message here when new logs match this search.",
-                "color": 0x5E9CA0,
-                "thumbnail": {"url": avatar_url},
-                "fields": [
-                    {"name": "Player", "value": name, "inline": True},
-                    {"name": "Word", "value": word_safe, "inline": True},
-                    {"name": "\u200b", "value": f"[**DEACTIVATE THIS WEBHOOK**]({deactivate_url})", "inline": False},
-                ],
-            }
+    steamid64 = (steamid64 or "").strip()
+    if steamid64:
+        name = (player_name or f"Steam ID {steamid64}")[:256]
+        avatar_url = STEAM_AVATAR_URL.format(steamid64=steamid64)
+        fields: list[dict[str, Any]] = [
+            {"name": "Player", "value": name, "inline": True},
+            {"name": "Word", "value": word_safe, "inline": True},
+            {"name": "\u200b", "value": f"[**DEACTIVATE THIS WEBHOOK**]({deactivate_url})", "inline": False},
         ]
-    }
+        payload = {
+            "embeds": [
+                {
+                    "author": {"name": "TF2 Log Searcher", "icon_url": avatar_url},
+                    "title": "Subscription active",
+                    "description": "You will get a message here when new logs match this search.",
+                    "color": 0x5E9CA0,
+                    "thumbnail": {"url": avatar_url},
+                    "fields": fields,
+                }
+            ]
+        }
+    else:
+        icon_url = WELCOME_EMBED_ICON_URL
+        fields = [
+            {
+                "name": "Alert",
+                "value": "New logs containing this word (any player), same as chat leaderboard search.",
+                "inline": False,
+            },
+            {"name": "Word", "value": word_safe, "inline": True},
+            {"name": "\u200b", "value": f"[**DEACTIVATE THIS WEBHOOK**]({deactivate_url})", "inline": False},
+        ]
+        payload = {
+            "embeds": [
+                {
+                    "author": {"name": "TF2 Log Searcher", "icon_url": icon_url},
+                    "title": "Leaderboard word alert active",
+                    "description": "You will get a message here when a newly downloaded log contains this word in chat.",
+                    "color": 0x5E9CA0,
+                    "thumbnail": {"url": icon_url},
+                    "fields": fields,
+                }
+            ]
+        }
     try:
         r = requests.post(webhook_url, json=payload, timeout=WEBHOOK_REQUEST_TIMEOUT)
         return r.status_code in (200, 204)
@@ -210,11 +265,15 @@ def _mark_inactive(state_dir: Path, webhook_url: str, steamid64: str, word: str)
                 continue
             if (
                 sub.get("webhook_url") == webhook_url
-                and sub.get("steamid64") == steamid64
+                and (sub.get("steamid64") or "") == steamid64
                 and sub.get("word") == word
             ):
                 sub["active"] = False
-                logger.info("Marked webhook inactive (dead link) for %s / %s", steamid64, word)
+                logger.info(
+                    "Marked webhook inactive (dead link) for %s / %s",
+                    steamid64 or "leaderboard",
+                    word,
+                )
                 return
     try:
         _with_lock(state_dir, do_mark)
@@ -225,8 +284,8 @@ def _mark_inactive(state_dir: Path, webhook_url: str, steamid64: str, word: str)
 def check_log_for_subscriptions(log_id: int, logs_dir: Path, state_dir: Path) -> None:
     """
     After a new log is written: load subscriptions, load log chat, for each active
-    subscription that matches (player in log + word in their message), send an embed.
-    On 404/410 from Discord, mark that subscription inactive.
+    subscription either (a) player-specific: that player said the word, or (b) leaderboard:
+    any player said the word. On 404/410 from Discord, mark that subscription inactive.
     """
     path = logs_dir / f"{log_id}.json"
     if not path.is_file():
@@ -248,45 +307,87 @@ def check_log_for_subscriptions(log_id: int, logs_dir: Path, state_dir: Path) ->
         if not isinstance(sub, dict) or not sub.get("active"):
             continue
         webhook_url = sub.get("webhook_url")
-        steamid64 = sub.get("steamid64")
         word = sub.get("word")
-        if not webhook_url or not steamid64 or not word:
+        if not webhook_url or not word:
             continue
-        steamid3 = steamid64_to_steamid3(steamid64)
+        steamid64 = (sub.get("steamid64") or "").strip()
         word_lower = word.lower()
-        matches: list[str] = []
-        for msg in chat:
-            if msg.get("steamid") != steamid3:
+
+        if not steamid64:
+            # Global word alert: any chat line in this log contains the word.
+            lb_lines: list[str] = []
+            first_avatar: str | None = None
+            for msg in chat:
+                m = (msg.get("msg") or "")
+                if word_lower not in m.lower():
+                    continue
+                sid3 = str(msg.get("steamid") or "").strip()
+                pname = (names.get(sid3) if isinstance(names, dict) else None) or sid3 or "Unknown"
+                line = f"**{_discord_field_plain(pname, 200)}**: {_discord_field_plain(m, 500)}"
+                lb_lines.append(line)
+                if first_avatar is None and sid3:
+                    s64 = steamid3_to_steamid64(sid3)
+                    if s64:
+                        first_avatar = STEAM_AVATAR_URL.format(steamid64=s64)
+            if not lb_lines:
                 continue
-            m = (msg.get("msg") or "")
-            if word_lower not in m.lower():
+            description = "\n".join(lb_lines[:5])
+            if len(lb_lines) > 5:
+                description += f"\n... and {len(lb_lines) - 5} more"
+            thumb = first_avatar or WELCOME_EMBED_ICON_URL
+            payload = {
+                "embeds": [
+                    {
+                        "author": {
+                            "name": "TF2 Log Searcher",
+                            "icon_url": WELCOME_EMBED_ICON_URL,
+                        },
+                        "title": f'Leaderboard word match: "{word[:200]}"',
+                        "description": description[:2000],
+                        "color": 0x5E9CA0,
+                        "thumbnail": {"url": thumb},
+                        "fields": [
+                            {"name": "Log", "value": f"[View log ({map_name})]({log_url})", "inline": False},
+                        ],
+                    }
+                ]
+            }
+        else:
+            if len(steamid64) != 17 or not steamid64.isdigit():
                 continue
-            matches.append(m)
-        if not matches:
-            continue
-        # Build embed and send
-        player_name = names.get(steamid3) or f"Steam ID {steamid64}"
-        avatar_url = STEAM_AVATAR_URL.format(steamid64=steamid64)
-        description = "\n".join(matches[:5])  # cap at 5 lines
-        if len(matches) > 5:
-            description += f"\n... and {len(matches) - 5} more"
-        payload = {
-            "embeds": [
-                {
-                    "author": {
-                        "name": player_name[:256],
-                        "icon_url": avatar_url,
-                    },
-                    "title": f'Chat match: "{word[:200]}"',
-                    "description": description[:2000],  # Discord embed description limit
-                    "color": 0x5E9CA0,
-                    "thumbnail": {"url": avatar_url},
-                    "fields": [
-                        {"name": "Log", "value": f"[View log ({map_name})]({log_url})", "inline": False},
-                    ],
-                }
-            ]
-        }
+            steamid3 = steamid64_to_steamid3(steamid64)
+            matches: list[str] = []
+            for msg in chat:
+                if msg.get("steamid") != steamid3:
+                    continue
+                m = (msg.get("msg") or "")
+                if word_lower not in m.lower():
+                    continue
+                matches.append(m)
+            if not matches:
+                continue
+            player_name = names.get(steamid3) or f"Steam ID {steamid64}"
+            avatar_url = STEAM_AVATAR_URL.format(steamid64=steamid64)
+            description = "\n".join(matches[:5])  # cap at 5 lines
+            if len(matches) > 5:
+                description += f"\n... and {len(matches) - 5} more"
+            payload = {
+                "embeds": [
+                    {
+                        "author": {
+                            "name": player_name[:256],
+                            "icon_url": avatar_url,
+                        },
+                        "title": f'Chat match: "{word[:200]}"',
+                        "description": description[:2000],  # Discord embed description limit
+                        "color": 0x5E9CA0,
+                        "thumbnail": {"url": avatar_url},
+                        "fields": [
+                            {"name": "Log", "value": f"[View log ({map_name})]({log_url})", "inline": False},
+                        ],
+                    }
+                ]
+            }
         try:
             r = requests.post(
                 webhook_url,
