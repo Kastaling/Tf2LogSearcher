@@ -311,13 +311,16 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
         deaths = _int_safe(stats.get("deaths"), 0)
         dmg = _int_safe(stats.get("dmg"), 0)
         dmg_taken = _int_safe(stats.get("damage_taken") or stats.get("dmg_taken"), 0)
-        healing_taken = _int_safe(stats.get("healing_taken") or stats.get("healing"), 0)
+        # "healing" in logs.tf is heals output (e.g. medic); do not use it for healing received.
+        healing_taken = _int_safe(stats.get("healing_taken"), 0)
 
         u_total, med_u, kritz_u, other_u = _ubertype_breakdown(stats)
         drops = _int_safe(stats.get("drops"), 0)
 
         hs = _int_safe(stats.get("headshots"), 0)
-        hhit = _int_safe(stats.get("headshots_hit") or stats.get("headshots"), 0)
+        # headshots_hit may be 0 while headshots > 0; never use `or` here (0 is falsy).
+        hhit_raw = stats.get("headshots_hit")
+        hhit = _int_safe(hhit_raw, 0) if hhit_raw is not None else hs
         bs = _int_safe(stats.get("backstabs"), 0)
         cap = _int_safe(stats.get("captures"), 0)
         cap_blk = _int_safe(stats.get("captures_blocked"), 0)

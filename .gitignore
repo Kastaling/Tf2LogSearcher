@@ -19,3 +19,4 @@ Untitled*
 __pycache__/
 *.pyc
 static/favicon.ico
+examples/
