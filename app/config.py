@@ -53,3 +53,6 @@ CHAT_DB_PATH = Path(_str("CHAT_DB_PATH", "/data/chat/chat.db"))
 
 # Avatar URL cache (Steam Web API; separate SQLite file)
 AVATAR_DB_PATH = Path(_str("AVATAR_DB_PATH", "./downloader_state/avatars.db"))
+
+# SQLite DB for per-log player stats (populated by downloader and backfill script)
+STATS_DB_PATH = Path(_str("STATS_DB_PATH", "./downloader_state/stats.db"))

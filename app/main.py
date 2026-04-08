@@ -16,13 +16,20 @@ from app.routes import router
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     from app.avatar_db import connect_avatar_db, init_avatar_db
-    from app.config import AVATAR_DB_PATH
+    from app.config import AVATAR_DB_PATH, STATS_DB_PATH
+    from app.stats_db import connect_stats_db, init_stats_db
 
     conn = connect_avatar_db(AVATAR_DB_PATH)
     try:
         init_avatar_db(conn)
     finally:
         conn.close()
+
+    sconn = connect_stats_db(STATS_DB_PATH)
+    try:
+        init_stats_db(sconn)
+    finally:
+        sconn.close()
     yield
 
 
