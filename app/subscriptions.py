@@ -6,6 +6,7 @@ import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import requests
 
@@ -29,7 +30,22 @@ WEBHOOK_REQUEST_TIMEOUT = 8
 DEAD_WEBHOOK_STATUSES = {404, 410}
 LOGS_TF_URL_BASE = "https://logs.tf"
 STEAM_AVATAR_URL = "https://avatars.steamstatic.com/{steamid64}.jpg"
-WELCOME_EMBED_ICON_URL = "https://logs.tf/img/favicon.ico"
+# Fallback when we cannot derive the app origin (e.g. malformed deactivate URL).
+WELCOME_EMBED_ICON_FALLBACK_URL = "https://logs.tf/img/favicon.ico"
+
+
+def _app_favicon_url(deactivate_url: str) -> str | None:
+    """
+    Absolute URL to this deployment's /favicon.ico (same origin as the deactivate link).
+    Discord embeds require a reachable https image; using our favicon matches the web UI.
+    """
+    try:
+        p = urlparse((deactivate_url or "").strip())
+        if p.scheme in ("http", "https") and p.netloc:
+            return f"{p.scheme}://{p.netloc}/favicon.ico"
+    except ValueError:
+        pass
+    return None
 
 
 def _discord_field_plain(s: str, max_len: int) -> str:
@@ -229,7 +245,7 @@ def send_welcome_message(
             ]
         }
     else:
-        icon_url = WELCOME_EMBED_ICON_URL
+        icon_url = _app_favicon_url(deactivate_url) or WELCOME_EMBED_ICON_FALLBACK_URL
         fields = [
             {
                 "name": "Alert",
@@ -334,13 +350,13 @@ def check_log_for_subscriptions(log_id: int, logs_dir: Path, state_dir: Path) ->
             description = "\n".join(lb_lines[:5])
             if len(lb_lines) > 5:
                 description += f"\n... and {len(lb_lines) - 5} more"
-            thumb = first_avatar or WELCOME_EMBED_ICON_URL
+            thumb = first_avatar or WELCOME_EMBED_ICON_FALLBACK_URL
             payload = {
                 "embeds": [
                     {
                         "author": {
                             "name": "TF2 Log Searcher",
-                            "icon_url": WELCOME_EMBED_ICON_URL,
+                            "icon_url": WELCOME_EMBED_ICON_FALLBACK_URL,
                         },
                         "title": f'Leaderboard word match: "{word[:200]}"',
                         "description": description[:2000],
