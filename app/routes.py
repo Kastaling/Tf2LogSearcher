@@ -762,12 +762,12 @@ def _api_search_logmatch_impl(request: Request, steamids: str, map_query_raw: st
 
 @router.post("/api/search/logmatch")
 async def api_search_logmatch(request: Request, steamids: str = Form(""), map_query: str = Form("")):
-    return _api_search_logmatch_impl(request, steamids or "", map_query or "")
+    return await asyncio.to_thread(_api_search_logmatch_impl, request, steamids or "", map_query or "")
 
 
 @router.get("/api/search/logmatch")
 async def api_search_logmatch_get(request: Request, steamids: str = Query(""), map_query: str = Query("")):
-    return _api_search_logmatch_impl(request, steamids or "", map_query or "")
+    return await asyncio.to_thread(_api_search_logmatch_impl, request, steamids or "", map_query or "")
 
 
 @router.post("/api/chat-subscriptions")

@@ -10,6 +10,8 @@ from typing import Any
 
 from app.chat_db import CHAT_ALIAS_FTS_READY_META_KEY
 from app.config import CHAT_DB_PATH, STATS_DB_PATH
+from app.log_utils import winner_team_from_info_field as _winner_team_from_info_field
+from app.log_utils import winner_team_from_log as _winner_team_from_log
 from app.stats_db import stats_log_ids_for_player
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
 
@@ -904,65 +906,6 @@ def _team_from_player_block(stats: Any) -> str | None:
     return None
 
 
-def _team_score_from_teams_block(teams: Any, team_key: str) -> int | None:
-    """Integer score for Red or Blue from logs.tf ``teams`` object."""
-    if not isinstance(teams, dict):
-        return None
-    block = teams.get(team_key)
-    if not isinstance(block, dict):
-        return None
-    raw = block.get("score")
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
-def _winner_team_from_info_field(w: Any) -> str | None:
-    """Normalize ``info.winner`` to Red / Blue when unambiguous."""
-    if w is None:
-        return None
-    if isinstance(w, str):
-        s = w.strip()
-        if not s:
-            return None
-        if s in ("Red", "Blue"):
-            return s
-        low = s.casefold()
-        if low == "red":
-            return "Red"
-        if low in ("blue", "blu"):
-            return "Blue"
-    return None
-
-
-def _winner_team_from_log(logtext: dict[str, Any]) -> str | None:
-    """
-    Winning team as Red or Blue.
-
-    Prefer ``info.winner`` when it maps cleanly; otherwise infer from
-    ``teams.Red.score`` vs ``teams.Blue.score`` (logs.tf often leaves winner null).
-    Ties or missing scores => unknown (None).
-    """
-    info = logtext.get("info")
-    if isinstance(info, dict):
-        parsed = _winner_team_from_info_field(info.get("winner"))
-        if parsed is not None:
-            return parsed
-    teams = logtext.get("teams")
-    rs = _team_score_from_teams_block(teams, "Red")
-    bs = _team_score_from_teams_block(teams, "Blue")
-    if rs is None or bs is None:
-        return None
-    if rs > bs:
-        return "Red"
-    if bs > rs:
-        return "Blue"
-    return None
-
-
 def _coplayers_search_files(
     steamid: str,
     logs_dir: str | Path,
@@ -1376,12 +1319,15 @@ def compute_head_to_head_summary(
     for entry in opposing_logs:
         a, b, winner = entry["a"], entry["b"], entry["winner"]
         a_team = a.get("team")
+        b_team = b.get("team")
         if winner is None:
             opp_draws += 1
         elif winner == a_team:
             opp_a_wins += 1
-        else:
+        elif winner == b_team:
             opp_b_wins += 1
+        else:
+            opp_draws += 1
         for stat in DIFF_STATS:
             try:
                 opp_stat_totals[stat] += float(a.get(stat) or 0) - float(b.get(stat) or 0)
@@ -1403,8 +1349,10 @@ def compute_head_to_head_summary(
             same_draws += 1
         elif winner == team:
             same_wins += 1
-        else:
+        elif winner in ("Red", "Blue") and winner != team:
             same_losses += 1
+        else:
+            same_draws += 1
 
     return {
         "player_a_label": search_input_a,

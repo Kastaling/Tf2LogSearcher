@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.log_utils import winner_team_from_log as _winner_team_from_logtext
 from app.logs_tf import steamid3_to_steamid64
 
 
@@ -46,41 +47,6 @@ def _team_score(teams: Any, key: str) -> int | None:
         return int(raw)
     except (TypeError, ValueError):
         return None
-
-
-def _winner_from_info_field(w: Any) -> str | None:
-    if w is None:
-        return None
-    if isinstance(w, str):
-        s = w.strip()
-        if not s:
-            return None
-        if s in ("Red", "Blue"):
-            return s
-        low = s.casefold()
-        if low == "red":
-            return "Red"
-        if low in ("blue", "blu"):
-            return "Blue"
-    return None
-
-
-def _winner_team_from_logtext(logtext: dict[str, Any]) -> str | None:
-    info = logtext.get("info")
-    if isinstance(info, dict):
-        parsed = _winner_from_info_field(info.get("winner"))
-        if parsed is not None:
-            return parsed
-    teams = logtext.get("teams")
-    rs = _team_score(teams, "Red")
-    bs = _team_score(teams, "Blue")
-    if rs is None or bs is None:
-        return None
-    if rs > bs:
-        return "Red"
-    if bs > rs:
-        return "Blue"
-    return None
 
 
 def init_stats_db(conn: sqlite3.Connection) -> None:

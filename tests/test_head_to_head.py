@@ -98,3 +98,84 @@ def test_hth_mixed_logs():
     summary = compute_head_to_head_summary(results, "PlayerA", "PlayerB")
     assert summary["opposing"]["logs_count"] == 2
     assert summary["same_team"]["logs_count"] == 1
+
+
+def test_hth_unmatched_search_input_is_skipped():
+    """A result whose player_stats labels don't match A or B should be silently ignored."""
+    results = [
+        _make_result("Red", "Blue", "Red"),  # normal, counted
+        {
+            "log_id": 99,
+            "player_stats": [
+                {
+                    "search_input": "SomeOtherPlayer",
+                    "team": "Red",
+                    "kills": 5,
+                    "deaths": 3,
+                    "assists": 1,
+                    "dpm": 100.0,
+                    "dmg": 1000,
+                    "kdr": 1.6,
+                    "kadr": 2.0,
+                    "ubers": 0,
+                    "drops": 0,
+                },
+            ],
+            "_winner_team": "Red",
+        },
+    ]
+    summary = compute_head_to_head_summary(results, "PlayerA", "PlayerB")
+    # Only the first result should be counted; the second has no matching labels
+    assert summary["opposing"]["logs_count"] == 1
+    assert summary["same_team"]["logs_count"] == 0
+
+
+def test_hth_unexpected_winner_value_treated_as_draw():
+    """An unrecognised winner string should not raise and should count as a draw."""
+    results = [
+        {
+            "log_id": 1,
+            "player_stats": [
+                {
+                    "search_input": "PlayerA",
+                    "team": "Red",
+                    "kills": 10,
+                    "deaths": 5,
+                    "assists": 2,
+                    "dpm": 200.0,
+                    "dmg": 3000,
+                    "kdr": 2.0,
+                    "kadr": 2.4,
+                    "ubers": 0,
+                    "drops": 0,
+                },
+                {
+                    "search_input": "PlayerB",
+                    "team": "Blue",
+                    "kills": 8,
+                    "deaths": 5,
+                    "assists": 1,
+                    "dpm": 180.0,
+                    "dmg": 2700,
+                    "kdr": 1.6,
+                    "kadr": 1.8,
+                    "ubers": 0,
+                    "drops": 0,
+                },
+            ],
+            "_winner_team": "Stalemate",  # unexpected value
+        },
+    ]
+    summary = compute_head_to_head_summary(results, "PlayerA", "PlayerB")
+    assert summary["opposing"]["logs_count"] == 1
+    # Neither Red nor Blue won, so it should not increment a_wins or b_wins
+    assert summary["opposing"]["player_a_wins"] == 0
+    assert summary["opposing"]["player_b_wins"] == 0
+    # Depending on implementation it may count as a draw — either 0 or 1 is acceptable,
+    # but it must not raise an exception.
+    assert (
+        summary["opposing"]["draws"]
+        + summary["opposing"]["player_a_wins"]
+        + summary["opposing"]["player_b_wins"]
+        == 1
+    )
