@@ -137,6 +137,7 @@ def test_profile_overview_counts(populated_db, monkeypatch):
     profile, log_ids = player_profile(PLAYER_A)
     assert profile["logs_count"] == 2
     assert profile["steamid64"] == PLAYER_A
+    assert len(profile.get("trend_rows") or []) == 2
     ov = profile["overview"]
     assert ov["total_kills"] == 24   # 12 + 12
     assert ov["logs_count"] == 2

@@ -38,6 +38,9 @@ _LOGMATCH_CLASS_TYPES: frozenset[str] = frozenset({
     "spy",
 })
 
+# Default "all classes" when the stats API receives an empty class list (sorted for stable cache keys).
+STATS_SEARCH_DEFAULT_CLASSES: tuple[str, ...] = tuple(sorted(_LOGMATCH_CLASS_TYPES))
+
 
 def _class_playtime_for_logmatch(stats: dict[str, Any]) -> list[dict[str, Any]]:
     """Per-class playtime in seconds from logs.tf class_stats (longest first)."""
@@ -763,15 +766,8 @@ def stats_search(
     sid64 = (steamid or "").strip()
     class_set = {c.strip().lower() for c in class_list if c.strip()}
     if not class_set:
-        return _stats_search_files(
-            steamid,
-            gamemode,
-            class_list,
-            logs_dir,
-            date_from=date_from,
-            date_to=date_to,
-            map_query=map_query,
-        )
+        class_set = set(_LOGMATCH_CLASS_TYPES)
+    effective_class_list = sorted(class_set)
     if _stats_db_available_for_player(sid64):
         try:
             path = Path(STATS_DB_PATH)
@@ -885,7 +881,7 @@ def stats_search(
     return _stats_search_files(
         steamid,
         gamemode,
-        class_list,
+        effective_class_list,
         logs_dir,
         date_from=date_from,
         date_to=date_to,
@@ -1467,6 +1463,7 @@ def player_profile(
     conn = _sqlite_connect_ro(path)
     healed_to_raw: list[tuple[str, int, int]] = []
     healed_by_raw: list[tuple[str, int, int]] = []
+    trend_rows: list[dict[str, Any]] = []
     try:
         # --- Overview ---
         overview_sql = f"""
@@ -1746,6 +1743,32 @@ def player_profile(
             (str(a[0]), int(a[1] or 0), int(a[2] or 0))
             for a in conn.execute(hb_sql, (sid, *filter_params)).fetchall()
         ]
+
+        # Per-log DPM/KDR/KADR for profile trend chart (newest first in subquery, then chronological).
+        _trend_limit = 10000
+        trend_sql = f"""
+            SELECT l.date_ts, lp.dapm, lp.kdr, lp.kadr
+            FROM log_players lp
+            JOIN logs l ON l.log_id = lp.log_id
+            WHERE lp.steamid64 = ?
+              {filter_sql}
+            ORDER BY l.date_ts DESC, l.log_id DESC
+            LIMIT {_trend_limit}
+        """
+        trend_raw = list(reversed(conn.execute(trend_sql, (sid, *filter_params)).fetchall()))
+        trend_rows = []
+        for tr in trend_raw:
+            ts_raw, dapm_v, kdr_v, kadr_v = tr
+            ts = int(ts_raw or 0)
+            date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
+                "%I:%M:%S %p %Z %m/%d/%Y"
+            )
+            trend_rows.append({
+                "date": date_str,
+                "dpm": round(_sql_float(dapm_v), 2),
+                "kdr": _sql_float(kdr_v),
+                "kadr": _sql_float(kadr_v),
+            })
     finally:
         conn.close()
 
@@ -1794,6 +1817,7 @@ def player_profile(
         "class_kills": class_kills_out,
         "rounds": rounds_out,
         "healspread": {"healed_to": healed_to, "healed_by": healed_by},
+        "trend_rows": trend_rows,
     }
     return profile, log_ids
 

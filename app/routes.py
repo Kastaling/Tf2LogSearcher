@@ -32,6 +32,7 @@ from app.chat_db import chat_log_fingerprint, count_chat_messages
 from app.request_log import append_request_log
 from app.search.search import (
     PlayerNameIndexNotReadyError,
+    STATS_SEARCH_DEFAULT_CLASSES,
     chat_leaderboard_search_sqlite,
     chat_search,
     chat_search_sqlite,
@@ -424,7 +425,9 @@ def _api_search_stats_impl(
     if len(map_query) > MAP_QUERY_MAX_LENGTH:
         return JSONResponse({"rows": [], "error": "Map filter is too long."}, status_code=400)
     class_list = [c.strip() for c in (classes or "").split(",") if c.strip()]
-    class_tuple = tuple(sorted(c.lower() for c in class_list if c))
+    if not class_list:
+        class_list = list(STATS_SEARCH_DEFAULT_CLASSES)
+    class_tuple = tuple(sorted(c.lower() for c in class_list))
     cache_key = (
         steamid64,
         gamemode,
@@ -1192,7 +1195,11 @@ def _build_results_embed_meta(request: Request) -> str:
                 steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
                 if err is None and steamid64:
                     og_image_url = _steam_profile_image_url(steamid64)
-                    class_tuple = tuple(sorted(c.lower() for c in classes.split(",") if c.strip()))
+                    class_parts = [c.strip() for c in classes.split(",") if c.strip()]
+                    if not class_parts:
+                        class_tuple = tuple(c.lower() for c in STATS_SEARCH_DEFAULT_CLASSES)
+                    else:
+                        class_tuple = tuple(sorted(c.lower() for c in class_parts))
                     ck = (steamid64, gamemode, class_tuple, date_from, date_to, map_query.lower())
                     cached = cache_get("stats", ck) or {}
                     n = len(cached.get("rows") or [])
@@ -1255,6 +1262,46 @@ def _build_results_embed_meta(request: Request) -> str:
                     total = cached.get("total")
                     if isinstance(total, (int, float)):
                         desc = f"Found {int(total)} matching log(s)."
+        elif mode == "profile":
+            steamid_in = (qp.get("steamid") or "").strip()
+            title = "Player profile"
+            desc = "TF2 competitive log stats."
+            if steamid_in:
+                steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
+                if err is None and steamid64:
+                    og_image_url = _steam_profile_image_url(steamid64)
+                    gm = (qp.get("gamemode") or "").strip()
+                    if gm not in ("", "hl", "7s", "6s", "ud"):
+                        gm = ""
+                    date_from = (qp.get("date_from") or "").strip()
+                    date_to = (qp.get("date_to") or "").strip()
+                    map_query = (qp.get("map_query") or "").strip()
+                    ck = (steamid64, gm, date_from, date_to, map_query.lower())
+                    cached = cache_get("profile", ck) or {}
+                    dn = (cached.get("display_name") or "").strip()
+                    title = _truncate(dn, 80) if dn else f"Profile · {steamid64}"
+                    parts: list[str] = []
+                    lc = cached.get("logs_count")
+                    if isinstance(lc, (int, float)):
+                        parts.append(f"{int(lc)} log(s)")
+                    ov = cached.get("overview") or {}
+                    wr = ov.get("win_rate")
+                    if wr is not None:
+                        try:
+                            parts.append(f"{round(float(wr) * 100, 1)}% win rate")
+                        except (TypeError, ValueError):
+                            pass
+                    if parts:
+                        desc = " · ".join(parts)
+                    extra_bits: list[str] = []
+                    if gm:
+                        extra_bits.append(f"mode {gm}")
+                    if map_query:
+                        extra_bits.append(f'map "{map_query}"')
+                    if date_from or date_to:
+                        extra_bits.append(f"{date_from or '…'} to {date_to or '…'}")
+                    if extra_bits:
+                        desc = f"{desc} ({', '.join(extra_bits)})."
 
         title = _truncate(title, 80)
         desc = _truncate(desc, 220)

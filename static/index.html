@@ -713,6 +713,15 @@
     .profile-avatar-wrap {
       flex: 0 0 auto;
     }
+    .profile-avatar-link {
+      display: inline-block;
+      line-height: 0;
+      border-radius: 8px;
+    }
+    .profile-avatar-link:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
     .profile-avatar {
       display: block;
       width: 184px;
@@ -882,6 +891,7 @@
       var btn = document.getElementById('themeToggle');
       if (btn) { btn.textContent = theme === 'dark' ? '\u263C' : '\u263E'; btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'); }
       refreshStatsTrendChart();
+      refreshProfileTrendChart();
     }
     (function initThemeToggle() {
       var btn = document.getElementById('themeToggle');
@@ -2328,10 +2338,14 @@
     var statsSortDir = 1;
     var coplayersSortCol = 'total_games';
     var coplayersSortDir = -1;
-    var statsTrendChart = null;
+    var statsTrendState = { chart: null };
+    var profileTrendState = { chart: null };
     var statsTrendHost = null;
     var statsTrendRows = null;
     var statsTrendMetric = 'dpm';
+    var profileTrendHost = null;
+    var profileTrendRows = null;
+    var profileTrendMetric = 'dpm';
     var chartJsLoadPromise = null;
 
     /** CSV includes Team (not shown as its own column in the HTML table). */
@@ -2862,12 +2876,6 @@
       return color;
     }
 
-    function destroyStatsTrendChart() {
-      if (!statsTrendChart) return;
-      try { statsTrendChart.destroy(); } catch (e) {}
-      statsTrendChart = null;
-    }
-
     function buildTrendDatasets(rowsSorted, metric) {
       var link = colorVar('--link') || '#2e6c80';
       var kdrBlue = '#547d8c';
@@ -2926,21 +2934,35 @@
       return out;
     }
 
-    function renderStatsTrendChart(host, rows, metric) {
+    function destroyTrendState(state) {
+      if (!state || !state.chart) return;
+      try { state.chart.destroy(); } catch (e) {}
+      state.chart = null;
+    }
+
+    function destroyStatsTrendChart() {
+      destroyTrendState(statsTrendState);
+    }
+
+    function destroyProfileTrendChart() {
+      destroyTrendState(profileTrendState);
+    }
+
+    function renderTrendChartShared(state, host, rows, metric, shouldAbort) {
       if (!host || !rows || rows.length < 2) return;
-      var canvas = host.querySelector('.js-stats-trend-canvas');
+      var canvas = host.querySelector('.js-trend-chart-canvas');
       if (!canvas) return;
       var sorted = statsTrendSortRows(rows);
       var labels = sorted.map(function(r) { return (r && r.date) ? String(r.date) : ''; });
       var datasets = buildTrendDatasets(sorted, metric);
       var showLegend = metric !== 'dpm';
-      destroyStatsTrendChart();
+      destroyTrendState(state);
       loadChartJsIfNeeded().then(function() {
-        if (statsTrendHost !== host) return;
+        if (shouldAbort()) return;
         var border = colorVar('--border') || '#ccc';
         var text = colorVar('--text') || '#222';
         var textMuted = colorVar('--text-muted') || '#666';
-        statsTrendChart = new window.Chart(canvas.getContext('2d'), {
+        state.chart = new window.Chart(canvas.getContext('2d'), {
           type: 'line',
           data: { labels: labels, datasets: datasets },
           options: {
@@ -2959,6 +2981,18 @@
           }
         });
       }).catch(function() {});
+    }
+
+    function renderStatsTrendChart(host, rows, metric) {
+      renderTrendChartShared(statsTrendState, host, rows, metric, function() {
+        return statsTrendHost !== host;
+      });
+    }
+
+    function renderProfileTrendChart(host, rows, metric) {
+      renderTrendChartShared(profileTrendState, host, rows, metric, function() {
+        return profileTrendHost !== host;
+      });
     }
 
     function bindStatsTrendControls(container) {
@@ -2983,6 +3017,30 @@
     function refreshStatsTrendChart() {
       if (!statsTrendHost || !statsTrendRows || statsTrendRows.length < 2) return;
       renderStatsTrendChart(statsTrendHost, statsTrendRows, statsTrendMetric);
+    }
+
+    function refreshProfileTrendChart() {
+      if (!profileTrendHost || !profileTrendRows || profileTrendRows.length < 2) return;
+      renderProfileTrendChart(profileTrendHost, profileTrendRows, profileTrendMetric);
+    }
+
+    function bindProfileTrendControls(container) {
+      var trend = container.querySelector('.js-profile-trend');
+      if (!trend) return;
+      var btns = trend.querySelectorAll('.js-profile-trend-btn');
+      btns.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var metric = btn.getAttribute('data-metric');
+          if (metric !== 'dpm' && metric !== 'kpair') return;
+          profileTrendMetric = metric;
+          btns.forEach(function(b) {
+            var active = b.getAttribute('data-metric') === metric;
+            b.classList.toggle('active', active);
+            b.setAttribute('aria-selected', active ? 'true' : 'false');
+          });
+          renderProfileTrendChart(trend, profileTrendRows, profileTrendMetric);
+        });
+      });
     }
 
     function renderStatsSummary(rows) {
@@ -3016,7 +3074,7 @@
               '<button type="button" class="stats-trend-btn js-stats-trend-btn active" data-metric="dpm" role="tab" aria-selected="true">DPM</button>' +
               '<button type="button" class="stats-trend-btn js-stats-trend-btn" data-metric="kpair" role="tab" aria-selected="false">KDR / KADR</button>' +
             '</div>' +
-            '<div class="stats-trend-canvas-wrap"><canvas class="js-stats-trend-canvas" aria-label="Trends over time chart"></canvas></div>' +
+            '<div class="stats-trend-canvas-wrap"><canvas class="js-trend-chart-canvas" aria-label="Trends over time chart"></canvas></div>' +
             '<p class="stats-trend-note">20-game rolling average with per-game points.</p>' +
           '</div>';
       }
@@ -3389,6 +3447,10 @@
     }
 
     function renderProfileResult(el, data, elapsedMs) {
+      destroyStatsTrendChart();
+      destroyProfileTrendChart();
+      profileTrendHost = null;
+      profileTrendRows = null;
       var name = data.display_name != null && String(data.display_name).trim() ? escapeHtml(String(data.display_name)) : escapeHtml(String(data.steamid64 || ''));
       var ov = data.overview || {};
       var mpc = ov.most_played_class;
@@ -3416,10 +3478,15 @@
       var grid = gridItems.map(function(item) {
         return '<div class="stats-summary-item"><span class="stats-summary-key">' + escapeHtml(item.key) + '</span><span class="stats-summary-value">' + escapeHtml(item.value) + '</span></div>';
       }).join('');
+      var sid64 = data.steamid64 != null ? String(data.steamid64).trim() : '';
+      var logsTfProfile = /^\d{17}$/.test(sid64) ? ('https://logs.tf/profile/' + encodeURIComponent(sid64)) : '';
       var av = data.avatar_url;
       var avatarHtml = '';
       if (av != null && typeof av === 'string' && /^https:\/\//i.test(av.trim())) {
-        avatarHtml = '<div class="profile-avatar-wrap"><img class="profile-avatar" src="' + escapeAttr(av.trim()) + '" alt="" width="184" height="184" loading="eager" decoding="async" fetchpriority="high" referrerpolicy="no-referrer" /></div>';
+        var imgTag = '<img class="profile-avatar" src="' + escapeAttr(av.trim()) + '" alt="" width="184" height="184" loading="eager" decoding="async" fetchpriority="high" referrerpolicy="no-referrer" />';
+        avatarHtml = logsTfProfile
+          ? '<div class="profile-avatar-wrap"><a class="profile-avatar-link" href="' + escapeAttr(logsTfProfile) + '" target="_blank" rel="noopener noreferrer" title="Open logs.tf profile">' + imgTag + '</a></div>'
+          : '<div class="profile-avatar-wrap">' + imgTag + '</div>';
       }
       var overviewCard =
         '<div class="stats-summary profile-overview">' +
@@ -3428,6 +3495,24 @@
         dateRange + mpcLine +
         '</div></div>' +
         '<div class="stats-summary-grid">' + grid + '</div></div>';
+
+      var trendRows = Array.isArray(data.trend_rows) ? data.trend_rows : [];
+      var trendBlock = '';
+      if (trendRows.length >= 2) {
+        trendBlock =
+          '<div class="stats-summary profile-trend-summary">' +
+            '<p class="stats-summary-title">DPM / KDR over time</p>' +
+            '<p class="stats-summary-meta">Up to 10,000 most recent logs matching filters.</p>' +
+            '<div class="stats-trend js-profile-trend">' +
+              '<div class="stats-trend-toggle" role="tablist" aria-label="Profile trend metric">' +
+                '<button type="button" class="stats-trend-btn js-profile-trend-btn active" data-metric="dpm" role="tab" aria-selected="true">DPM</button>' +
+                '<button type="button" class="stats-trend-btn js-profile-trend-btn" data-metric="kpair" role="tab" aria-selected="false">KDR / KADR</button>' +
+              '</div>' +
+              '<div class="stats-trend-canvas-wrap"><canvas class="js-trend-chart-canvas" aria-label="Profile DPM and KDR trends"></canvas></div>' +
+              '<p class="stats-trend-note">20-game rolling average with per-game points.</p>' +
+            '</div>' +
+          '</div>';
+      }
 
       var classes = data.classes || [];
       var classesOther = data.classes_other || [];
@@ -3509,7 +3594,15 @@
           healList('Healed to', ht) + healList('Healed by', hb) + '</div></div>';
       }
 
-      el.innerHTML = overviewCard + classesTable + weaponsTable + ckTable + roundsCard + healCard + requestTimingFooter(elapsedMs);
+      el.innerHTML = overviewCard + trendBlock + classesTable + weaponsTable + ckTable + roundsCard + healCard + requestTimingFooter(elapsedMs);
+
+      profileTrendMetric = 'dpm';
+      profileTrendHost = el.querySelector('.js-profile-trend');
+      profileTrendRows = trendRows;
+      if (profileTrendHost && profileTrendRows && profileTrendRows.length >= 2) {
+        bindProfileTrendControls(el);
+        renderProfileTrendChart(profileTrendHost, profileTrendRows, profileTrendMetric);
+      }
     }
 
     (function initResultsPage() {
