@@ -694,3 +694,22 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
         )
 
     return len(pr)
+
+
+def stats_log_ids_for_player(db_path: str | Path, steamid64: str) -> frozenset[int]:
+    """Return frozenset of log_ids in stats DB for this player. Empty if DB unavailable."""
+    path = Path(db_path)
+    if not path.is_file():
+        return frozenset()
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            rows = conn.execute(
+                "SELECT log_id FROM log_players WHERE steamid64 = ?", (steamid64,)
+            ).fetchall()
+            return frozenset(int(r[0]) for r in rows if r and r[0] is not None)
+        finally:
+            conn.close()
+    except Exception:
+        return frozenset()

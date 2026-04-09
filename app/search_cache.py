@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from app.chat_db import chat_log_fingerprint, local_chat_log_ids_for_player
-from app.config import LOGS_DIR, CHAT_DB_PATH
+from app.config import CHAT_DB_PATH, LOGS_DIR, STATS_DB_PATH
 from app.search.search import local_log_ids_for_player, log_match_matching_log_ids
+from app.stats_db import stats_log_ids_for_player
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,11 @@ def _is_valid(entry: dict[str, Any], mode: str, key_tuple: tuple[Any, ...]) -> b
                 return False
         elif mode == "stats" or mode == "coplayers":
             steamid64 = key_tuple[0]
-            current = local_log_ids_for_player(steamid64, logs_dir)
+            stats_path = Path(STATS_DB_PATH)
+            if stats_path.is_file():
+                current = stats_log_ids_for_player(STATS_DB_PATH, steamid64)
+            else:
+                current = local_log_ids_for_player(steamid64, logs_dir)
             if current != cached_ids:
                 return False
         elif mode == "logmatch":

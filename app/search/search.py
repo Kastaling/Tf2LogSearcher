@@ -1,5 +1,6 @@
 """Search logic: chat search, stats search, log match. Pure Python, no HTTP."""
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -8,9 +9,20 @@ from pathlib import Path
 from typing import Any
 
 from app.chat_db import CHAT_ALIAS_FTS_READY_META_KEY
+from app.config import CHAT_DB_PATH, STATS_DB_PATH
+from app.stats_db import stats_log_ids_for_player
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
 
+logger = logging.getLogger(__name__)
+
 LOGS_TF_URL_BASE = "https://logs.tf"
+
+# SQLite bind parameter limit (max 999); stay under with margin for IN lists.
+_SQLITE_MAX_VARS = 900
+
+# DB-backed co-players: max rows returned (ORDER BY total games desc). Prevents huge responses
+# and multi-batch chat alias lookups that could stall the worker on very active accounts.
+_COPLAYERS_DB_RESULT_LIMIT = 5000
 
 # logs.tf player class_stats "type" values we expose to the API (whitelist).
 _LOGMATCH_CLASS_TYPES: frozenset[str] = frozenset({
@@ -123,6 +135,112 @@ def _date_range_to_unix_bounds(
         end_dt = datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=timezone.utc)
         end_ts = int(end_dt.timestamp())
     return start_ts, end_ts
+
+
+def _sqlite_connect_ro(path: Path) -> sqlite3.Connection:
+    """Open any SQLite file at ``path`` read-only (stats DB, chat DB, etc.); not tied to one schema."""
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
+    conn.execute("PRAGMA busy_timeout=10000")
+    return conn
+
+
+def _stats_db_available_for_player(steamid64: str) -> bool:
+    path = Path(STATS_DB_PATH)
+    if not path.is_file():
+        return False
+    sid = (steamid64 or "").strip()
+    if not sid:
+        return False
+    try:
+        conn = _sqlite_connect_ro(path)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM log_players WHERE steamid64 = ? LIMIT 1",
+                (sid,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def _gamemode_sql_stats(gamemode: str) -> tuple[str, list[Any]]:
+    """Optional AND clause for logs.num_players (stats DB path). Empty/other = no filter."""
+    gm = (gamemode or "").strip()
+    if gm == "hl":
+        return " AND l.num_players >= ?", [18]
+    if gm == "7s":
+        return " AND l.num_players BETWEEN ? AND ?", [14, 17]
+    if gm == "6s":
+        return " AND l.num_players BETWEEN ? AND ?", [12, 13]
+    if gm == "ud":
+        return " AND l.num_players BETWEEN ? AND ?", [4, 6]
+    return "", []
+
+
+def _gamemode_sql_coplayers(gamemode: str) -> tuple[str, list[Any]]:
+    """Same numeric ranges as file coplayers_search when gamemode is hl/7s/6s/ud; else no filter."""
+    gm = (gamemode or "").strip()
+    if gm not in ("hl", "7s", "6s", "ud"):
+        return "", []
+    return _gamemode_sql_stats(gm)
+
+
+def _sql_float(v: Any) -> float:
+    if v is None:
+        return 0.0
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _lookup_aliases_from_chat_db(steamid64s: list[str]) -> dict[str, str]:
+    """
+    Most recent non-empty alias per steamid64 from chat_messages (ROW_NUMBER).
+    Returns {steamid64: alias}; missing keys mean no chat alias.
+    """
+    path = Path(CHAT_DB_PATH)
+    if not path.is_file():
+        return {}
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for s in steamid64s:
+        t = (s or "").strip()
+        if t and t not in seen:
+            seen.add(t)
+            uniq.append(t)
+    if not uniq:
+        return {}
+    out: dict[str, str] = {}
+    try:
+        conn = _sqlite_connect_ro(path)
+        try:
+            for i in range(0, len(uniq), _SQLITE_MAX_VARS):
+                batch = uniq[i : i + _SQLITE_MAX_VARS]
+                ph = ",".join("?" * len(batch))
+                sql = f"""
+                    SELECT steamid64, alias
+                    FROM (
+                        SELECT steamid64, alias,
+                               ROW_NUMBER() OVER (
+                                 PARTITION BY steamid64 ORDER BY log_id DESC, id DESC
+                               ) AS rn
+                        FROM chat_messages
+                        WHERE steamid64 IN ({ph})
+                          AND COALESCE(TRIM(alias), '') != ''
+                    )
+                    WHERE rn = 1
+                """
+                for sid64, alias in conn.execute(sql, batch).fetchall():
+                    if sid64:
+                        out[str(sid64).strip()] = str(alias or "").strip()
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+    return out
 
 
 def _ctx_from_db_row(name: Any, msg: Any, team: Any) -> dict[str, Any] | None:
@@ -523,7 +641,7 @@ def chat_search(
     return results, len(results), searched_name, frozenset(log_ids_used)
 
 
-def stats_search(
+def _stats_search_files(
     steamid: str,
     gamemode: str,
     class_list: list[str],
@@ -533,7 +651,7 @@ def stats_search(
     date_to: date | None = None,
     map_query: str = "",
 ) -> tuple[list[dict[str, Any]], frozenset[int]]:
-    """Stats by gamemode and classes. Returns (rows, log_ids_used) for table rendering and cache invalidation."""
+    """Stats by gamemode and classes (scan local JSON). Returns (rows, log_ids_used)."""
     logs_dir = Path(logs_dir)
     steamid3 = steamid64_to_steamid3(steamid)
     log_ids = get_log_list_for_player(steamid)
@@ -614,6 +732,150 @@ def stats_search(
     return rows, frozenset(log_ids_used)
 
 
+def stats_search(
+    steamid: str,
+    gamemode: str,
+    class_list: list[str],
+    logs_dir: str | Path,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    map_query: str = "",
+) -> tuple[list[dict[str, Any]], frozenset[int]]:
+    """Stats by gamemode and classes. Uses stats DB when populated; else scans JSON files."""
+    sid64 = (steamid or "").strip()
+    class_set = {c.strip().lower() for c in class_list if c.strip()}
+    if not class_set:
+        return _stats_search_files(
+            steamid,
+            gamemode,
+            class_list,
+            logs_dir,
+            date_from=date_from,
+            date_to=date_to,
+            map_query=map_query,
+        )
+    if _stats_db_available_for_player(sid64):
+        try:
+            path = Path(STATS_DB_PATH)
+            conn = _sqlite_connect_ro(path)
+            try:
+                gm_sql, gm_params = _gamemode_sql_stats(gamemode)
+                start_ts, end_ts = _date_range_to_unix_bounds(date_from, date_to)
+                map_q = (map_query or "").strip().lower()
+                class_placeholders = ",".join("?" * len(class_set))
+                class_tuple = tuple(sorted(class_set))
+                sql = f"""
+                    SELECT
+                      lp.steamid64,
+                      lp.steamid3,
+                      lp.team,
+                      lp.kills,
+                      lp.assists,
+                      lp.deaths,
+                      lp.kdr,
+                      lp.kadr,
+                      lp.dapm,
+                      lp.damage,
+                      lp.headshots_hit,
+                      lp.backstabs,
+                      l.map,
+                      l.date_ts,
+                      l.log_id,
+                      lp.primary_class
+                    FROM log_players lp
+                    JOIN logs l ON l.log_id = lp.log_id
+                    WHERE lp.steamid64 = ?
+                      AND EXISTS (
+                        SELECT 1 FROM log_player_classes lpc
+                        WHERE lpc.log_id = lp.log_id
+                          AND lpc.steamid64 = lp.steamid64
+                          AND lpc.class IN ({class_placeholders})
+                      )
+                """ + gm_sql
+                params: list[Any] = [sid64, *class_tuple, *gm_params]
+                if start_ts is not None:
+                    sql += " AND l.date_ts >= ?"
+                    params.append(start_ts)
+                if end_ts is not None:
+                    sql += " AND l.date_ts <= ?"
+                    params.append(end_ts)
+                if map_q:
+                    sql += " AND instr(lower(l.map), ?) > 0"
+                    params.append(map_q)
+                sql += " ORDER BY l.date_ts DESC, l.log_id DESC"
+                cur = conn.execute(sql, params)
+                rows_out: list[dict[str, Any]] = []
+                sid64_for_alias: list[str] = []
+                for r in cur.fetchall():
+                    (
+                        p64,
+                        _p3,
+                        team_raw,
+                        kills,
+                        assists,
+                        deaths,
+                        kdr_v,
+                        kadr_v,
+                        dapm_v,
+                        damage,
+                        hs_hit,
+                        bs,
+                        map_name,
+                        date_ts,
+                        log_id,
+                        primary_class,
+                    ) = r
+                    sid_s = str(p64 or "").strip()
+                    if len(class_set) == 1:
+                        character = next(iter(class_set))
+                    else:
+                        character = (str(primary_class).strip() if primary_class else "") or ""
+                    ts = int(date_ts or 0)
+                    date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
+                        "%I:%M:%S %p %Z %m/%d/%Y"
+                    )
+                    team = "Red" if team_raw == "Red" else ("Blue" if team_raw == "Blue" else None)
+                    sid64_for_alias.append(sid_s)
+                    rows_out.append(
+                        {
+                            "alias": "",
+                            "team": team,
+                            "character": character,
+                            "kills": int(kills or 0),
+                            "assists": int(assists or 0),
+                            "deaths": int(deaths or 0),
+                            "kdr": _sql_float(kdr_v),
+                            "kadr": _sql_float(kadr_v),
+                            "dpm": round(_sql_float(dapm_v), 2),
+                            "dmg": int(damage or 0),
+                            "headshots_hit": int(hs_hit or 0),
+                            "backstabs": int(bs or 0),
+                            "map": str(map_name or ""),
+                            "date": date_str,
+                            "url": f"{LOGS_TF_URL_BASE}/{int(log_id)}",
+                        }
+                    )
+            finally:
+                conn.close()
+            alias_map = _lookup_aliases_from_chat_db(sid64_for_alias)
+            for row, sid_s in zip(rows_out, sid64_for_alias, strict=True):
+                row["alias"] = alias_map.get(sid_s, "")
+            cache_ids = stats_log_ids_for_player(STATS_DB_PATH, sid64)
+            return rows_out, cache_ids
+        except Exception as e:
+            logger.warning("Stats DB search failed, using log files: %s", e)
+    return _stats_search_files(
+        steamid,
+        gamemode,
+        class_list,
+        logs_dir,
+        date_from=date_from,
+        date_to=date_to,
+        map_query=map_query,
+    )
+
+
 def _team_from_player_block(stats: Any) -> str | None:
     """Red / Blue from logs.tf player block, or None if unknown."""
     if not isinstance(stats, dict):
@@ -685,14 +947,14 @@ def _winner_team_from_log(logtext: dict[str, Any]) -> str | None:
     return None
 
 
-def coplayers_search(
+def _coplayers_search_files(
     steamid: str,
     logs_dir: str | Path,
     gamemode: str = "",
     map_query: str = "",
 ) -> tuple[list[dict[str, Any]], frozenset[int]]:
     """
-    Frequent co-players for a player across local logs.
+    Frequent co-players for a player across local logs (scan JSON).
     Returns (rows sorted by total_games desc, log_ids_used) for cache invalidation.
     """
     logs_dir = Path(logs_dir)
@@ -815,6 +1077,100 @@ def coplayers_search(
 
     rows.sort(key=lambda r: -r["total_games"])
     return rows, frozenset(log_ids_used)
+
+
+def coplayers_search(
+    steamid: str,
+    logs_dir: str | Path,
+    gamemode: str = "",
+    map_query: str = "",
+) -> tuple[list[dict[str, Any]], frozenset[int]]:
+    """Frequent co-players; uses stats DB when available, else scans JSON files."""
+    sid64 = (steamid or "").strip()
+    if not _stats_db_available_for_player(sid64):
+        return _coplayers_search_files(steamid, logs_dir, gamemode=gamemode, map_query=map_query)
+    try:
+        path = Path(STATS_DB_PATH)
+        conn = _sqlite_connect_ro(path)
+        try:
+            gm_sql, gm_params = _gamemode_sql_coplayers(gamemode)
+            mq = (map_query or "").strip().lower()
+            # Single aggregation in SQLite (was: fetch all logs + N chunked IN queries + Python
+            # loops over every opponent row — O(logs × players/log) and could freeze the worker).
+            inner = """
+                SELECT
+                  o.steamid64 AS steamid64,
+                  MAX(o.steamid3) AS steamid3,
+                  SUM(CASE WHEN o.team = s.team THEN 1 ELSE 0 END) AS games_with,
+                  SUM(CASE WHEN o.team = s.team AND l.winner IS NOT NULL AND l.winner = s.team THEN 1 ELSE 0 END) AS wins_with,
+                  SUM(CASE WHEN o.team = s.team AND l.winner IS NOT NULL AND l.winner <> s.team THEN 1 ELSE 0 END) AS losses_with,
+                  SUM(CASE WHEN o.team <> s.team THEN 1 ELSE 0 END) AS games_against,
+                  SUM(CASE WHEN o.team <> s.team AND l.winner IS NOT NULL AND l.winner = s.team THEN 1 ELSE 0 END) AS wins_against,
+                  SUM(CASE WHEN o.team <> s.team AND l.winner IS NOT NULL AND l.winner <> s.team THEN 1 ELSE 0 END) AS losses_against
+                FROM log_players AS s
+                INNER JOIN logs AS l ON l.log_id = s.log_id
+                INNER JOIN log_players AS o ON o.log_id = s.log_id AND o.steamid64 <> s.steamid64
+                WHERE s.steamid64 = ?
+                  AND s.team IN ('Red', 'Blue')
+                  AND o.team IN ('Red', 'Blue')
+            """ + gm_sql
+            params: list[Any] = [sid64, *gm_params]
+            if mq:
+                inner += " AND instr(lower(l.map), ?) > 0"
+                params.append(mq)
+            inner += " GROUP BY o.steamid64"
+            lim = int(_COPLAYERS_DB_RESULT_LIMIT)
+            sql = f"""
+                SELECT * FROM (
+                {inner}
+                ) AS agg
+                WHERE agg.games_with + agg.games_against >= 2
+                ORDER BY agg.games_with + agg.games_against DESC
+                LIMIT {lim}
+            """
+            raw = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+
+        rows: list[dict[str, Any]] = []
+        for tup in raw:
+            (
+                opp64,
+                opp3,
+                gw,
+                wiw,
+                low,
+                ga,
+                wia,
+                loa,
+            ) = tup
+            sid_opp = str(opp64 or "").strip()
+            if not sid_opp:
+                continue
+            total = int(gw) + int(ga)
+            rows.append(
+                {
+                    "steamid3": str(opp3 or "").strip(),
+                    "steamid64": sid_opp,
+                    "name": "",
+                    "games_with": int(gw),
+                    "wins_with": int(wiw),
+                    "losses_with": int(low),
+                    "games_against": int(ga),
+                    "wins_against": int(wia),
+                    "losses_against": int(loa),
+                    "total_games": total,
+                }
+            )
+        all_coplayer_sid64s = [r["steamid64"] for r in rows]
+        alias_map = _lookup_aliases_from_chat_db(all_coplayer_sid64s)
+        for row in rows:
+            row["name"] = alias_map.get(row["steamid64"], "")
+        cache_ids = stats_log_ids_for_player(STATS_DB_PATH, sid64)
+        return rows, cache_ids
+    except Exception as e:
+        logger.warning("Co-players DB search failed, using log files: %s", e)
+    return _coplayers_search_files(steamid, logs_dir, gamemode=gamemode, map_query=map_query)
 
 
 def _player_stats_row_logmatch(
