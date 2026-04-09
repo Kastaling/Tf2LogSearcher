@@ -10,7 +10,6 @@ from typing import Any
 
 from app.chat_db import CHAT_ALIAS_FTS_READY_META_KEY
 from app.config import CHAT_DB_PATH, STATS_DB_PATH
-from app.log_utils import winner_team_from_info_field as _winner_team_from_info_field
 from app.log_utils import winner_team_from_log as _winner_team_from_log
 from app.stats_db import stats_log_ids_for_player
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3

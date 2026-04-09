@@ -36,8 +36,8 @@ def winner_team_from_log(logtext: dict[str, Any]) -> str | None:
         if parsed is not None:
             return parsed
     teams = logtext.get("teams")
-    rs = _team_score(teams, "Red")
-    bs = _team_score(teams, "Blue")
+    rs = team_score(teams, "Red")
+    bs = team_score(teams, "Blue")
     if rs is None or bs is None:
         return None
     if rs > bs:
@@ -47,7 +47,7 @@ def winner_team_from_log(logtext: dict[str, Any]) -> str | None:
     return None
 
 
-def _team_score(teams: Any, key: str) -> int | None:
+def team_score(teams: Any, key: str) -> int | None:
     if not isinstance(teams, dict):
         return None
     block = teams.get(key)

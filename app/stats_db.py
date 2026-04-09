@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.log_utils import winner_team_from_log as _winner_team_from_logtext
+from app.log_utils import team_score, winner_team_from_log as _winner_team_from_logtext
 from app.logs_tf import steamid3_to_steamid64
 
 
@@ -30,21 +30,6 @@ def _int_safe(x: Any, default: int = 0) -> int:
 def _float_safe(x: Any) -> float | None:
     try:
         return float(x)
-    except (TypeError, ValueError):
-        return None
-
-
-def _team_score(teams: Any, key: str) -> int | None:
-    if not isinstance(teams, dict):
-        return None
-    block = teams.get(key)
-    if not isinstance(block, dict):
-        return None
-    raw = block.get("score")
-    if raw is None:
-        return None
-    try:
-        return int(raw)
     except (TypeError, ValueError):
         return None
 
@@ -262,8 +247,8 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
         "date_ts": date_ts_i,
         "duration_secs": duration_secs if duration_secs > 0 else None,
         "num_players": num_players,
-        "red_score": _team_score(teams, "Red"),
-        "blue_score": _team_score(teams, "Blue"),
+        "red_score": team_score(teams, "Red"),
+        "blue_score": team_score(teams, "Blue"),
         "winner": winner,
         "imported_at": imported_at,
     }
