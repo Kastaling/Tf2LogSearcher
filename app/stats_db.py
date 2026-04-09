@@ -206,6 +206,16 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
           UNIQUE(log_id, round_idx)
         );
         CREATE INDEX IF NOT EXISTS idx_rounds_log_id ON log_rounds(log_id);
+
+        CREATE TABLE IF NOT EXISTS player_names (
+          steamid64  TEXT NOT NULL,
+          alias      TEXT NOT NULL DEFAULT '',
+          log_id     INTEGER NOT NULL,
+          date_ts    INTEGER,
+          PRIMARY KEY (steamid64, log_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pn_steamid64 ON player_names(steamid64);
+        CREATE INDEX IF NOT EXISTS idx_pn_date_ts ON player_names(date_ts);
         """
     )
     conn.commit()
@@ -291,6 +301,26 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
         "winner": winner,
         "imported_at": imported_at,
     }
+
+    name_rows: list[dict[str, Any]] = []
+    names_dict = logtext.get("names")
+    if isinstance(names_dict, dict):
+        for steamid3, alias_raw in names_dict.items():
+            sid3 = str(steamid3).strip()
+            sid64 = steamid3_to_steamid64(sid3)
+            if not sid64:
+                continue
+            alias = str(alias_raw or "").strip()
+            if not alias:
+                continue
+            name_rows.append(
+                {
+                    "steamid64": sid64,
+                    "alias": alias,
+                    "log_id": log_id,
+                    "date_ts": date_ts_i,
+                }
+            )
 
     player_rows: list[dict[str, Any]] = []
     class_rows: list[dict[str, Any]] = []
@@ -527,6 +557,7 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
         "classkill_rows": classkill_rows,
         "healspread_rows": healspread_rows,
         "round_rows": round_rows,
+        "name_rows": name_rows,
     }
 
 
@@ -693,6 +724,16 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
             ],
         )
 
+    nr = data["name_rows"]
+    if nr:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO player_names (steamid64, alias, log_id, date_ts)
+            VALUES (?, ?, ?, ?)
+            """,
+            [(r["steamid64"], r["alias"], r["log_id"], r["date_ts"]) for r in nr],
+        )
+
     return len(pr)
 
 
@@ -713,3 +754,53 @@ def stats_log_ids_for_player(db_path: str | Path, steamid64: str) -> frozenset[i
             conn.close()
     except Exception:
         return frozenset()
+
+
+def lookup_player_names(
+    db_path: str | Path,
+    steamid64s: list[str],
+) -> dict[str, str]:
+    """
+    Most recent known alias for each steamid64 from player_names table.
+    Returns {steamid64: alias}. Missing = no name found.
+    Chunks queries to stay under SQLite variable limit.
+    """
+    path = Path(db_path)
+    if not path.is_file() or not steamid64s:
+        return {}
+    uniq: list[str] = list(dict.fromkeys(s.strip() for s in steamid64s if s and s.strip()))
+    if not uniq:
+        return {}
+    out: dict[str, str] = {}
+    _max_vars = 900
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            for i in range(0, len(uniq), _max_vars):
+                batch = uniq[i : i + _max_vars]
+                ph = ",".join("?" * len(batch))
+                sql = f"""
+                    SELECT steamid64, alias
+                    FROM (
+                        SELECT steamid64, alias,
+                               ROW_NUMBER() OVER (
+                                 PARTITION BY steamid64
+                                 ORDER BY COALESCE(date_ts, 0) DESC, log_id DESC
+                               ) AS rn
+                        FROM player_names
+                        WHERE steamid64 IN ({ph})
+                          AND COALESCE(TRIM(alias), '') != ''
+                    )
+                    WHERE rn = 1
+                """
+                for sid64, alias in conn.execute(sql, batch).fetchall():
+                    sid_s = str(sid64).strip()
+                    alias_s = str(alias or "").strip()
+                    if sid_s and alias_s:
+                        out[sid_s] = alias_s
+        finally:
+            conn.close()
+    except Exception:
+        return out
+    return out

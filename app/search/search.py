@@ -196,11 +196,8 @@ def _sql_float(v: Any) -> float:
         return 0.0
 
 
-def _lookup_aliases_from_chat_db(steamid64s: list[str]) -> dict[str, str]:
-    """
-    Most recent non-empty alias per steamid64 from chat_messages (ROW_NUMBER).
-    Returns {steamid64: alias}; missing keys mean no chat alias.
-    """
+def _lookup_from_chat_db_only(steamid64s: list[str]) -> dict[str, str]:
+    """Most recent non-empty alias per steamid64 from chat_messages only (ROW_NUMBER)."""
     path = Path(CHAT_DB_PATH)
     if not path.is_file():
         return {}
@@ -234,12 +231,31 @@ def _lookup_aliases_from_chat_db(steamid64s: list[str]) -> dict[str, str]:
                     WHERE rn = 1
                 """
                 for sid64, alias in conn.execute(sql, batch).fetchall():
-                    if sid64:
-                        out[str(sid64).strip()] = str(alias or "").strip()
+                    sid_s = str(sid64).strip()
+                    alias_s = str(alias or "").strip()
+                    if sid_s and alias_s:
+                        out[sid_s] = alias_s
         finally:
             conn.close()
     except Exception:
         return {}
+    return out
+
+
+def _lookup_aliases_from_chat_db(steamid64s: list[str]) -> dict[str, str]:
+    """
+    Most recent alias per steamid64: stats DB ``player_names`` first (log roster names),
+    then chat_messages for any still missing.
+    """
+    if not steamid64s:
+        return {}
+    from app.stats_db import lookup_player_names
+
+    out = lookup_player_names(STATS_DB_PATH, steamid64s)
+    uniq = list(dict.fromkeys((s or "").strip() for s in steamid64s if (s or "").strip()))
+    missing = [s for s in uniq if s not in out]
+    if missing:
+        out.update(_lookup_from_chat_db_only(missing))
     return out
 
 

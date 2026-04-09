@@ -103,6 +103,16 @@ docker-compose up -d downloader
 
 The downloader writes stats for every newly fetched log into `STATS_DB_PATH`. Re-running the backfill is safe: each log is replaced atomically.
 
+## Player names backfill (fast, run after stats backfill)
+
+Roster display names come from each log’s `names` dict and are stored in the `player_names` table (used for search aliases even when a player never chatted). This pass only reads `names` + `info.date` from each JSON file.
+
+Can run while the downloader is running — uses `INSERT OR REPLACE`, safe for concurrent writes to `player_names`.
+
+```bash
+docker-compose run --rm downloader python -m app.player_names_backfill --batch-size 1000
+```
+
 ---
 
 *Hosted at [search.kastal.ing](https://search.kastal.ing). Contact Kastaling on Discord for questions.*
