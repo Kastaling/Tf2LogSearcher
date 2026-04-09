@@ -1372,6 +1372,432 @@ def compute_head_to_head_summary(
     }
 
 
+def _profile_filter_sql(
+    gamemode: str,
+    date_from: date | None,
+    date_to: date | None,
+    map_query: str,
+) -> tuple[str, list[Any]]:
+    gm_sql, gm_params = _gamemode_sql_stats(gamemode)
+    start_ts, end_ts = _date_range_to_unix_bounds(date_from, date_to)
+    map_q = (map_query or "").strip().lower()
+    parts: list[str] = [gm_sql]
+    params: list[Any] = list(gm_params)
+    if start_ts is not None:
+        parts.append(" AND l.date_ts >= ?")
+        params.append(start_ts)
+    if end_ts is not None:
+        parts.append(" AND l.date_ts <= ?")
+        params.append(end_ts)
+    if map_q:
+        parts.append(" AND instr(lower(l.map), ?) > 0")
+        params.append(map_q)
+    return "".join(parts), params
+
+
+def _round2(v: Any) -> float | None:
+    if v is None:
+        return None
+    try:
+        return round(float(v), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+# logs.tf ``class_stats[].type`` values for playable classes (icons in UI).
+_PROFILE_MAIN_CLASSES: frozenset[str] = frozenset({
+    "scout",
+    "soldier",
+    "pyro",
+    "demoman",
+    "heavyweapons",
+    "engineer",
+    "medic",
+    "sniper",
+    "spy",
+})
+
+
+def _class_label_norm(raw: Any) -> str:
+    return str(raw or "").strip().lower()
+
+
+def _split_profile_class_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Primary table = 9 playable classes; ``classes_other`` = spectator, mods, junk not in the icon set."""
+    main: list[dict[str, Any]] = []
+    other: list[dict[str, Any]] = []
+    for r in rows:
+        cn = _class_label_norm(r.get("class"))
+        if not cn or cn in ("undefined", "none"):
+            continue
+        if cn in _PROFILE_MAIN_CLASSES:
+            main.append(r)
+        else:
+            other.append(r)
+    return main, other
+
+
+def player_profile(
+    steamid64: str,
+    *,
+    gamemode: str = "",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    map_query: str = "",
+) -> tuple[dict[str, Any], frozenset[int]]:
+    """
+    Full aggregated player profile from stats DB.
+    Returns (profile_dict, log_ids_used for cache invalidation).
+    Raises RuntimeError if stats DB is unavailable for this player.
+    """
+    sid = (steamid64 or "").strip()
+    if not sid:
+        raise RuntimeError("Stats DB not available for this player.")
+    if not _stats_db_available_for_player(sid):
+        raise RuntimeError("Stats DB not available for this player.")
+
+    path = Path(STATS_DB_PATH)
+    filter_sql, filter_params = _profile_filter_sql(gamemode, date_from, date_to, map_query)
+    gm_used = (gamemode or "").strip()
+    if gm_used not in ("", "hl", "7s", "6s", "ud"):
+        gm_used = ""
+
+    conn = _sqlite_connect_ro(path)
+    healed_to_raw: list[tuple[str, int, int]] = []
+    healed_by_raw: list[tuple[str, int, int]] = []
+    try:
+        # --- Overview ---
+        overview_sql = f"""
+            SELECT
+              COUNT(*) AS logs_count,
+              SUM(lp.kills) AS total_kills,
+              SUM(lp.assists) AS total_assists,
+              SUM(lp.deaths) AS total_deaths,
+              SUM(lp.damage) AS total_damage,
+              SUM(lp.damage_taken) AS total_damage_taken,
+              SUM(lp.ubers) AS total_ubers,
+              SUM(lp.drops) AS total_drops,
+              SUM(lp.healing_taken) AS total_healing_taken,
+              SUM(lp.captures) AS total_captures,
+              SUM(lp.dominated) AS total_dominated,
+              SUM(lp.revenges) AS total_revenges,
+              SUM(lp.suicides) AS total_suicides,
+              AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END) AS avg_dpm,
+              AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END) AS avg_kdr,
+              AVG(CASE WHEN lp.kadr IS NOT NULL THEN lp.kadr END) AS avg_kadr,
+              AVG(lp.kills) AS avg_kills,
+              AVG(lp.assists) AS avg_assists,
+              AVG(lp.deaths) AS avg_deaths,
+              MAX(lp.longest_killstreak) AS best_killstreak,
+              SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS wins,
+              SUM(CASE WHEN l.winner IS NOT NULL AND l.winner != lp.team THEN 1 ELSE 0 END) AS losses,
+              MIN(l.date_ts) AS first_log_ts,
+              MAX(l.date_ts) AS last_log_ts
+            FROM log_players lp
+            JOIN logs l ON l.log_id = lp.log_id
+            WHERE lp.steamid64 = ?
+              {filter_sql}
+        """
+        row = conn.execute(overview_sql, (sid, *filter_params)).fetchone()
+        logs_count = int(row[0] or 0) if row else 0
+
+        def _i(idx: int) -> int:
+            if not row:
+                return 0
+            v = row[idx]
+            return int(v) if v is not None else 0
+
+        wins = _i(20)
+        losses = _i(21)
+        wl = wins + losses
+        win_rate = round(wins / wl, 4) if wl > 0 else None
+        draws = logs_count - wins - losses if logs_count else 0
+
+        overview: dict[str, Any] = {
+            "total_kills": _i(1),
+            "total_assists": _i(2),
+            "total_deaths": _i(3),
+            "total_damage": _i(4),
+            "total_damage_taken": _i(5),
+            "total_ubers": _i(6),
+            "total_drops": _i(7),
+            "total_healing_taken": _i(8),
+            "total_captures": _i(9),
+            "total_dominated": _i(10),
+            "total_revenges": _i(11),
+            "total_suicides": _i(12),
+            "avg_dpm": _round2(row[13]) if row and logs_count else None,
+            "avg_kdr": _round2(row[14]) if row and logs_count else None,
+            "avg_kadr": _round2(row[15]) if row and logs_count else None,
+            "avg_kills": _round2(row[16]) if row and logs_count else None,
+            "avg_assists": _round2(row[17]) if row and logs_count else None,
+            "avg_deaths": _round2(row[18]) if row and logs_count else None,
+            "win_rate": win_rate,
+            "wins": wins,
+            "losses": losses,
+            "draws": draws,
+            "best_killstreak": int(row[19]) if row and logs_count and row[19] is not None else None,
+            "most_played_class": None,
+            "first_log_ts": int(row[22]) if row and row[22] is not None else None,
+            "last_log_ts": int(row[23]) if row and row[23] is not None else None,
+            "logs_count": logs_count,
+        }
+
+        mpc_sql = f"""
+            SELECT lp.primary_class, COUNT(*) AS n
+            FROM log_players lp
+            JOIN logs l ON l.log_id = lp.log_id
+            WHERE lp.steamid64 = ?
+              AND lp.primary_class IS NOT NULL
+              AND trim(lp.primary_class) != ''
+              AND lower(trim(lp.primary_class)) NOT IN ('undefined', 'none')
+              {filter_sql}
+            GROUP BY lp.primary_class
+            ORDER BY n DESC
+            LIMIT 1
+        """
+        mpc_row = conn.execute(mpc_sql, (sid, *filter_params)).fetchone()
+        if mpc_row and mpc_row[0]:
+            overview["most_played_class"] = _class_label_norm(mpc_row[0])
+
+        # --- Classes ---
+        classes_sql = f"""
+            SELECT
+              lpc.class,
+              COUNT(DISTINCT lpc.log_id) AS logs_count,
+              SUM(lpc.playtime) AS total_playtime_secs,
+              SUM(lpc.kills) AS total_kills,
+              SUM(lpc.assists) AS total_assists,
+              SUM(lpc.deaths) AS total_deaths,
+              SUM(lpc.damage) AS total_damage
+            FROM log_player_classes lpc
+            JOIN logs l ON l.log_id = lpc.log_id
+            WHERE lpc.steamid64 = ?
+              AND trim(lpc.class) != ''
+              AND lower(trim(lpc.class)) NOT IN ('undefined', 'none')
+              {filter_sql}
+            GROUP BY lpc.class
+            HAVING SUM(lpc.playtime) > 0
+            ORDER BY total_playtime_secs DESC
+        """
+        classes_out: list[dict[str, Any]] = []
+        for cr in conn.execute(classes_sql, (sid, *filter_params)).fetchall():
+            lc = int(cr[1] or 0)
+            pt = int(cr[2] or 0)
+            tk = int(cr[3] or 0)
+            ta = int(cr[4] or 0)
+            tdeaths = int(cr[5] or 0)
+            dmg = int(cr[6] or 0)
+            avg_dpm = round((dmg / float(pt)) * 60.0, 2) if pt > 0 else None
+            avg_kdr = round(tk / tdeaths, 2) if tdeaths > 0 else None
+            classes_out.append({
+                "class": _class_label_norm(cr[0]),
+                "logs_count": lc,
+                "total_playtime_secs": pt,
+                "total_kills": tk,
+                "total_assists": ta,
+                "total_deaths": tdeaths,
+                "total_damage": dmg,
+                "avg_kills": round(tk / lc, 2) if lc else None,
+                "avg_deaths": round(tdeaths / lc, 2) if lc else None,
+                "avg_dpm": avg_dpm,
+                "avg_kdr": avg_kdr,
+            })
+
+        classes_main, classes_other = _split_profile_class_rows(classes_out)
+
+        # --- Weapons ---
+        weapons_sql = f"""
+            SELECT
+              lpw.weapon,
+              SUM(lpw.kills) AS total_kills,
+              SUM(lpw.damage) AS total_damage,
+              SUM(lpw.shots) AS total_shots,
+              SUM(lpw.hits) AS total_hits,
+              COUNT(DISTINCT lpw.log_id) AS logs_count
+            FROM log_player_weapons lpw
+            JOIN logs l ON l.log_id = lpw.log_id
+            WHERE lpw.steamid64 = ?
+              {filter_sql}
+            GROUP BY lpw.weapon
+            HAVING SUM(lpw.kills) > 0 OR SUM(lpw.damage) > 0
+            ORDER BY total_kills DESC
+            LIMIT 30
+        """
+        weapons_out: list[dict[str, Any]] = []
+        for wr in conn.execute(weapons_sql, (sid, *filter_params)).fetchall():
+            tk = int(wr[1] or 0)
+            tdmg = int(wr[2] or 0)
+            ts = int(wr[3] or 0)
+            th = int(wr[4] or 0)
+            lcw = int(wr[5] or 0)
+            acc = round(th / ts, 4) if ts > 0 else None
+            adph = round(tdmg / th, 2) if th > 0 else None
+            weapons_out.append({
+                "weapon": str(wr[0]),
+                "total_kills": tk,
+                "total_damage": tdmg,
+                "total_shots": ts,
+                "total_hits": th,
+                "accuracy": acc,
+                "avg_damage_per_shot": adph,
+                "logs_count": lcw,
+            })
+
+        # --- Class kills ---
+        ck_sql = f"""
+            SELECT
+              lpck.victim_class,
+              SUM(lpck.kills) AS total_kills
+            FROM log_player_classkills lpck
+            JOIN logs l ON l.log_id = lpck.log_id
+            WHERE lpck.steamid64 = ?
+              {filter_sql}
+            GROUP BY lpck.victim_class
+            ORDER BY total_kills DESC
+        """
+        class_kills_out = [
+            {"victim_class": _class_label_norm(x[0]), "total_kills": int(x[1] or 0)}
+            for x in conn.execute(ck_sql, (sid, *filter_params)).fetchall()
+            if _class_label_norm(x[0]) not in ("", "undefined", "none")
+        ]
+
+        # --- Rounds ---
+        rounds_a_sql = f"""
+            SELECT
+              COUNT(*) AS total_rounds,
+              SUM(CASE WHEN r.duration_secs IS NOT NULL THEN 1 ELSE 0 END) AS rounds_with_data,
+              AVG(r.duration_secs) AS avg_duration,
+              SUM(CASE WHEN r.first_blood_steamid64 = ? THEN 1 ELSE 0 END) AS first_bloods,
+              SUM(CASE WHEN r.winner = 'Red' THEN 1 ELSE 0 END) AS red_round_wins,
+              SUM(CASE WHEN r.winner = 'Blue' THEN 1 ELSE 0 END) AS blue_round_wins
+            FROM log_rounds r
+            JOIN log_players lp ON lp.log_id = r.log_id AND lp.steamid64 = ?
+            JOIN logs l ON l.log_id = r.log_id
+            WHERE 1=1
+              {filter_sql}
+        """
+        ra = conn.execute(rounds_a_sql, (sid, sid, *filter_params)).fetchone()
+        rounds_b_sql = f"""
+            SELECT COUNT(*) AS round_wins_on_team
+            FROM log_rounds r
+            JOIN log_players lp ON lp.log_id = r.log_id AND lp.steamid64 = ?
+            JOIN logs l ON l.log_id = r.log_id
+            WHERE r.winner IS NOT NULL
+              AND r.winner = lp.team
+              {filter_sql}
+        """
+        rb = conn.execute(rounds_b_sql, (sid, *filter_params)).fetchone()
+        total_rounds = int(ra[0] or 0) if ra else 0
+        rounds_with_data = int(ra[1] or 0) if ra else 0
+        avg_dur = float(ra[2]) if ra and ra[2] is not None else None
+        first_bloods = int(ra[3] or 0) if ra else 0
+        red_rw = int(ra[4] or 0) if ra else 0
+        blue_rw = int(ra[5] or 0) if ra else 0
+        round_wins_on_team = int(rb[0] or 0) if rb else 0
+        first_blood_rate = round(first_bloods / total_rounds, 4) if total_rounds > 0 else None
+        round_win_rate_on_team = round(round_wins_on_team / total_rounds, 4) if total_rounds > 0 else None
+        rounds_out: dict[str, Any] = {
+            "total_rounds": total_rounds,
+            "rounds_with_data": rounds_with_data,
+            "first_bloods": first_bloods,
+            "first_blood_rate": first_blood_rate,
+            "avg_round_duration_secs": _round2(avg_dur) if avg_dur is not None else None,
+            "red_round_wins": red_rw,
+            "blue_round_wins": blue_rw,
+            "round_wins_on_team": round_wins_on_team,
+            "round_win_rate_on_team": round_win_rate_on_team,
+        }
+
+        # --- Healspread (names resolved after connection closes) ---
+        ht_sql = f"""
+            SELECT
+              lph.patient_steamid64,
+              SUM(lph.healing) AS total_healing,
+              COUNT(DISTINCT lph.log_id) AS logs_count
+            FROM log_player_healspread lph
+            JOIN logs l ON l.log_id = lph.log_id
+            WHERE lph.healer_steamid64 = ?
+              {filter_sql}
+            GROUP BY lph.patient_steamid64
+            ORDER BY total_healing DESC
+            LIMIT 10
+        """
+        hb_sql = f"""
+            SELECT
+              lph.healer_steamid64,
+              SUM(lph.healing) AS total_healing,
+              COUNT(DISTINCT lph.log_id) AS logs_count
+            FROM log_player_healspread lph
+            JOIN logs l ON l.log_id = lph.log_id
+            WHERE lph.patient_steamid64 = ?
+              {filter_sql}
+            GROUP BY lph.healer_steamid64
+            ORDER BY total_healing DESC
+            LIMIT 10
+        """
+        healed_to_raw = [
+            (str(a[0]), int(a[1] or 0), int(a[2] or 0))
+            for a in conn.execute(ht_sql, (sid, *filter_params)).fetchall()
+        ]
+        healed_by_raw = [
+            (str(a[0]), int(a[1] or 0), int(a[2] or 0))
+            for a in conn.execute(hb_sql, (sid, *filter_params)).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    partner_ids: list[str] = []
+    for p, _, _ in healed_to_raw:
+        partner_ids.append(p)
+    for p, _, _ in healed_by_raw:
+        partner_ids.append(p)
+    name_map = _lookup_aliases_from_chat_db([sid] + partner_ids)
+    display_name = (name_map.get(sid) or "").strip()
+
+    healed_to = [
+        {
+            "steamid64": p,
+            "name": (name_map.get(p) or "").strip(),
+            "total_healing": h,
+            "logs_count": lc,
+        }
+        for p, h, lc in healed_to_raw
+    ]
+    healed_by = [
+        {
+            "steamid64": p,
+            "name": (name_map.get(p) or "").strip(),
+            "total_healing": h,
+            "logs_count": lc,
+        }
+        for p, h, lc in healed_by_raw
+    ]
+
+    log_ids = stats_log_ids_for_player(STATS_DB_PATH, sid)
+    profile: dict[str, Any] = {
+        "steamid64": sid,
+        "display_name": display_name,
+        "logs_count": logs_count,
+        "filters_applied": {
+            "gamemode": gm_used,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+            "map_query": (map_query or "").strip(),
+        },
+        "overview": overview,
+        "classes": classes_main,
+        "classes_other": classes_other,
+        "weapons": weapons_out,
+        "class_kills": class_kills_out,
+        "rounds": rounds_out,
+        "healspread": {"healed_to": healed_to, "healed_by": healed_by},
+    }
+    return profile, log_ids
+
+
 def log_match_matching_log_ids(steamids: list[str], logs_dir: str | Path) -> frozenset[int]:
     """Return the set of log IDs that contain all given players (for cache invalidation without building full result)."""
     logs_dir = Path(logs_dir)

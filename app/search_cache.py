@@ -55,6 +55,15 @@ def _is_valid(entry: dict[str, Any], mode: str, key_tuple: tuple[Any, ...]) -> b
                 current = local_log_ids_for_player(steamid64, logs_dir)
             if current != cached_ids:
                 return False
+        elif mode == "profile":
+            steamid64 = key_tuple[0]
+            stats_path = Path(STATS_DB_PATH)
+            if stats_path.is_file():
+                current = stats_log_ids_for_player(STATS_DB_PATH, steamid64)
+            else:
+                current = frozenset()
+            if current != cached_ids:
+                return False
         elif mode == "logmatch":
             steamids_tuple = key_tuple[0]
             current = log_match_matching_log_ids(list(steamids_tuple), logs_dir)

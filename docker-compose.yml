@@ -27,6 +27,7 @@ services:
       - LOGS_DIR=/app/logs
       - DOWNLOADER_STATE_DIR=/app/downloader_state
       - CHAT_DB_PATH=/app/downloader_state/chat.db
+      # Explicit paths for backfill / maintenance commands (docker compose run --rm downloader python -m app.…)
       - STATS_DB_PATH=/app/downloader_state/stats.db
       - DOWNLOAD_INTERVAL_SEC=3600
       - REQUEST_DELAY_MS=300

@@ -693,6 +693,37 @@
       outline: 2px solid var(--link);
       outline-offset: 2px;
     }
+    .profile-healspread-cols {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.25rem;
+      align-items: flex-start;
+    }
+    .profile-heal-col { flex: 1 1 14rem; min-width: 12rem; }
+    .profile-heal-list { margin: 0.5rem 0 0; padding-left: 1.25rem; }
+    details.profile-classes-other { margin-top: 1rem; }
+    details.profile-classes-other > summary { cursor: pointer; font-weight: 600; }
+    .profile-overview-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      gap: 1rem 1.25rem;
+      margin-bottom: 0.75rem;
+    }
+    .profile-avatar-wrap {
+      flex: 0 0 auto;
+    }
+    .profile-avatar {
+      display: block;
+      width: 184px;
+      height: 184px;
+      max-width: min(184px, 42vw);
+      object-fit: cover;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--input-bg);
+    }
+    .profile-overview-text { flex: 1 1 14rem; min-width: 0; }
     @media (max-width: 600px) { .theme-toggle { top: 0.25rem; right: 0.25rem; padding: 0.4rem 0.6rem; } }
     .back-button {
       display: inline-block;
@@ -796,6 +827,24 @@
   </form>
   <div id="coplayers-results" class="results"></div>
 
+  <h2>Player profile</h2>
+  <p>Aggregated stats from the indexed stats database for one player. Filters apply across all sections. If no stats are stored yet, run the stats backfill.</p>
+  <form id="frmProfile">
+    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label>
+    <label>Gamemode: <select name="gamemode">
+      <option value="">All gamemodes</option>
+      <option value="hl">Highlander</option>
+      <option value="7s">Prolander</option>
+      <option value="6s">6s</option>
+      <option value="ud">Ultiduo</option>
+    </select></label>
+    <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
+    <label>Date from (optional): <input type="date" name="date_from"></label>
+    <label>Date to (optional): <input type="date" name="date_to"></label>
+    <button type="submit">Load profile</button>
+  </form>
+  <div id="profileResults" class="results"></div>
+
   <h2>Player search by name</h2>
   <p>Find Steam accounts by a substring of the in-game name used in chat we have indexed. Names link to Steam profiles; rows are sorted by how many different logs include that name. Use at least three characters for fast search.</p>
   <form id="frmPlayerName">
@@ -898,7 +947,7 @@
 
     /**
      * Build a safe state object from URL-style params (no HTML; length-limited).
-     * mode: chat | stats | logmatch | coplayers | playername
+     * mode: chat | stats | logmatch | coplayers | profile | playername
      */
     function buildSanitizedSearchState(mode, params) {
       mode = (mode || '').trim();
@@ -945,6 +994,19 @@
           mode: 'coplayers',
           steamid: cSid,
           gamemode: sanitizeCoplayersGamemodeInput(params.get('gamemode')),
+          map_query: sanitizeMapQueryInput(params.get('map_query')),
+        };
+      }
+      if (mode === 'profile') {
+        var pSid = (params.get('steamid') || '').trim();
+        if (!pSid) return null;
+        if (pSid.length > MAX_STEAMID_INPUT_LEN) pSid = pSid.slice(0, MAX_STEAMID_INPUT_LEN);
+        return {
+          mode: 'profile',
+          steamid: pSid,
+          gamemode: sanitizeCoplayersGamemodeInput(params.get('gamemode')),
+          date_from: sanitizeDateInput(params.get('date_from')),
+          date_to: sanitizeDateInput(params.get('date_to')),
           map_query: sanitizeMapQueryInput(params.get('map_query')),
         };
       }
@@ -1011,6 +1073,16 @@
         if (fcp.elements.map_query) fcp.elements.map_query.value = state.map_query || '';
         return;
       }
+      if (state.mode === 'profile') {
+        var fp = document.getElementById('frmProfile');
+        if (!fp) return;
+        if (fp.steamid) fp.steamid.value = state.steamid || '';
+        if (fp.gamemode) fp.gamemode.value = sanitizeCoplayersGamemodeInput(state.gamemode);
+        if (fp.elements.date_from) fp.elements.date_from.value = state.date_from || '';
+        if (fp.elements.date_to) fp.elements.date_to.value = state.date_to || '';
+        if (fp.elements.map_query) fp.elements.map_query.value = state.map_query || '';
+        return;
+      }
       if (state.mode === 'playername') {
         var fpn = document.getElementById('frmPlayerName');
         if (!fpn || !fpn.q) return;
@@ -1031,6 +1103,7 @@
       else if (mode === 'stats') id = 'frmStats';
       else if (mode === 'logmatch') id = 'frmLogmatch';
       else if (mode === 'coplayers') id = 'frmCoplayers';
+      else if (mode === 'profile') id = 'frmProfile';
       else if (mode === 'playername') id = 'frmPlayerName';
       if (!id) return;
       var el = document.getElementById(id);
@@ -1088,6 +1161,12 @@
       } else if (parsed.mode === 'coplayers') {
         p2.set('steamid', parsed.steamid != null ? String(parsed.steamid) : '');
         p2.set('gamemode', parsed.gamemode != null ? String(parsed.gamemode) : '');
+        p2.set('map_query', parsed.map_query != null ? String(parsed.map_query) : '');
+      } else if (parsed.mode === 'profile') {
+        p2.set('steamid', parsed.steamid != null ? String(parsed.steamid) : '');
+        p2.set('gamemode', parsed.gamemode != null ? String(parsed.gamemode) : '');
+        p2.set('date_from', parsed.date_from != null ? String(parsed.date_from) : '');
+        p2.set('date_to', parsed.date_to != null ? String(parsed.date_to) : '');
         p2.set('map_query', parsed.map_query != null ? String(parsed.map_query) : '');
       } else if (parsed.mode === 'playername') {
         p2.set('q', parsed.q != null ? String(parsed.q) : '');
@@ -1919,6 +1998,42 @@
         mode: 'coplayers',
         steamid: steamid,
         gamemode: gamemode,
+        map_query: mapQuery,
+      });
+      window.location.href = '/results?' + params.toString();
+    });
+
+    document.getElementById('frmProfile').addEventListener('submit', function(e) {
+      e.preventDefault();
+      var form = e.target;
+      var steamid = (form.steamid && form.steamid.value ? form.steamid.value : '').trim();
+      var mapQuery = sanitizeMapQueryInput(form.map_query && form.map_query.value ? form.map_query.value : '');
+      var gamemode = sanitizeCoplayersGamemodeInput(form.gamemode && form.gamemode.value ? form.gamemode.value : '');
+      var dateFrom = (form.date_from && form.date_from.value) ? String(form.date_from.value).trim() : '';
+      var dateTo = (form.date_to && form.date_to.value) ? String(form.date_to.value).trim() : '';
+      if (!steamid) {
+        document.getElementById('profileResults').innerHTML = '<span class="error">Steam ID is required.</span>';
+        return;
+      }
+      if (dateFrom && dateTo && dateFrom > dateTo) {
+        document.getElementById('profileResults').innerHTML = '<span class="error">Date from must be before or equal to date to.</span>';
+        return;
+      }
+      var profParams = new URLSearchParams({
+        steamid: steamid,
+        gamemode: gamemode,
+        date_from: dateFrom,
+        date_to: dateTo,
+        map_query: mapQuery,
+      });
+      var profState = buildSanitizedSearchState('profile', profParams);
+      if (profState) persistSearchState(profState);
+      var params = new URLSearchParams({
+        mode: 'profile',
+        steamid: steamid,
+        gamemode: gamemode,
+        date_from: dateFrom,
+        date_to: dateTo,
         map_query: mapQuery,
       });
       window.location.href = '/results?' + params.toString();
@@ -3204,15 +3319,197 @@
         var chatHref = base + '?mode=chat&steamid=' + encodeURIComponent(sid);
         var statsHref = base + '?mode=stats&steamid=' + encodeURIComponent(sid);
         var coplayHref = base + '?mode=coplayers&steamid=' + encodeURIComponent(sid);
+        var profileHref = base + '?mode=profile&steamid=' + encodeURIComponent(sid);
         var actionsCell = '<td class="playername-actions">' +
           '<a class="playername-action-link" href="' + escapeAttr(chatHref) + '">Chat</a>' +
           '<a class="playername-action-link" href="' + escapeAttr(statsHref) + '">Stats</a>' +
           '<a class="playername-action-link" href="' + escapeAttr(coplayHref) + '">Co-players</a>' +
+          '<a class="playername-action-link" href="' + escapeAttr(profileHref) + '">Profile</a>' +
           '</td>';
         tbody += '<tr><td>' + nameCell + '</td><td>' + escapeHtml(sid) + '</td><td>' + escapeHtml(String(x.logs_count != null ? x.logs_count : '')) + '</td><td>' + escapeHtml(String(x.messages_count != null ? x.messages_count : '')) + '</td>' + actionsCell + '</tr>';
       }
       el.innerHTML = meta + '<div class="stats-table-wrap"><table class="stats-table playername-results-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' + requestTimingFooter(elapsedMs);
       loadAvatarsInContainer(el);
+    }
+
+    function profileFormatUnixDate(ts) {
+      if (ts == null || !Number.isFinite(Number(ts))) return '\u2014';
+      try {
+        return new Date(Number(ts) * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+      } catch (e) {
+        return '\u2014';
+      }
+    }
+
+    function profileFormatPlaytime(totalSec) {
+      var n = Math.max(0, Math.floor(Number(totalSec) || 0));
+      var h = Math.floor(n / 3600);
+      var m = Math.floor((n % 3600) / 60);
+      return h + 'h ' + m + 'm';
+    }
+
+    function profileFormatDurationMinSec(sec) {
+      if (sec == null || sec === '') return '\u2014';
+      var x = Number(sec);
+      if (!Number.isFinite(x) || x < 0) return '\u2014';
+      var mi = Math.floor(x / 60);
+      var s = Math.round(x - mi * 60);
+      return mi + 'm ' + s + 's';
+    }
+
+    function profileClassIconImg(cls) {
+      if (cls == null || cls === '') return '';
+      var key = String(cls).toLowerCase();
+      var src = LOGMATCH_CLASS_ICON[key];
+      if (!src) return '';
+      var label = LOGMATCH_CLASS_LABEL[key] || cls;
+      return '<img class="logmatch-class-icon" src="' + escapeAttr(src) + '" alt="" width="22" height="22" loading="lazy" title="' + escapeAttr(label) + '">';
+    }
+
+    function profileClassDisplayName(cls) {
+      if (cls == null || cls === '') return '\u2014';
+      var key = String(cls).toLowerCase();
+      return LOGMATCH_CLASS_LABEL[key] ? LOGMATCH_CLASS_LABEL[key] : String(cls);
+    }
+
+    function profileClassCell(cls) {
+      var disp = profileClassDisplayName(cls);
+      var icon = profileClassIconImg(cls);
+      return (icon ? icon + ' ' : '') + '<span>' + escapeHtml(disp) + '</span>';
+    }
+
+    function profileFormatHealing(n) {
+      var v = Number(n);
+      if (!Number.isFinite(v)) return '\u2014';
+      try {
+        return v.toLocaleString() + ' HP';
+      } catch (e) {
+        return String(Math.round(v)) + ' HP';
+      }
+    }
+
+    function renderProfileResult(el, data, elapsedMs) {
+      var name = data.display_name != null && String(data.display_name).trim() ? escapeHtml(String(data.display_name)) : escapeHtml(String(data.steamid64 || ''));
+      var ov = data.overview || {};
+      var mpc = ov.most_played_class;
+      var mpcLine = mpc
+        ? ('<p class="stats-summary-meta">Most played: ' + profileClassCell(mpc) + '</p>')
+        : '';
+      var dateRange = '<p class="stats-summary-meta">Logs: ' + escapeHtml(String(data.logs_count != null ? data.logs_count : '')) +
+        ' &middot; ' + profileFormatUnixDate(ov.first_log_ts) + ' \u2192 ' + profileFormatUnixDate(ov.last_log_ts) + '</p>';
+      var gridItems = [
+        { key: 'Wins', value: ov.wins != null ? String(ov.wins) : '\u2014' },
+        { key: 'Losses', value: ov.losses != null ? String(ov.losses) : '\u2014' },
+        { key: 'Draws', value: ov.draws != null ? String(ov.draws) : '\u2014' },
+        { key: 'Win rate', value: ov.win_rate != null ? (Math.round(Number(ov.win_rate) * 10000) / 100 + '%') : '\u2014' },
+        { key: 'Avg DPM', value: ov.avg_dpm != null ? String(ov.avg_dpm) : '\u2014' },
+        { key: 'Avg KDR', value: ov.avg_kdr != null ? String(ov.avg_kdr) : '\u2014' },
+        { key: 'Avg KADR', value: ov.avg_kadr != null ? String(ov.avg_kadr) : '\u2014' },
+        { key: 'Avg K', value: ov.avg_kills != null ? String(ov.avg_kills) : '\u2014' },
+        { key: 'Avg D', value: ov.avg_deaths != null ? String(ov.avg_deaths) : '\u2014' },
+        { key: 'Best killstreak', value: ov.best_killstreak != null ? String(ov.best_killstreak) : '\u2014' },
+        { key: 'Total damage', value: ov.total_damage != null ? String(ov.total_damage) : '\u2014' },
+        { key: 'Total kills', value: ov.total_kills != null ? String(ov.total_kills) : '\u2014' },
+        { key: 'Total ubers', value: ov.total_ubers != null ? String(ov.total_ubers) : '\u2014' },
+        { key: 'Total drops', value: ov.total_drops != null ? String(ov.total_drops) : '\u2014' }
+      ];
+      var grid = gridItems.map(function(item) {
+        return '<div class="stats-summary-item"><span class="stats-summary-key">' + escapeHtml(item.key) + '</span><span class="stats-summary-value">' + escapeHtml(item.value) + '</span></div>';
+      }).join('');
+      var av = data.avatar_url;
+      var avatarHtml = '';
+      if (av != null && typeof av === 'string' && /^https:\/\//i.test(av.trim())) {
+        avatarHtml = '<div class="profile-avatar-wrap"><img class="profile-avatar" src="' + escapeAttr(av.trim()) + '" alt="" width="184" height="184" loading="eager" decoding="async" fetchpriority="high" referrerpolicy="no-referrer" /></div>';
+      }
+      var overviewCard =
+        '<div class="stats-summary profile-overview">' +
+        '<div class="profile-overview-head">' + avatarHtml + '<div class="profile-overview-text">' +
+        '<p class="stats-summary-title">' + name + '</p>' +
+        dateRange + mpcLine +
+        '</div></div>' +
+        '<div class="stats-summary-grid">' + grid + '</div></div>';
+
+      var classes = data.classes || [];
+      var classesOther = data.classes_other || [];
+      var classesTable = '';
+      function profileClassRowHtml(c) {
+        var cn = c && c['class'] != null ? c['class'] : '';
+        return '<tr><td>' + profileClassCell(cn) + '</td><td>' + escapeHtml(String(c.logs_count != null ? c.logs_count : '')) + '</td><td>' +
+          escapeHtml(profileFormatPlaytime(c.total_playtime_secs)) + '</td><td>' + escapeHtml(String(c.total_kills != null ? c.total_kills : '')) + '</td><td>' +
+          escapeHtml(String(c.total_deaths != null ? c.total_deaths : '')) + '</td><td>' + (c.avg_dpm != null ? escapeHtml(String(c.avg_dpm)) : '\u2014') + '</td><td>' +
+          (c.avg_kdr != null ? escapeHtml(String(c.avg_kdr)) : '\u2014') + '</td></tr>';
+      }
+      if (classes.length) {
+        var cthead = '<tr><th>Class</th><th>Logs</th><th>Playtime</th><th>Kills</th><th>Deaths</th><th>Avg DPM</th><th>Avg KDR</th></tr>';
+        var cbody = classes.map(profileClassRowHtml).join('');
+        classesTable = '<div class="stats-summary"><p class="stats-summary-title">By class</p><div class="stats-table-wrap"><table class="stats-table"><thead>' + cthead + '</thead><tbody>' + cbody + '</tbody></table></div></div>';
+      }
+      if (classesOther.length) {
+        var othead = '<tr><th>Class</th><th>Logs</th><th>Playtime</th><th>Kills</th><th>Deaths</th><th>Avg DPM</th><th>Avg KDR</th></tr>';
+        var obody = classesOther.map(profileClassRowHtml).join('');
+        classesTable += '<details class="profile-classes-other"><summary>Other classes (' + escapeHtml(String(classesOther.length)) + ')</summary>' +
+          '<p class="stats-summary-meta">Spectator, mod classes, or legacy labels not in the standard nine.</p>' +
+          '<div class="stats-table-wrap"><table class="stats-table"><thead>' + othead + '</thead><tbody>' + obody + '</tbody></table></div></details>';
+      }
+
+      var weapons = data.weapons || [];
+      var weaponsTable = '';
+      if (weapons.length) {
+        var wthead = '<tr><th>Weapon</th><th>Logs</th><th>Kills</th><th>Damage</th><th>Accuracy</th><th>Avg dmg/hit</th></tr>';
+        var wbody = weapons.map(function(w) {
+          var acc = w.accuracy != null ? (Math.round(Number(w.accuracy) * 10000) / 100 + '%') : '\u2014';
+          var adh = w.avg_damage_per_shot != null ? String(w.avg_damage_per_shot) : '\u2014';
+          return '<tr><td>' + escapeHtml(String(w.weapon)) + '</td><td>' + escapeHtml(String(w.logs_count)) + '</td><td>' +
+            escapeHtml(String(w.total_kills)) + '</td><td>' + escapeHtml(String(w.total_damage)) + '</td><td>' + escapeHtml(acc) + '</td><td>' + escapeHtml(adh) + '</td></tr>';
+        }).join('');
+        weaponsTable = '<div class="stats-summary"><p class="stats-summary-title">Weapons</p><div class="stats-table-wrap"><table class="stats-table"><thead>' + wthead + '</thead><tbody>' + wbody + '</tbody></table></div></div>';
+      }
+
+      var ck = data.class_kills || [];
+      var ckTable = '';
+      if (ck.length) {
+        var ckhead = '<tr><th>Victim class</th><th>Kills</th></tr>';
+        var ckbody = ck.map(function(r) {
+          return '<tr><td>' + profileClassCell(r.victim_class) + '</td><td>' + escapeHtml(String(r.total_kills != null ? r.total_kills : '')) + '</td></tr>';
+        }).join('');
+        ckTable = '<div class="stats-summary"><p class="stats-summary-title">Kills by victim class</p><div class="stats-table-wrap"><table class="stats-table"><thead>' + ckhead + '</thead><tbody>' + ckbody + '</tbody></table></div></div>';
+      }
+
+      var rounds = data.rounds || {};
+      var roundsCard = '';
+      if (rounds.total_rounds > 0) {
+        var fbr = rounds.first_blood_rate != null ? (Math.round(Number(rounds.first_blood_rate) * 10000) / 100 + '%') : '\u2014';
+        var rwr = rounds.round_win_rate_on_team != null ? (Math.round(Number(rounds.round_win_rate_on_team) * 10000) / 100 + '%') : '\u2014';
+        var ritems = [
+          { key: 'Total rounds', value: String(rounds.total_rounds) },
+          { key: 'Avg duration', value: profileFormatDurationMinSec(rounds.avg_round_duration_secs) },
+          { key: 'First bloods', value: rounds.first_bloods != null ? String(rounds.first_bloods) : '\u2014' },
+          { key: 'First blood rate', value: fbr },
+          { key: 'Round win rate (your team)', value: rwr }
+        ];
+        var rgrid = ritems.map(function(item) {
+          return '<div class="stats-summary-item"><span class="stats-summary-key">' + escapeHtml(item.key) + '</span><span class="stats-summary-value">' + escapeHtml(String(item.value)) + '</span></div>';
+        }).join('');
+        roundsCard = '<div class="stats-summary"><p class="stats-summary-title">Rounds</p><div class="stats-summary-grid">' + rgrid + '</div></div>';
+      }
+
+      var hs = data.healspread || {};
+      var ht = hs.healed_to || [];
+      var hb = hs.healed_by || [];
+      var healCard = '';
+      if (ht.length || hb.length) {
+        function healList(title, rows) {
+          var lis = rows.map(function(r) {
+            var nm = r.name && String(r.name).trim() ? escapeHtml(String(r.name)) : escapeHtml(String(r.steamid64));
+            return '<li>' + nm + ' &mdash; ' + escapeHtml(profileFormatHealing(r.total_healing)) + ' <span class="stats-summary-meta">(' + escapeHtml(String(r.logs_count)) + ' logs)</span></li>';
+          }).join('');
+          return '<div class="profile-heal-col"><h3 class="stats-summary-title">' + escapeHtml(title) + '</h3><ul class="profile-heal-list">' + lis + '</ul></div>';
+        }
+        healCard = '<div class="stats-summary profile-healspread-wrap"><p class="stats-summary-title">Heal spread</p><div class="profile-healspread-cols">' +
+          healList('Healed to', ht) + healList('Healed by', hb) + '</div></div>';
+      }
+
+      el.innerHTML = overviewCard + classesTable + weaponsTable + ckTable + roundsCard + healCard + requestTimingFooter(elapsedMs);
     }
 
     (function initResultsPage() {
@@ -3264,6 +3561,15 @@
           gamemode: cpGm,
           map_query: sanitizeMapQueryInput(params.get('map_query') || ''),
         }).toString();
+      } else if (mode === 'profile') {
+        var prGm = sanitizeCoplayersGamemodeInput(params.get('gamemode'));
+        apiUrl = '/api/player/profile?' + new URLSearchParams({
+          steamid: params.get('steamid') || '',
+          gamemode: prGm,
+          date_from: params.get('date_from') || '',
+          date_to: params.get('date_to') || '',
+          map_query: sanitizeMapQueryInput(params.get('map_query') || ''),
+        }).toString();
       } else if (mode === 'playername') {
         var pnQ = (params.get('q') || '').trim().replace(/[\u0000-\u001F\u007F]/g, '');
         if (pnQ.length > MAX_PLAYER_NAME_QUERY_LEN) pnQ = pnQ.slice(0, MAX_PLAYER_NAME_QUERY_LEN);
@@ -3291,6 +3597,10 @@
             try {
               errParsed = JSON.parse(text);
             } catch (e) {}
+            if (mode === 'profile' && r.status === 404) {
+              resultsContent.innerHTML = '<p class="stats-summary-meta">' + escapeHtml('No profile data available for this player. Run the stats backfill to populate the stats database.') + '</p>' + requestTimingFooter(ms);
+              return;
+            }
             if (errParsed && errParsed.error) {
               resultsContent.innerHTML = '<span class="error">' + escapeHtml(String(errParsed.error)) + '</span>' + requestTimingFooter(ms);
               return;
@@ -3351,6 +3661,8 @@
               var searchedForCoplayers = /^\d{17}$/.test(rs) ? rs : (/^\d{17}$/.test(paramSid) ? paramSid : undefined);
               renderCoplayers(resultsContent, data, ms, searchedForCoplayers);
             }
+          } else if (mode === 'profile') {
+            renderProfileResult(resultsContent, data, ms);
           } else if (mode === 'playername') {
             var qShown = (params.get('q') || '').trim();
             if (qShown.length > MAX_PLAYER_NAME_QUERY_LEN) qShown = qShown.slice(0, MAX_PLAYER_NAME_QUERY_LEN);

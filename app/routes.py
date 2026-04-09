@@ -38,6 +38,7 @@ from app.search.search import (
     coplayers_search,
     log_match,
     player_name_search_sqlite,
+    player_profile,
     stats_search,
 )
 from app.search_cache import get as cache_get, set_ as cache_set
@@ -99,6 +100,72 @@ async def _fetch_steam_avatar_urls(steamid64s: list[str]) -> dict[str, str]:
     except Exception:
         logger.exception("Steam avatar fetch failed")
         return {}
+
+
+def _fetch_steam_avatar_url_sync(steamid64: str) -> str | None:
+    """
+    Fetch a single player's ``avatarfull`` URL from Steam (sync).
+    Same validation as ``_fetch_steam_avatar_urls``; for use from worker threads (e.g. profile).
+    """
+    if not STEAM_WEB_API_KEY or not re.fullmatch(r"\d{17}", steamid64):
+        return None
+    url = (
+        "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/"
+        f"?key={STEAM_WEB_API_KEY}&steamids={steamid64}"
+    )
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            r = client.get(url)
+            r.raise_for_status()
+            data = r.json()
+        players = data.get("response", {}).get("players") or []
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            sid = str(p.get("steamid", "")).strip()
+            if sid != steamid64:
+                continue
+            avatar = p.get("avatarfull", "")
+            if not isinstance(avatar, str):
+                return None
+            avatar = avatar.strip()
+            if avatar.startswith("https://"):
+                return avatar
+        return None
+    except Exception:
+        logger.exception("Steam avatar sync fetch failed")
+        return None
+
+
+def _resolve_profile_avatar_url(steamid64: str) -> str | None:
+    """
+    Cached avatar from ``avatars.db`` if fresh, else Steam ``avatarfull`` (largest size) and cache it.
+    Returns None if unavailable.
+    """
+    if not re.fullmatch(r"\d{17}", steamid64):
+        return None
+    conn = connect_avatar_db(AVATAR_DB_PATH)
+    try:
+        cached = get_cached_avatar(conn, steamid64)
+        if cached and cached.startswith("https://"):
+            return cached
+        new_url = _fetch_steam_avatar_url_sync(steamid64)
+        if new_url:
+            try:
+                set_cached_avatar(conn, steamid64, new_url)
+            except Exception:
+                pass
+            return new_url
+        return None
+    finally:
+        conn.close()
+
+
+def _profile_response_payload(stats_payload: dict[str, Any], steamid64: str) -> dict[str, Any]:
+    """Attach ``avatar_url`` for the profile player (not stored in search cache)."""
+    out = dict(stats_payload)
+    out["avatar_url"] = _resolve_profile_avatar_url(steamid64)
+    return out
 
 
 def _client_ip(request: Request) -> str:
@@ -904,6 +971,114 @@ async def favicon():
     if not path.is_file():
         return JSONResponse({"error": "Not found"}, status_code=404)
     return FileResponse(path, media_type="image/x-icon")
+
+
+def _api_profile_impl(
+    request: Request,
+    steamid: str,
+    gamemode: str,
+    date_from_raw: str,
+    date_to_raw: str,
+    map_query_raw: str,
+) -> JSONResponse:
+    """Shared impl for POST/GET player profile."""
+    start = time.perf_counter()
+    steamid_input = (steamid or "").strip()
+    if not steamid_input:
+        return JSONResponse({"error": "Steam ID is required."}, status_code=400)
+    steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+    if resolve_error is not None:
+        return JSONResponse({"error": resolve_error}, status_code=400)
+    assert steamid64 is not None
+    date_from, err = _parse_iso_date_or_none(date_from_raw)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    date_to, err = _parse_iso_date_or_none(date_to_raw)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    if date_from is not None and date_to is not None and date_from > date_to:
+        return JSONResponse({"error": "date_from must be before or equal to date_to."}, status_code=400)
+    map_query = (map_query_raw or "").strip()
+    if len(map_query) > MAP_QUERY_MAX_LENGTH:
+        return JSONResponse({"error": "Map filter is too long."}, status_code=400)
+    gm = (gamemode or "").strip()
+    if gm not in ("", "hl", "7s", "6s", "ud"):
+        gm = ""
+    cache_key = (
+        steamid64,
+        gm,
+        date_from.isoformat() if date_from else "",
+        date_to.isoformat() if date_to else "",
+        map_query.lower(),
+    )
+    cached = cache_get("profile", cache_key)
+    if cached is not None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/player/profile", 200, duration_ms, steamid=steamid64, gamemode=gm)
+        return JSONResponse(_profile_response_payload(cached, steamid64))
+    try:
+        profile, log_ids = player_profile(
+            steamid64,
+            gamemode=gm,
+            date_from=date_from,
+            date_to=date_to,
+            map_query=map_query,
+        )
+        cache_set("profile", cache_key, profile, log_ids)
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/player/profile", 200, duration_ms, steamid=steamid64, gamemode=gm)
+        return JSONResponse(_profile_response_payload(profile, steamid64))
+    except RuntimeError:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/player/profile", 404, duration_ms, steamid=steamid64, gamemode=gm)
+        return JSONResponse(
+            {"error": "Stats DB not available for this player.", "steamid64": steamid64},
+            status_code=404,
+        )
+    except Exception as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/player/profile", 500, duration_ms, steamid=steamid64, gamemode=gm)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/api/player/profile")
+async def api_player_profile(
+    request: Request,
+    steamid: str = Form(""),
+    gamemode: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+    map_query: str = Form(""),
+):
+    return await asyncio.to_thread(
+        _api_profile_impl,
+        request,
+        steamid or "",
+        gamemode or "",
+        date_from or "",
+        date_to or "",
+        map_query or "",
+    )
+
+
+@router.get("/api/player/profile")
+async def api_player_profile_get(
+    request: Request,
+    steamid: str = Query(""),
+    gamemode: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    map_query: str = Query(""),
+):
+    return await asyncio.to_thread(
+        _api_profile_impl,
+        request,
+        steamid or "",
+        gamemode or "",
+        date_from or "",
+        date_to or "",
+        map_query or "",
+    )
 
 
 @router.get("/")

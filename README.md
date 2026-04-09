@@ -103,6 +103,18 @@ docker-compose up -d downloader
 
 The downloader writes stats for every newly fetched log into `STATS_DB_PATH`. Re-running the backfill is safe: each log is replaced atomically.
 
+## Fix log rounds (one-time migration)
+
+If stats were imported before round duration / first-blood parsing was corrected, rebuild only the `log_rounds` table from your existing JSON files (no full stats reimport):
+
+```bash
+docker-compose stop downloader
+docker-compose run --rm downloader python -m app.fix_log_rounds_from_json
+docker-compose up -d downloader
+```
+
+Options: `--dry-run`, `--from-id N`, `--to-id M`, `--logs-dir`, `--db-path` (same layout as `app.stats_backfill`).
+
 ## Player names backfill (fast, run after stats backfill)
 
 Roster display names come from each log’s `names` dict and are stored in the `player_names` table (used for search aliases even when a player never chatted). This pass only reads `names` + `info.date` from each JSON file.

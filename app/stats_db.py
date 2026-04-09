@@ -1,6 +1,7 @@
 """SQLite storage for per-log player stats from logs.tf JSON (downloader + backfill)."""
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -8,6 +9,9 @@ from typing import Any
 
 from app.log_utils import team_score, winner_team_from_log as _winner_team_from_logtext
 from app.logs_tf import steamid3_to_steamid64
+
+# Garbage / non-class strings sometimes seen in logs.tf class_stats (skip inserts).
+_BAD_CLASS_NAMES: frozenset[str] = frozenset({"", "undefined", "none"})
 
 
 def connect_stats_db(db_path: str | Path) -> sqlite3.Connection:
@@ -18,6 +22,69 @@ def connect_stats_db(db_path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def _normalize_class_name(raw: Any) -> str:
+    return str(raw or "").strip().lower()
+
+
+def _round_duration_secs_from_log(rnd: dict) -> int | None:
+    """logs.tf uses ``duration`` in some payloads and ``length`` in API-shaped JSON."""
+    raw = rnd.get("duration")
+    if raw is None:
+        raw = rnd.get("length")
+    if raw is None:
+        return None
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _steamid64_from_logs_tf_player_field(raw: Any) -> str | None:
+    """Accept SteamID3 ``[U:1:n]`` or 17-digit SteamID64 string."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    if s.startswith("[U:"):
+        return steamid3_to_steamid64(s)
+    if re.fullmatch(r"\d{17}", s):
+        return s
+    return None
+
+
+def _first_blood_steamid64_from_round(rnd: dict) -> str | None:
+    """
+    First kill of the round from ``events`` (logs.tf). ``firstcap`` is a team, not a player — do not use it.
+    """
+    for key in ("first_blood", "firstblood", "firstBlood"):
+        sid64 = _steamid64_from_logs_tf_player_field(rnd.get(key))
+        if sid64:
+            return sid64
+    evs = rnd.get("events")
+    if not isinstance(evs, list):
+        return None
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for ev in evs:
+        if not isinstance(ev, dict):
+            continue
+        try:
+            t = float(ev.get("time") or 0)
+        except (TypeError, ValueError):
+            t = 0.0
+        scored.append((t, ev))
+    scored.sort(key=lambda x: x[0])
+    for _, ev in scored:
+        et = str(ev.get("type") or "").lower()
+        if "kill" not in et:
+            continue
+        for kk in ("killer", "steamid", "attacker"):
+            sid64 = _steamid64_from_logs_tf_player_field(ev.get(kk))
+            if sid64:
+                return sid64
+    return None
 
 
 def _int_safe(x: Any, default: int = 0) -> int:
@@ -334,15 +401,17 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
                 if not isinstance(cs, dict):
                     continue
                 ct = _int_safe(cs.get("total_time"), 0)
-                cname = str(cs.get("type") or cs.get("class") or "").strip().lower()
+                cname = _normalize_class_name(cs.get("type") or cs.get("class"))
+                if cname in _BAD_CLASS_NAMES:
+                    continue
                 if ct > best_time and cname:
                     best_time = ct
                     primary_class = cname
         if not primary_class and isinstance(class_stats, list):
             for cs in class_stats:
                 if isinstance(cs, dict):
-                    cname = str(cs.get("type") or cs.get("class") or "").strip().lower()
-                    if cname:
+                    cname = _normalize_class_name(cs.get("type") or cs.get("class"))
+                    if cname and cname not in _BAD_CLASS_NAMES:
                         primary_class = cname
                         break
 
@@ -386,8 +455,8 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
             for cs in class_stats:
                 if not isinstance(cs, dict):
                     continue
-                cname = str(cs.get("type") or cs.get("class") or "").strip().lower()
-                if not cname:
+                cname = _normalize_class_name(cs.get("type") or cs.get("class"))
+                if not cname or cname in _BAD_CLASS_NAMES:
                     continue
                 class_rows.append(
                     {
@@ -422,7 +491,7 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
 
         for victim, kc in _classkills_dict(stats).items():
             vc = str(victim).strip().lower()
-            if not vc:
+            if not vc or vc in _BAD_CLASS_NAMES:
                 continue
             classkill_rows.append(
                 {
@@ -452,11 +521,7 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
         for idx, rnd in enumerate(rounds):
             if not isinstance(rnd, dict):
                 continue
-            dur = rnd.get("duration")
-            try:
-                dur_i = int(dur) if dur is not None else None
-            except (TypeError, ValueError):
-                dur_i = None
+            dur_i = _round_duration_secs_from_log(rnd)
             rw = rnd.get("winner")
             rw_s: str | None = None
             if rw == "Red":
@@ -483,10 +548,7 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
                 elif "blue" in kills_blk:
                     bk = _int_safe(kills_blk.get("blue"), 0)
 
-            fc = rnd.get("firstcap") or rnd.get("first_blood") or rnd.get("firstblood")
-            fb64: str | None = None
-            if fc is not None:
-                fb64 = steamid3_to_steamid64(str(fc).strip())
+            fb64 = _first_blood_steamid64_from_round(rnd)
 
             round_rows.append(
                 {
