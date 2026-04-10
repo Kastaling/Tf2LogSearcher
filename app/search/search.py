@@ -11,7 +11,7 @@ from typing import Any
 from app.chat_db import CHAT_ALIAS_FTS_READY_META_KEY
 from app.config import CHAT_DB_PATH, STATS_DB_PATH
 from app.log_utils import winner_team_from_log as _winner_team_from_log
-from app.stats_db import stats_log_ids_for_player
+from app.stats_db import player_stats_agg_nonempty, stats_log_ids_for_player
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
 
 logger = logging.getLogger(__name__)
@@ -1466,6 +1466,122 @@ def _leaderboard_scope_sql(
     return base_sql, base_params
 
 
+def _leaderboard_is_global_unfiltered(
+    gamemode: str,
+    class_filter: str,
+    date_from: date | None,
+    date_to: date | None,
+    map_query: str,
+) -> bool:
+    """True when the leaderboard matches the global precomputed ``player_stats_agg`` scope."""
+    if (gamemode or "").strip() or (class_filter or "").strip():
+        return False
+    if date_from is not None or date_to is not None:
+        return False
+    if (map_query or "").strip():
+        return False
+    return True
+
+
+_LB_AGG_ORDER_SQL: dict[str, str] = {
+    "dpm": "avg_dpm DESC NULLS LAST",
+    "kdr": "avg_kdr DESC NULLS LAST",
+    "winrate": "(CAST(wins AS REAL) / NULLIF(decided_logs, 0)) DESC NULLS LAST",
+    "logs": "log_count DESC",
+}
+
+
+def _stats_leaderboard_from_agg(
+    lb_key: str,
+    ml: int,
+    spec: dict[str, Any],
+    path: Path,
+    profile_sql: str,
+    profile_params: list[Any],
+) -> tuple[list[dict[str, Any]], int]:
+    """Serve global leaderboard from ``player_stats_agg`` (instant vs full scan of ``log_players``)."""
+    ord_clause = _LB_AGG_ORDER_SQL.get(lb_key)
+    if ord_clause is None:
+        raise RuntimeError("Unknown leaderboard type.")
+    fmt = spec["format"]
+    main_sql = f"""
+        SELECT steamid64, log_count, wins, decided_logs, avg_dpm, avg_kdr, avg_kadr
+        FROM player_stats_agg
+        WHERE log_count >= ?
+        ORDER BY {ord_clause}
+        LIMIT ?
+    """
+    count_fast_sql = f"""
+        SELECT COUNT(*)
+        FROM logs l
+        WHERE 1=1
+          {profile_sql}
+    """
+    conn = _sqlite_connect_ro(path)
+    _configure_sqlite_leaderboard_read(conn)
+    conn.row_factory = sqlite3.Row
+    try:
+        total_logs = int(
+            conn.execute(count_fast_sql, tuple(profile_params)).fetchone()[0] or 0
+        )
+        cur = conn.execute(main_sql, (ml, LEADERBOARD_MAX_ROWS))
+        raw_rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    out: list[dict[str, Any]] = []
+    steam_ids: list[str] = []
+    for r in raw_rows:
+        sid = str(r["steamid64"] or "").strip()
+        if sid:
+            steam_ids.append(sid)
+        log_count = int(r["log_count"] or 0)
+        wins = int(r["wins"] or 0)
+        decided = int(r["decided_logs"] or 0)
+        win_rate = round(wins / decided, 6) if decided > 0 else None
+        if lb_key == "dpm":
+            pv_raw = r["avg_dpm"]
+        elif lb_key == "kdr":
+            pv_raw = r["avg_kdr"]
+        elif lb_key == "winrate":
+            pv_raw = (float(wins) / float(decided)) if decided > 0 else None
+        elif lb_key == "logs":
+            pv_raw = log_count
+        else:
+            pv_raw = None
+        primary_value: float | int | None
+        if pv_raw is None:
+            primary_value = None
+        elif fmt == "int":
+            primary_value = int(round(float(pv_raw)))
+        elif fmt == "percent":
+            primary_value = float(pv_raw) if pv_raw is not None else None
+        else:
+            primary_value = _round2(pv_raw)
+
+        out.append(
+            {
+                "steamid64": sid,
+                "name": "",
+                "log_count": log_count,
+                "avg_dpm": _round2(r["avg_dpm"]),
+                "avg_kdr": _round2(r["avg_kdr"]),
+                "avg_kadr": _round2(r["avg_kadr"]),
+                "win_rate": win_rate,
+                "wins": wins,
+                "decided_logs": decided,
+                "primary_value": primary_value,
+            }
+        )
+
+    alias_map = _lookup_aliases_from_chat_db(steam_ids)
+    for row in out:
+        s = row["steamid64"]
+        row["name"] = (alias_map.get(s) or "").strip()
+
+    return out, total_logs
+
+
 def _round2(v: Any) -> float | None:
     if v is None:
         return None
@@ -1508,6 +1624,12 @@ def stats_leaderboard(
     ml = max(1, min(ml, LEADERBOARD_MIN_LOGS_MAX))
     scope_sql, scope_params = _leaderboard_scope_sql(gamemode, date_from, date_to, map_query, class_filter)
     profile_sql, profile_params = _profile_filter_sql(gamemode, date_from, date_to, map_query)
+
+    lb_key = (lb_type or "").strip().lower()
+    if _leaderboard_is_global_unfiltered(
+        gamemode, class_filter, date_from, date_to, map_query
+    ) and player_stats_agg_nonempty(path):
+        return _stats_leaderboard_from_agg(lb_key, ml, spec, path, profile_sql, profile_params)
 
     select_expr = " ".join(spec["select_expr"].split())
     order_expr = " ".join(spec["order_expr"].split())

@@ -1,17 +1,20 @@
 """SQLite storage for per-log player stats from logs.tf JSON (downloader + backfill)."""
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from app.log_utils import team_score, winner_team_from_log as _winner_team_from_logtext
 from app.logs_tf import steamid3_to_steamid64
 
 # Garbage / non-class strings sometimes seen in logs.tf class_stats (skip inserts).
 _BAD_CLASS_NAMES: frozenset[str] = frozenset({"", "undefined", "none"})
+
+logger = logging.getLogger(__name__)
 
 
 def connect_stats_db(db_path: str | Path) -> sqlite3.Connection:
@@ -240,6 +243,27 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_pn_steamid64 ON player_names(steamid64);
         CREATE INDEX IF NOT EXISTS idx_pn_date_ts ON player_names(date_ts);
+
+        CREATE TABLE IF NOT EXISTS player_stats_agg (
+          steamid64        TEXT PRIMARY KEY,
+          log_count        INTEGER NOT NULL DEFAULT 0,
+          wins             INTEGER NOT NULL DEFAULT 0,
+          decided_logs     INTEGER NOT NULL DEFAULT 0,
+          avg_dpm          REAL,
+          avg_kdr          REAL,
+          avg_kadr         REAL,
+          total_kills      INTEGER NOT NULL DEFAULT 0,
+          total_damage     INTEGER NOT NULL DEFAULT 0,
+          total_ubers      INTEGER NOT NULL DEFAULT 0,
+          total_drops      INTEGER NOT NULL DEFAULT 0,
+          updated_at       INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_psa_avg_dpm ON player_stats_agg(avg_dpm DESC);
+        CREATE INDEX IF NOT EXISTS idx_psa_avg_kdr ON player_stats_agg(avg_kdr DESC);
+        CREATE INDEX IF NOT EXISTS idx_psa_log_count ON player_stats_agg(log_count DESC);
+        CREATE INDEX IF NOT EXISTS idx_psa_win_rate ON player_stats_agg(
+          (CAST(wins AS REAL) / NULLIF(decided_logs, 0))
+        );
         """
     )
     conn.commit()
@@ -753,15 +777,132 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
             [(r["steamid64"], r["alias"], r["log_id"], r["date_ts"]) for r in nr],
         )
 
+    try:
+        steam_rows = conn.execute(
+            "SELECT DISTINCT steamid64 FROM log_players WHERE log_id = ? AND team IN ('Red', 'Blue')",
+            (log_id,),
+        ).fetchall()
+        refresh_player_stats_agg_for_steamids(conn, [str(r[0]) for r in steam_rows if r and r[0]])
+    except Exception:
+        logger.exception("player_stats_agg refresh failed after log %s", log_id)
+
     return len(pr)
+
+
+def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
+    """
+    Full rebuild of ``player_stats_agg`` from ``log_players`` + ``logs`` (global unfiltered aggregates).
+    Run after schema upgrades or via ``python -m app.rebuild_agg``.
+    """
+    ts = int(time.time())
+    with conn:
+        conn.execute("DELETE FROM player_stats_agg")
+        conn.execute(
+            """
+            INSERT INTO player_stats_agg (
+              steamid64, log_count, wins, decided_logs, avg_dpm, avg_kdr, avg_kadr,
+              total_kills, total_damage, total_ubers, total_drops, updated_at
+            )
+            SELECT
+              lp.steamid64,
+              COUNT(*),
+              SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END),
+              SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END),
+              AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END),
+              AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END),
+              AVG(CASE WHEN lp.kadr IS NOT NULL THEN lp.kadr END),
+              SUM(lp.kills),
+              SUM(lp.damage),
+              SUM(lp.ubers),
+              SUM(lp.drops),
+              ?
+            FROM logs l
+            INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
+            GROUP BY lp.steamid64
+            """,
+            (ts,),
+        )
+    row = conn.execute("SELECT COUNT(*) FROM player_stats_agg").fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def refresh_player_stats_agg_for_steamids(conn: sqlite3.Connection, steamids: Sequence[str]) -> None:
+    """Recompute aggregate rows for the given SteamID64s (after a log insert/update)."""
+    uniq = list(dict.fromkeys(s.strip() for s in steamids if s and str(s).strip()))
+    if not uniq:
+        return
+    ts = int(time.time())
+    sel = """
+        SELECT
+          lp.steamid64,
+          COUNT(*),
+          SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END),
+          SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END),
+          AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END),
+          AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END),
+          AVG(CASE WHEN lp.kadr IS NOT NULL THEN lp.kadr END),
+          SUM(lp.kills),
+          SUM(lp.damage),
+          SUM(lp.ubers),
+          SUM(lp.drops)
+        FROM logs l
+        INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
+        WHERE lp.steamid64 = ?
+        GROUP BY lp.steamid64
+    """
+    upsert = """
+        INSERT OR REPLACE INTO player_stats_agg (
+          steamid64, log_count, wins, decided_logs, avg_dpm, avg_kdr, avg_kadr,
+          total_kills, total_damage, total_ubers, total_drops, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    for sid in uniq:
+        row = conn.execute(sel, (sid,)).fetchone()
+        if not row or row[1] == 0:
+            conn.execute("DELETE FROM player_stats_agg WHERE steamid64 = ?", (sid,))
+            continue
+        conn.execute(
+            upsert,
+            (
+                row[0],
+                int(row[1] or 0),
+                int(row[2] or 0),
+                int(row[3] or 0),
+                row[4],
+                row[5],
+                row[6],
+                int(row[7] or 0),
+                int(row[8] or 0),
+                int(row[9] or 0),
+                int(row[10] or 0),
+                ts,
+            ),
+        )
+
+
+def player_stats_agg_nonempty(db_path: str | Path) -> bool:
+    """True if ``player_stats_agg`` has at least one row (fast leaderboard path available)."""
+    path = Path(db_path)
+    if not path.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            n = conn.execute("SELECT 1 FROM player_stats_agg LIMIT 1").fetchone()
+            return n is not None
+        finally:
+            conn.close()
+    except Exception:
+        return False
 
 
 def stats_db_fingerprint(db_path: str | Path) -> frozenset[int]:
     """
     Lightweight fingerprint for stats DB contents.
 
-    Encodes (logs row count, max log_id) as a frozenset for cache invalidation
-    (e.g. global leaderboards that aggregate from ``logs`` / ``log_players``).
+    Encodes (logs row count, max log_id, max imported_at) so cache invalidates when a log is
+    re-imported (same count / max id) or when ``player_stats_agg``-relevant data changes.
     """
     path = Path(db_path)
     if not path.is_file():
@@ -771,7 +912,7 @@ def stats_db_fingerprint(db_path: str | Path) -> frozenset[int]:
         try:
             conn.execute("PRAGMA busy_timeout=10000")
             row = conn.execute(
-                "SELECT COUNT(*), COALESCE(MAX(log_id), 0) FROM logs"
+                "SELECT COUNT(*), COALESCE(MAX(log_id), 0), COALESCE(MAX(imported_at), 0) FROM logs"
             ).fetchone()
         finally:
             conn.close()
@@ -779,7 +920,42 @@ def stats_db_fingerprint(db_path: str | Path) -> frozenset[int]:
         return frozenset()
     count = int(row[0] or 0) if row else 0
     max_id = int(row[1] or 0) if row else 0
-    return frozenset((count, max_id))
+    max_imp = int(row[2] or 0) if row else 0
+    return frozenset((count, max_id, max_imp))
+
+
+def stats_player_stats_cache_token(db_path: str | Path, steamid64: str) -> frozenset[int]:
+    """
+    Small fingerprint for per-player stats/coplayers/profile cache validation.
+    Avoids loading every ``log_id`` for the player on each cache hit.
+    """
+    path = Path(db_path)
+    sid = (steamid64 or "").strip()
+    if not path.is_file() or not sid:
+        return frozenset()
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            row = conn.execute(
+                """
+                SELECT COUNT(lp.log_id), COALESCE(MAX(lp.log_id), 0), COALESCE(SUM(l.imported_at), 0)
+                FROM log_players lp
+                INNER JOIN logs l ON l.log_id = lp.log_id
+                WHERE lp.steamid64 = ?
+                """,
+                (sid,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return frozenset()
+    if not row:
+        return frozenset()
+    cnt = int(row[0] or 0)
+    mx = int(row[1] or 0)
+    s = int(row[2] or 0)
+    return frozenset((cnt, mx, s))
 
 
 def stats_log_ids_for_player(db_path: str | Path, steamid64: str) -> frozenset[int]:

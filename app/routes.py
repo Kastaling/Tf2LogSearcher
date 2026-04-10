@@ -30,7 +30,7 @@ from app.avatar_db import (
     set_cached_avatars_bulk,
 )
 from app.chat_db import chat_log_fingerprint, count_chat_messages
-from app.stats_db import stats_db_fingerprint
+from app.stats_db import stats_db_fingerprint, stats_player_stats_cache_token
 from app.request_log import append_request_log
 from app.search.search import (
     LEADERBOARD_MIN_LOGS_DEFAULT,
@@ -459,7 +459,7 @@ def _api_search_stats_impl(
             map_query=map_query,
         )
         payload = {"rows": rows}
-        cache_set("stats", cache_key, payload, log_ids_used)
+        cache_set("stats", cache_key, payload, stats_player_stats_cache_token(STATS_DB_PATH, steamid64))
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/search/stats", 200, duration_ms, result_count=len(rows), steamid=steamid64, gamemode=gamemode, classes=classes)
         return JSONResponse(payload)
@@ -509,7 +509,7 @@ def _api_search_coplayers_impl(
     try:
         rows, log_ids_used = coplayers_search(steamid64, LOGS_DIR, gamemode=gm, map_query=map_query)
         payload = {"rows": rows, "logs_searched": len(log_ids_used), "resolved_steamid64": steamid64}
-        cache_set("coplayers", cache_key, payload, log_ids_used)
+        cache_set("coplayers", cache_key, payload, stats_player_stats_cache_token(STATS_DB_PATH, steamid64))
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
             request,
@@ -1034,7 +1034,7 @@ def _api_profile_impl(
             date_to=date_to,
             map_query=map_query,
         )
-        cache_set("profile", cache_key, profile, log_ids)
+        cache_set("profile", cache_key, profile, stats_player_stats_cache_token(STATS_DB_PATH, steamid64))
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/player/profile", 200, duration_ms, steamid=steamid64, gamemode=gm)
         return JSONResponse(_profile_response_payload(profile, steamid64))

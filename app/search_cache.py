@@ -7,7 +7,7 @@ from typing import Any, Callable, TypeVar
 from app.chat_db import chat_log_fingerprint, local_chat_log_ids_for_player
 from app.config import CHAT_DB_PATH, LOGS_DIR, STATS_DB_PATH
 from app.search.search import local_log_ids_for_player, log_match_matching_log_ids
-from app.stats_db import stats_db_fingerprint, stats_log_ids_for_player
+from app.stats_db import stats_db_fingerprint, stats_player_stats_cache_token
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def _is_valid(entry: dict[str, Any], mode: str, key_tuple: tuple[Any, ...]) -> b
             steamid64 = key_tuple[0]
             stats_path = Path(STATS_DB_PATH)
             if stats_path.is_file():
-                current = stats_log_ids_for_player(STATS_DB_PATH, steamid64)
+                current = stats_player_stats_cache_token(STATS_DB_PATH, steamid64)
             else:
                 current = local_log_ids_for_player(steamid64, logs_dir)
             if current != cached_ids:
@@ -63,7 +63,7 @@ def _is_valid(entry: dict[str, Any], mode: str, key_tuple: tuple[Any, ...]) -> b
             steamid64 = key_tuple[0]
             stats_path = Path(STATS_DB_PATH)
             if stats_path.is_file():
-                current = stats_log_ids_for_player(STATS_DB_PATH, steamid64)
+                current = stats_player_stats_cache_token(STATS_DB_PATH, steamid64)
             else:
                 current = frozenset()
             if current != cached_ids:
