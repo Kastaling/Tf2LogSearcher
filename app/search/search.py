@@ -41,6 +41,49 @@ _LOGMATCH_CLASS_TYPES: frozenset[str] = frozenset({
 # Default "all classes" when the stats API receives an empty class list (sorted for stable cache keys).
 STATS_SEARCH_DEFAULT_CLASSES: tuple[str, ...] = tuple(sorted(_LOGMATCH_CLASS_TYPES))
 
+# Stats leaderboard: extend `_LEADERBOARD_TYPES` to add new boards without changing query assembly.
+_LEADERBOARD_TYPES: dict[str, dict[str, Any]] = {
+    "dpm": {
+        "label": "Avg DPM",
+        "order_expr": "AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END) DESC",
+        "select_expr": "AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END) AS primary_value",
+        "value_key": "avg_dpm",
+        "format": "float2",
+    },
+    "kdr": {
+        "label": "Avg KDR",
+        "order_expr": "AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END) DESC",
+        "select_expr": "AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END) AS primary_value",
+        "value_key": "avg_kdr",
+        "format": "float2",
+    },
+    "winrate": {
+        "label": "Win Rate",
+        "order_expr": """
+            CAST(SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS REAL)
+            / NULLIF(SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END), 0) DESC
+        """,
+        "select_expr": """
+            CAST(SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS REAL)
+            / NULLIF(SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END), 0) AS primary_value
+        """,
+        "value_key": "win_rate",
+        "format": "percent",
+    },
+    "logs": {
+        "label": "Most Logs",
+        "order_expr": "COUNT(*) DESC",
+        "select_expr": "COUNT(*) AS primary_value",
+        "value_key": "log_count",
+        "format": "int",
+    },
+}
+
+LEADERBOARD_TYPE_KEYS: tuple[str, ...] = tuple(_LEADERBOARD_TYPES.keys())
+LEADERBOARD_MAX_ROWS = 100
+LEADERBOARD_MIN_LOGS_DEFAULT = 10
+LEADERBOARD_MIN_LOGS_MAX = 500
+
 
 def _class_playtime_for_logmatch(stats: dict[str, Any]) -> list[dict[str, Any]]:
     """Per-class playtime in seconds from logs.tf class_stats (longest first)."""
@@ -146,6 +189,16 @@ def _sqlite_connect_ro(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
     conn.execute("PRAGMA busy_timeout=10000")
     return conn
+
+
+def _configure_sqlite_leaderboard_read(conn: sqlite3.Connection) -> None:
+    """Tuning for heavy read-only aggregates (large page cache, temp in RAM, mmap when available)."""
+    conn.execute("PRAGMA cache_size=-65536")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    try:
+        conn.execute("PRAGMA mmap_size=268435456")
+    except sqlite3.Error:
+        pass
 
 
 def _stats_db_available_for_player(steamid64: str) -> bool:
@@ -1391,6 +1444,28 @@ def _profile_filter_sql(
     return "".join(parts), params
 
 
+def _leaderboard_scope_sql(
+    gamemode: str,
+    date_from: date | None,
+    date_to: date | None,
+    map_query: str,
+    class_filter: str,
+) -> tuple[str, list[Any]]:
+    """Shared AND clauses for leaderboard queries (log + player rows in scope)."""
+    base_sql, base_params = _profile_filter_sql(gamemode, date_from, date_to, map_query)
+    cf = (class_filter or "").strip().lower()
+    if cf and cf in _LOGMATCH_CLASS_TYPES:
+        extra = (
+            " AND EXISTS ("
+            " SELECT 1 FROM log_player_classes lpc"
+            " WHERE lpc.log_id = lp.log_id"
+            " AND lpc.steamid64 = lp.steamid64"
+            " AND lpc.class = ?)"
+        )
+        return base_sql + extra, base_params + [cf]
+    return base_sql, base_params
+
+
 def _round2(v: Any) -> float | None:
     if v is None:
         return None
@@ -1398,6 +1473,132 @@ def _round2(v: Any) -> float | None:
         return round(float(v), 2)
     except (TypeError, ValueError):
         return None
+
+
+def stats_leaderboard(
+    lb_type: str,
+    *,
+    gamemode: str = "",
+    class_filter: str = "",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    map_query: str = "",
+    min_logs: int = LEADERBOARD_MIN_LOGS_DEFAULT,
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Global stats leaderboard from stats DB.
+    Returns (rows, total_logs_in_scope) for display.
+
+    ``total_logs`` is a fast count of rows in ``logs`` matching gamemode/date/map filters only
+    (not class filter). Player rows and aggregates still respect the class filter when set.
+    Raises RuntimeError if stats DB is unavailable or lb_type is unknown.
+    """
+    spec = _LEADERBOARD_TYPES.get((lb_type or "").strip().lower())
+    if spec is None:
+        raise RuntimeError("Unknown leaderboard type.")
+
+    path = Path(STATS_DB_PATH)
+    if not path.is_file():
+        raise RuntimeError("Stats DB not available.")
+
+    try:
+        ml = int(min_logs)
+    except (TypeError, ValueError):
+        ml = LEADERBOARD_MIN_LOGS_DEFAULT
+    ml = max(1, min(ml, LEADERBOARD_MIN_LOGS_MAX))
+    scope_sql, scope_params = _leaderboard_scope_sql(gamemode, date_from, date_to, map_query, class_filter)
+    profile_sql, profile_params = _profile_filter_sql(gamemode, date_from, date_to, map_query)
+
+    select_expr = " ".join(spec["select_expr"].split())
+    order_expr = " ".join(spec["order_expr"].split())
+
+    # Drive from ``logs`` first so date/gamemode/map can use ``logs`` indexes; join ``log_players``
+    # on (log_id, team) via idx_log_players_log_id_team.
+    main_sql = f"""
+        SELECT
+          lp.steamid64,
+          COUNT(*) AS log_count,
+          AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END) AS avg_dpm,
+          AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END) AS avg_kdr,
+          AVG(CASE WHEN lp.kadr IS NOT NULL THEN lp.kadr END) AS avg_kadr,
+          SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS wins,
+          SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END) AS decided_logs,
+          {select_expr}
+        FROM logs l
+        INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
+        WHERE 1=1
+          {scope_sql}
+        GROUP BY lp.steamid64
+        HAVING COUNT(*) >= ?
+        ORDER BY {order_expr} NULLS LAST
+        LIMIT ?
+    """
+
+    count_fast_sql = f"""
+        SELECT COUNT(*)
+        FROM logs l
+        WHERE 1=1
+          {profile_sql}
+    """
+
+    conn = _sqlite_connect_ro(path)
+    _configure_sqlite_leaderboard_read(conn)
+    conn.row_factory = sqlite3.Row
+    try:
+        total_logs = int(
+            conn.execute(count_fast_sql, tuple(profile_params)).fetchone()[0] or 0
+        )
+        cur = conn.execute(
+            main_sql,
+            tuple(scope_params) + (ml, LEADERBOARD_MAX_ROWS),
+        )
+        raw_rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    fmt = spec["format"]
+    out: list[dict[str, Any]] = []
+    steam_ids: list[str] = []
+    for r in raw_rows:
+        sid = str(r["steamid64"] or "").strip()
+        if sid:
+            steam_ids.append(sid)
+        log_count = int(r["log_count"] or 0)
+        wins = int(r["wins"] or 0)
+        decided = int(r["decided_logs"] or 0)
+        win_rate = round(wins / decided, 6) if decided > 0 else None
+        pv_raw = r["primary_value"]
+        primary_value: float | int | None
+        if pv_raw is None:
+            primary_value = None
+        elif fmt == "int":
+            primary_value = int(round(float(pv_raw)))
+        elif fmt == "percent":
+            primary_value = float(pv_raw)
+        else:
+            primary_value = _round2(pv_raw)
+
+        out.append(
+            {
+                "steamid64": sid,
+                "name": "",
+                "log_count": log_count,
+                "avg_dpm": _round2(r["avg_dpm"]),
+                "avg_kdr": _round2(r["avg_kdr"]),
+                "avg_kadr": _round2(r["avg_kadr"]),
+                "win_rate": win_rate,
+                "wins": wins,
+                "decided_logs": decided,
+                "primary_value": primary_value,
+            }
+        )
+
+    alias_map = _lookup_aliases_from_chat_db(steam_ids)
+    for row in out:
+        sid = row["steamid64"]
+        row["name"] = (alias_map.get(sid) or "").strip()
+
+    return out, total_logs
 
 
 # logs.tf ``class_stats[].type`` values for playable classes (icons in UI).

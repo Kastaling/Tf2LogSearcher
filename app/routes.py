@@ -19,6 +19,7 @@ from app.config import (
     DOWNLOADER_STATE_DIR,
     LOGS_DIR,
     REQUEST_LOG_PATH,
+    STATS_DB_PATH,
     STEAM_WEB_API_KEY,
 )
 from app.avatar_db import (
@@ -29,9 +30,14 @@ from app.avatar_db import (
     set_cached_avatars_bulk,
 )
 from app.chat_db import chat_log_fingerprint, count_chat_messages
+from app.stats_db import stats_db_fingerprint
 from app.request_log import append_request_log
 from app.search.search import (
+    LEADERBOARD_MIN_LOGS_DEFAULT,
+    LEADERBOARD_MIN_LOGS_MAX,
+    LEADERBOARD_TYPE_KEYS,
     PlayerNameIndexNotReadyError,
+    _LOGMATCH_CLASS_TYPES,
     STATS_SEARCH_DEFAULT_CLASSES,
     chat_leaderboard_search_sqlite,
     chat_search,
@@ -40,6 +46,7 @@ from app.search.search import (
     log_match,
     player_name_search_sqlite,
     player_profile,
+    stats_leaderboard,
     stats_search,
 )
 from app.search_cache import get as cache_get, set_ as cache_set
@@ -1084,6 +1091,119 @@ async def api_player_profile_get(
     )
 
 
+def _api_leaderboard_impl(
+    request: Request,
+    lb_type: str,
+    gamemode: str,
+    class_filter: str,
+    date_from_raw: str,
+    date_to_raw: str,
+    map_query_raw: str,
+    min_logs_raw: str,
+) -> JSONResponse:
+    start = time.perf_counter()
+    lt = (lb_type or "").strip().lower()
+    if lt not in LEADERBOARD_TYPE_KEYS:
+        return JSONResponse({"error": "Invalid leaderboard type."}, status_code=400)
+    date_from, err = _parse_iso_date_or_none(date_from_raw)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    date_to, err = _parse_iso_date_or_none(date_to_raw)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    if date_from is not None and date_to is not None and date_from > date_to:
+        return JSONResponse({"error": "date_from must be before or equal to date_to."}, status_code=400)
+    map_query = (map_query_raw or "").strip()
+    if len(map_query) > MAP_QUERY_MAX_LENGTH:
+        return JSONResponse({"error": "Map filter is too long."}, status_code=400)
+    gm = (gamemode or "").strip()
+    if gm not in ("", "hl", "7s", "6s", "ud"):
+        gm = ""
+    cf = (class_filter or "").strip().lower()
+    if cf and cf not in _LOGMATCH_CLASS_TYPES:
+        return JSONResponse({"error": "Invalid class filter."}, status_code=400)
+    try:
+        ml = int((min_logs_raw or "").strip() or str(LEADERBOARD_MIN_LOGS_DEFAULT))
+    except ValueError:
+        ml = LEADERBOARD_MIN_LOGS_DEFAULT
+    ml = max(1, min(ml, LEADERBOARD_MIN_LOGS_MAX))
+    cache_key = (
+        lt,
+        gm,
+        cf,
+        date_from.isoformat() if date_from else "",
+        date_to.isoformat() if date_to else "",
+        map_query.lower(),
+        ml,
+    )
+    cached = cache_get("leaderboard", cache_key)
+    if cached is not None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/leaderboard",
+            200,
+            duration_ms,
+            result_count=len(cached.get("rows") or []),
+            classes=f"lb:{lt}",
+        )
+        return JSONResponse(cached)
+    try:
+        rows, total_logs = stats_leaderboard(
+            lt,
+            gamemode=gm,
+            class_filter=cf,
+            date_from=date_from,
+            date_to=date_to,
+            map_query=map_query,
+            min_logs=ml,
+        )
+        payload = {"rows": rows, "total_logs": total_logs, "lb_type": lt}
+        cache_set("leaderboard", cache_key, payload, stats_db_fingerprint(STATS_DB_PATH))
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/leaderboard",
+            200,
+            duration_ms,
+            result_count=len(rows),
+            classes=f"lb:{lt}",
+        )
+        return JSONResponse(payload)
+    except RuntimeError as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/leaderboard", 503, duration_ms, classes=f"lb:{lt}")
+        return JSONResponse({"error": str(e)}, status_code=503)
+    except Exception as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/leaderboard", 500, duration_ms, classes=f"lb:{lt}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/api/leaderboard")
+async def api_leaderboard_get(
+    request: Request,
+    lb_type: str = Query("dpm"),
+    gamemode: str = Query(""),
+    class_filter: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    map_query: str = Query(""),
+    min_logs: str = Query(""),
+):
+    return await asyncio.to_thread(
+        _api_leaderboard_impl,
+        request,
+        lb_type or "",
+        gamemode or "",
+        class_filter or "",
+        date_from or "",
+        date_to or "",
+        map_query or "",
+        min_logs or "",
+    )
+
+
 @router.get("/")
 async def index(request: Request):
     """Serve the main search page (HTML)."""
@@ -1302,6 +1422,45 @@ def _build_results_embed_meta(request: Request) -> str:
                         extra_bits.append(f"{date_from or '…'} to {date_to or '…'}")
                     if extra_bits:
                         desc = f"{desc} ({', '.join(extra_bits)})."
+        elif mode == "leaderboard":
+            lb_t = (qp.get("lb_type") or "dpm").strip().lower()
+            if lb_t not in LEADERBOARD_TYPE_KEYS:
+                lb_t = "dpm"
+            class_filter_e = (qp.get("class_filter") or "").strip().lower()
+            gamemode_e = (qp.get("gamemode") or "").strip()
+            if gamemode_e not in ("", "hl", "7s", "6s", "ud"):
+                gamemode_e = ""
+            title = f"Stats Leaderboard — {lb_t.upper()}"
+            try:
+                ml_e = int((qp.get("min_logs") or "").strip() or str(LEADERBOARD_MIN_LOGS_DEFAULT))
+            except ValueError:
+                ml_e = LEADERBOARD_MIN_LOGS_DEFAULT
+            ml_e = max(1, min(ml_e, LEADERBOARD_MIN_LOGS_MAX))
+            ck = (
+                lb_t,
+                gamemode_e,
+                class_filter_e,
+                (qp.get("date_from") or "").strip(),
+                (qp.get("date_to") or "").strip(),
+                (qp.get("map_query") or "").strip().lower(),
+                ml_e,
+            )
+            cached = cache_get("leaderboard", ck) or {}
+            n = len(cached.get("rows") or [])
+            total = cached.get("total_logs")
+            desc = f"Top {n} player(s)"
+            if total is not None:
+                try:
+                    desc += f" across {int(total)} log(s)"
+                except (TypeError, ValueError):
+                    pass
+            bits: list[str] = []
+            if gamemode_e:
+                bits.append(f"mode {gamemode_e}")
+            if class_filter_e:
+                bits.append(class_filter_e)
+            if bits:
+                desc += f" ({', '.join(bits)})"
 
         title = _truncate(title, 80)
         desc = _truncate(desc, 220)

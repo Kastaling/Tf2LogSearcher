@@ -17,7 +17,10 @@ _BAD_CLASS_NAMES: frozenset[str] = frozenset({"", "undefined", "none"})
 def connect_stats_db(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    # timeout (seconds) + busy_timeout (ms) must apply before PRAGMA journal_mode, which can contend
+    # with the downloader for the DB file.
+    conn = sqlite3.connect(str(path), timeout=120.0)
+    conn.execute("PRAGMA busy_timeout=120000")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -119,6 +122,7 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_logs_date_ts ON logs(date_ts);
         CREATE INDEX IF NOT EXISTS idx_logs_map ON logs(map);
+        CREATE INDEX IF NOT EXISTS idx_logs_num_players_date_ts ON logs(num_players, date_ts);
 
         CREATE TABLE IF NOT EXISTS log_players (
           id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,6 +159,7 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_log_players_steamid64 ON log_players(steamid64);
         CREATE INDEX IF NOT EXISTS idx_log_players_log_id ON log_players(log_id);
         CREATE INDEX IF NOT EXISTS idx_log_players_steamid64_log_id ON log_players(steamid64, log_id);
+        CREATE INDEX IF NOT EXISTS idx_log_players_log_id_team ON log_players(log_id, team);
 
         CREATE TABLE IF NOT EXISTS log_player_classes (
           id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,6 +176,7 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_lpc_steamid64 ON log_player_classes(steamid64);
         CREATE INDEX IF NOT EXISTS idx_lpc_log_id ON log_player_classes(log_id);
         CREATE INDEX IF NOT EXISTS idx_lpc_steamid64_class ON log_player_classes(steamid64, class);
+        CREATE INDEX IF NOT EXISTS idx_lpc_log_steam_class ON log_player_classes(log_id, steamid64, class);
 
         CREATE TABLE IF NOT EXISTS log_player_weapons (
           id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -748,6 +754,32 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
         )
 
     return len(pr)
+
+
+def stats_db_fingerprint(db_path: str | Path) -> frozenset[int]:
+    """
+    Lightweight fingerprint for stats DB contents.
+
+    Encodes (logs row count, max log_id) as a frozenset for cache invalidation
+    (e.g. global leaderboards that aggregate from ``logs`` / ``log_players``).
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return frozenset()
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(MAX(log_id), 0) FROM logs"
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return frozenset()
+    count = int(row[0] or 0) if row else 0
+    max_id = int(row[1] or 0) if row else 0
+    return frozenset((count, max_id))
 
 
 def stats_log_ids_for_player(db_path: str | Path, steamid64: str) -> frozenset[int]:

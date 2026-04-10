@@ -510,6 +510,12 @@
     [data-theme="dark"] .stats-trend-btn.active {
       color: var(--link);
     }
+    .lb-type-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-bottom: 0.75rem;
+    }
     .playername-results-table td.playername-actions {
       display: flex;
       flex-wrap: wrap;
@@ -854,6 +860,43 @@
   </form>
   <div id="profileResults" class="results"></div>
 
+  <h2>Stats Leaderboards</h2>
+  <p>Global rankings from the indexed stats database. Filters apply to which logs count toward each player&rsquo;s aggregates. Higher minimum log counts reduce noise from low-sample accounts.</p>
+  <form id="frmLeaderboard">
+    <div class="lb-type-strip" role="tablist" aria-label="Leaderboard type">
+      <button type="button" class="stats-trend-btn js-lb-type-btn active" data-lb-type="dpm" role="tab" aria-selected="true">Avg DPM</button>
+      <button type="button" class="stats-trend-btn js-lb-type-btn" data-lb-type="kdr" role="tab" aria-selected="false">Avg KDR</button>
+      <button type="button" class="stats-trend-btn js-lb-type-btn" data-lb-type="winrate" role="tab" aria-selected="false">Win Rate</button>
+      <button type="button" class="stats-trend-btn js-lb-type-btn" data-lb-type="logs" role="tab" aria-selected="false">Most Logs</button>
+    </div>
+    <input type="hidden" name="lb_type" value="dpm">
+    <label>Gamemode: <select name="gamemode">
+      <option value="">All gamemodes</option>
+      <option value="hl">Highlander</option>
+      <option value="7s">Prolander</option>
+      <option value="6s">6s</option>
+      <option value="ud">Ultiduo</option>
+    </select></label>
+    <label>Class (optional): <select name="class_filter">
+      <option value="">All classes</option>
+      <option value="scout">Scout</option>
+      <option value="soldier">Soldier</option>
+      <option value="pyro">Pyro</option>
+      <option value="demoman">Demoman</option>
+      <option value="heavyweapons">Heavy</option>
+      <option value="engineer">Engineer</option>
+      <option value="medic">Medic</option>
+      <option value="sniper">Sniper</option>
+      <option value="spy">Spy</option>
+    </select></label>
+    <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
+    <label>Date from (optional): <input type="date" name="date_from"></label>
+    <label>Date to (optional): <input type="date" name="date_to"></label>
+    <label>Minimum logs: <input type="number" name="min_logs" value="10" min="1" max="500" style="width:5rem"></label>
+    <button type="submit">Load leaderboard</button>
+  </form>
+  <div id="leaderboardResults" class="results"></div>
+
   <h2>Player search by name</h2>
   <p>Find Steam accounts by a substring of the in-game name used in chat we have indexed. Names link to Steam profiles; rows are sorted by how many different logs include that name. Use at least three characters for fast search.</p>
   <form id="frmPlayerName">
@@ -955,9 +998,26 @@
       return s;
     }
 
+    var VALID_LB_TYPES = { dpm: 1, kdr: 1, winrate: 1, logs: 1 };
+    function sanitizeLbTypeInput(v) {
+      var s = (v == null ? '' : String(v)).trim().toLowerCase();
+      return VALID_LB_TYPES[s] ? s : 'dpm';
+    }
+    function sanitizeLeaderboardClassFilter(v) {
+      var s = (v == null ? '' : String(v)).trim().toLowerCase();
+      if (!s) return '';
+      return VALID_STATS_CLASSES[s] ? s : '';
+    }
+    function sanitizeLeaderboardMinLogs(v) {
+      var n = parseInt(String(v == null ? '' : v).trim(), 10);
+      if (!Number.isFinite(n)) return '10';
+      n = Math.max(1, Math.min(500, n));
+      return String(n);
+    }
+
     /**
      * Build a safe state object from URL-style params (no HTML; length-limited).
-     * mode: chat | stats | logmatch | coplayers | profile | playername
+     * mode: chat | stats | logmatch | coplayers | profile | leaderboard | playername
      */
     function buildSanitizedSearchState(mode, params) {
       mode = (mode || '').trim();
@@ -1018,6 +1078,18 @@
           date_from: sanitizeDateInput(params.get('date_from')),
           date_to: sanitizeDateInput(params.get('date_to')),
           map_query: sanitizeMapQueryInput(params.get('map_query')),
+        };
+      }
+      if (mode === 'leaderboard') {
+        return {
+          mode: 'leaderboard',
+          lb_type: sanitizeLbTypeInput(params.get('lb_type')),
+          gamemode: sanitizeCoplayersGamemodeInput(params.get('gamemode')),
+          class_filter: sanitizeLeaderboardClassFilter(params.get('class_filter')),
+          map_query: sanitizeMapQueryInput(params.get('map_query')),
+          date_from: sanitizeDateInput(params.get('date_from')),
+          date_to: sanitizeDateInput(params.get('date_to')),
+          min_logs: sanitizeLeaderboardMinLogs(params.get('min_logs')),
         };
       }
       if (mode === 'playername') {
@@ -1093,6 +1165,24 @@
         if (fp.elements.map_query) fp.elements.map_query.value = state.map_query || '';
         return;
       }
+      if (state.mode === 'leaderboard') {
+        var flb = document.getElementById('frmLeaderboard');
+        if (!flb) return;
+        var lbt = sanitizeLbTypeInput(state.lb_type);
+        if (flb.elements.lb_type) flb.elements.lb_type.value = lbt;
+        flb.querySelectorAll('.js-lb-type-btn').forEach(function(b) {
+          var on = b.getAttribute('data-lb-type') === lbt;
+          b.classList.toggle('active', on);
+          b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        if (flb.gamemode) flb.gamemode.value = sanitizeCoplayersGamemodeInput(state.gamemode);
+        if (flb.elements.class_filter) flb.elements.class_filter.value = sanitizeLeaderboardClassFilter(state.class_filter);
+        if (flb.elements.map_query) flb.elements.map_query.value = state.map_query || '';
+        if (flb.elements.date_from) flb.elements.date_from.value = state.date_from || '';
+        if (flb.elements.date_to) flb.elements.date_to.value = state.date_to || '';
+        if (flb.elements.min_logs) flb.elements.min_logs.value = sanitizeLeaderboardMinLogs(state.min_logs);
+        return;
+      }
       if (state.mode === 'playername') {
         var fpn = document.getElementById('frmPlayerName');
         if (!fpn || !fpn.q) return;
@@ -1114,6 +1204,7 @@
       else if (mode === 'logmatch') id = 'frmLogmatch';
       else if (mode === 'coplayers') id = 'frmCoplayers';
       else if (mode === 'profile') id = 'frmProfile';
+      else if (mode === 'leaderboard') id = 'frmLeaderboard';
       else if (mode === 'playername') id = 'frmPlayerName';
       if (!id) return;
       var el = document.getElementById(id);
@@ -1178,6 +1269,14 @@
         p2.set('date_from', parsed.date_from != null ? String(parsed.date_from) : '');
         p2.set('date_to', parsed.date_to != null ? String(parsed.date_to) : '');
         p2.set('map_query', parsed.map_query != null ? String(parsed.map_query) : '');
+      } else if (parsed.mode === 'leaderboard') {
+        p2.set('lb_type', parsed.lb_type != null ? String(parsed.lb_type) : '');
+        p2.set('gamemode', parsed.gamemode != null ? String(parsed.gamemode) : '');
+        p2.set('class_filter', parsed.class_filter != null ? String(parsed.class_filter) : '');
+        p2.set('map_query', parsed.map_query != null ? String(parsed.map_query) : '');
+        p2.set('date_from', parsed.date_from != null ? String(parsed.date_from) : '');
+        p2.set('date_to', parsed.date_to != null ? String(parsed.date_to) : '');
+        p2.set('min_logs', parsed.min_logs != null ? String(parsed.min_logs) : '');
       } else if (parsed.mode === 'playername') {
         p2.set('q', parsed.q != null ? String(parsed.q) : '');
       } else {
@@ -2066,6 +2165,61 @@
       window.location.href = '/results?' + params.toString();
     });
 
+    (function initLeaderboardTypeStrip() {
+      var form = document.getElementById('frmLeaderboard');
+      if (!form) return;
+      form.querySelectorAll('.js-lb-type-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var t = btn.getAttribute('data-lb-type');
+          if (!t) return;
+          t = sanitizeLbTypeInput(t);
+          if (form.elements.lb_type) form.elements.lb_type.value = t;
+          form.querySelectorAll('.js-lb-type-btn').forEach(function(b) {
+            var on = b.getAttribute('data-lb-type') === t;
+            b.classList.toggle('active', on);
+            b.setAttribute('aria-selected', on ? 'true' : 'false');
+          });
+        });
+      });
+    })();
+
+    var frmLb = document.getElementById('frmLeaderboard');
+    if (frmLb) {
+      frmLb.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var mapQuery = sanitizeMapQueryInput(frmLb.elements.map_query && frmLb.elements.map_query.value ? frmLb.elements.map_query.value : '');
+        var gamemode = sanitizeCoplayersGamemodeInput(frmLb.gamemode && frmLb.gamemode.value ? frmLb.gamemode.value : '');
+        var dateFrom = (frmLb.elements.date_from && frmLb.elements.date_from.value) ? String(frmLb.elements.date_from.value).trim() : '';
+        var dateTo = (frmLb.elements.date_to && frmLb.elements.date_to.value) ? String(frmLb.elements.date_to.value).trim() : '';
+        if (dateFrom && dateTo && dateFrom > dateTo) {
+          document.getElementById('leaderboardResults').innerHTML = '<span class="error">Date from must be before or equal to date to.</span>';
+          return;
+        }
+        var lbParams = new URLSearchParams({
+          lb_type: sanitizeLbTypeInput(frmLb.elements.lb_type && frmLb.elements.lb_type.value ? frmLb.elements.lb_type.value : 'dpm'),
+          gamemode: gamemode,
+          class_filter: sanitizeLeaderboardClassFilter(frmLb.elements.class_filter && frmLb.elements.class_filter.value ? frmLb.elements.class_filter.value : ''),
+          map_query: mapQuery,
+          date_from: dateFrom,
+          date_to: dateTo,
+          min_logs: sanitizeLeaderboardMinLogs(frmLb.elements.min_logs && frmLb.elements.min_logs.value ? frmLb.elements.min_logs.value : '10'),
+        });
+        var lbState = buildSanitizedSearchState('leaderboard', lbParams);
+        if (lbState) persistSearchState(lbState);
+        var params = new URLSearchParams({
+          mode: 'leaderboard',
+          lb_type: sanitizeLbTypeInput(frmLb.elements.lb_type && frmLb.elements.lb_type.value ? frmLb.elements.lb_type.value : 'dpm'),
+          gamemode: gamemode,
+          class_filter: sanitizeLeaderboardClassFilter(frmLb.elements.class_filter && frmLb.elements.class_filter.value ? frmLb.elements.class_filter.value : ''),
+          map_query: mapQuery,
+          date_from: dateFrom,
+          date_to: dateTo,
+          min_logs: sanitizeLeaderboardMinLogs(frmLb.elements.min_logs && frmLb.elements.min_logs.value ? frmLb.elements.min_logs.value : '10'),
+        });
+        window.location.href = '/results?' + params.toString();
+      });
+    }
+
     function escapeHtml(str) {
       if (str == null) return '';
       const s = String(str);
@@ -2338,6 +2492,8 @@
     var statsSortDir = 1;
     var coplayersSortCol = 'total_games';
     var coplayersSortDir = -1;
+    var leaderboardSortCol = null;
+    var leaderboardSortDir = -1;
     var statsTrendState = { chart: null };
     var profileTrendState = { chart: null };
     var statsTrendHost = null;
@@ -2616,6 +2772,198 @@
         var d = new Date();
         var fn = 'tf2-coplayers-' + d.getFullYear() + '-' + (d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate() + '.csv';
         triggerCsvDownload(fn, csv);
+      });
+    }
+
+    function leaderboardDefaultSortKey(lbType) {
+      var t = sanitizeLbTypeInput(lbType);
+      if (t === 'kdr') return 'avg_kdr';
+      if (t === 'winrate') return 'win_rate';
+      if (t === 'logs') return 'log_count';
+      return 'avg_dpm';
+    }
+
+    var LEADERBOARD_COLUMNS = [
+      { key: 'rank', label: 'Rank', type: 'rank' },
+      { key: 'name', label: 'Name', type: 'text' },
+      { key: 'log_count', label: 'Logs', type: 'number' },
+      { key: 'avg_dpm', label: 'Avg DPM', type: 'number' },
+      { key: 'avg_kdr', label: 'Avg KDR', type: 'number' },
+      { key: 'avg_kadr', label: 'Avg KADR', type: 'number' },
+      { key: 'win_rate', label: 'Win Rate', type: 'number' },
+    ];
+
+    var LEADERBOARD_CSV_COLUMNS = [
+      { key: 'rank', label: 'Rank' },
+      { key: 'name', label: 'Name' },
+      { key: 'steamid64', label: 'SteamID64' },
+      { key: 'log_count', label: 'Logs' },
+      { key: 'avg_dpm', label: 'Avg DPM' },
+      { key: 'avg_kdr', label: 'Avg KDR' },
+      { key: 'avg_kadr', label: 'Avg KADR' },
+      { key: 'win_rate_csv', label: 'Win Rate' },
+    ];
+
+    function leaderboardWinRateCell(row) {
+      var w = row.win_rate;
+      if (w == null || !Number.isFinite(Number(w))) return '\u2014';
+      return (Math.round(Number(w) * 10000) / 100) + '%';
+    }
+
+    function getLeaderboardSortValue(row, key, type) {
+      if (type === 'rank') return 0;
+      if (key === 'win_rate') {
+        var wr = Number(row.win_rate);
+        return Number.isFinite(wr) ? wr : -Infinity;
+      }
+      return getSortValue(row, key, type);
+    }
+
+    function getSortedLeaderboardRows(originalRows) {
+      var sortedRows = originalRows.slice();
+      var sortCol = leaderboardSortCol;
+      var sortDir = leaderboardSortDir;
+      var colDef = LEADERBOARD_COLUMNS.find(function(c) { return c.key === sortCol; });
+      if (colDef && colDef.type !== 'rank') {
+        sortedRows.sort(function(a, b) {
+          var va = getLeaderboardSortValue(a, sortCol, colDef.type);
+          var vb = getLeaderboardSortValue(b, sortCol, colDef.type);
+          if (colDef.type === 'text') {
+            if (va < vb) return -sortDir;
+            if (va > vb) return sortDir;
+            return 0;
+          }
+          if (va < vb) return -sortDir;
+          if (va > vb) return sortDir;
+          return 0;
+        });
+      }
+      return sortedRows;
+    }
+
+    function buildLeaderboardCsvContent(sortedRows) {
+      var header = LEADERBOARD_CSV_COLUMNS.map(function(c) {
+        return escapeCsvField(c.label);
+      }).join(',');
+      var lines = [header];
+      for (var i = 0; i < sortedRows.length; i++) {
+        var row = sortedRows[i];
+        var rank = i + 1;
+        var parts = [];
+        for (var j = 0; j < LEADERBOARD_CSV_COLUMNS.length; j++) {
+          var ck = LEADERBOARD_CSV_COLUMNS[j].key;
+          var raw;
+          if (ck === 'rank') raw = rank;
+          else if (ck === 'win_rate_csv') {
+            var w = row.win_rate;
+            raw = (w != null && Number.isFinite(Number(w))) ? Number(w) : '';
+          } else raw = row[ck];
+          parts.push(statsValueForCsvCell(raw));
+        }
+        lines.push(parts.join(','));
+      }
+      return '\uFEFF' + lines.join('\r\n');
+    }
+
+    function bindLeaderboardCsvDownload(container) {
+      var btn = container.querySelector('.js-leaderboard-csv-download');
+      if (!btn || btn.getAttribute('data-csv-bound')) return;
+      btn.setAttribute('data-csv-bound', '1');
+      btn.addEventListener('click', function() {
+        var rows = container._leaderboardRows;
+        if (!rows || !rows.length) return;
+        var sorted = getSortedLeaderboardRows(rows);
+        var csv = buildLeaderboardCsvContent(sorted);
+        var d = new Date();
+        var lb = container._leaderboardLbType || 'dpm';
+        var fn = 'tf2-stats-leaderboard-' + lb + '-' + d.getFullYear() + '-' + (d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate() + '.csv';
+        triggerCsvDownload(fn, csv);
+      });
+    }
+
+    function renderLeaderboard(container, data, elapsedMs) {
+      var rows = data && data.rows ? data.rows : [];
+      var totalLogs = data && data.total_logs != null ? data.total_logs : null;
+      var lbType = data && data.lb_type ? sanitizeLbTypeInput(data.lb_type) : 'dpm';
+      if (rows !== container._leaderboardRows || lbType !== container._leaderboardLbType) {
+        container._leaderboardRows = rows;
+        container._leaderboardLbType = lbType;
+        leaderboardSortCol = leaderboardDefaultSortKey(lbType);
+        leaderboardSortDir = -1;
+      }
+      if (typeof elapsedMs === 'number' && Number.isFinite(elapsedMs)) {
+        container._leaderboardRequestMs = elapsedMs;
+      }
+      container._leaderboardTotalLogs = totalLogs;
+
+      var originalRows = container._leaderboardRows;
+      if (!originalRows.length) {
+        var emptyMsg = '<p class="stats-summary-meta">No players match these filters.</p>';
+        if (totalLogs != null && Number.isFinite(Number(totalLogs))) {
+          emptyMsg += '<p class="stats-summary-meta">Logs matching filters in database: ' + escapeHtml(String(totalLogs)) + '</p>';
+        }
+        container.innerHTML = emptyMsg + requestTimingFooter(container._leaderboardRequestMs);
+        return;
+      }
+
+      var sortedRows = getSortedLeaderboardRows(originalRows);
+      var sortCol = leaderboardSortCol;
+      var sortDir = leaderboardSortDir;
+
+      var totalLine = '<p class="stats-summary-meta">Top ' + escapeHtml(String(originalRows.length)) + ' players';
+      if (totalLogs != null && Number.isFinite(Number(totalLogs))) {
+        totalLine += ' across ' + escapeHtml(String(totalLogs)) + ' log(s)';
+      }
+      totalLine += '.</p>';
+
+      var thead = '<tr>';
+      LEADERBOARD_COLUMNS.forEach(function(c) {
+        if (c.type === 'rank') {
+          thead += '<th scope="col">' + escapeHtml(c.label) + '</th>';
+          return;
+        }
+        var cls = 'sortable';
+        if (c.key === sortCol) cls += sortDir === 1 ? ' sorted-asc' : ' sorted-desc';
+        thead += '<th class="' + cls + '" data-col="' + escapeHtml(c.key) + '" scope="col">' + escapeHtml(c.label) + '</th>';
+      });
+      thead += '</tr>';
+
+      var tbody = '';
+      sortedRows.forEach(function(x, idx) {
+        var rank = idx + 1;
+        tbody += '<tr>';
+        tbody += '<td>' + escapeHtml(String(rank)) + '</td>';
+        tbody += '<td>' + coplayersNameCellHtml(x) + '</td>';
+        tbody += '<td>' + escapeHtml(x.log_count != null ? String(x.log_count) : '') + '</td>';
+        tbody += '<td>' + escapeHtml(x.avg_dpm != null ? String(x.avg_dpm) : '\u2014') + '</td>';
+        tbody += '<td>' + escapeHtml(x.avg_kdr != null ? String(x.avg_kdr) : '\u2014') + '</td>';
+        tbody += '<td>' + escapeHtml(x.avg_kadr != null ? String(x.avg_kadr) : '\u2014') + '</td>';
+        tbody += '<td>' + escapeHtml(leaderboardWinRateCell(x)) + '</td>';
+        tbody += '</tr>';
+      });
+
+      container.innerHTML =
+        totalLine +
+        '<div class="stats-csv-toolbar"><button type="button" class="js-leaderboard-csv-download" aria-label="Download leaderboard table as a CSV file">Download as CSV</button></div>' +
+        '<div class="stats-table-wrap"><table class="stats-table playername-results-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' +
+        requestTimingFooter(container._leaderboardRequestMs);
+      container._leaderboardRows = originalRows;
+
+      bindLeaderboardCsvDownload(container);
+      loadAvatarsInContainer(container);
+
+      container.querySelectorAll('th.sortable').forEach(function(th) {
+        th.addEventListener('click', function() {
+          var col = th.getAttribute('data-col');
+          if (!col) return;
+          if (leaderboardSortCol === col) {
+            leaderboardSortDir = leaderboardSortDir === 1 ? -1 : 1;
+          } else {
+            leaderboardSortCol = col;
+            leaderboardSortDir = 1;
+          }
+          renderLeaderboard(container, { rows: container._leaderboardRows, total_logs: container._leaderboardTotalLogs, lb_type: container._leaderboardLbType }, container._leaderboardRequestMs);
+        });
       });
     }
 
@@ -3663,6 +4011,16 @@
           date_to: params.get('date_to') || '',
           map_query: sanitizeMapQueryInput(params.get('map_query') || ''),
         }).toString();
+      } else if (mode === 'leaderboard') {
+        apiUrl = '/api/leaderboard?' + new URLSearchParams({
+          lb_type: sanitizeLbTypeInput(params.get('lb_type')),
+          gamemode: sanitizeCoplayersGamemodeInput(params.get('gamemode')),
+          class_filter: sanitizeLeaderboardClassFilter(params.get('class_filter')),
+          map_query: sanitizeMapQueryInput(params.get('map_query') || ''),
+          date_from: params.get('date_from') || '',
+          date_to: params.get('date_to') || '',
+          min_logs: sanitizeLeaderboardMinLogs(params.get('min_logs')),
+        }).toString();
       } else if (mode === 'playername') {
         var pnQ = (params.get('q') || '').trim().replace(/[\u0000-\u001F\u007F]/g, '');
         if (pnQ.length > MAX_PLAYER_NAME_QUERY_LEN) pnQ = pnQ.slice(0, MAX_PLAYER_NAME_QUERY_LEN);
@@ -3756,6 +4114,8 @@
             }
           } else if (mode === 'profile') {
             renderProfileResult(resultsContent, data, ms);
+          } else if (mode === 'leaderboard') {
+            renderLeaderboard(resultsContent, data, ms);
           } else if (mode === 'playername') {
             var qShown = (params.get('q') || '').trim();
             if (qShown.length > MAX_PLAYER_NAME_QUERY_LEN) qShown = qShown.slice(0, MAX_PLAYER_NAME_QUERY_LEN);

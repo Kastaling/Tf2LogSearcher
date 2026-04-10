@@ -7,7 +7,7 @@ from typing import Any, Callable, TypeVar
 from app.chat_db import chat_log_fingerprint, local_chat_log_ids_for_player
 from app.config import CHAT_DB_PATH, LOGS_DIR, STATS_DB_PATH
 from app.search.search import local_log_ids_for_player, log_match_matching_log_ids
-from app.stats_db import stats_log_ids_for_player
+from app.stats_db import stats_db_fingerprint, stats_log_ids_for_player
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,10 @@ def _is_valid(entry: dict[str, Any], mode: str, key_tuple: tuple[Any, ...]) -> b
                 return False
         elif mode == "chatlb" or mode == "playername":
             current = chat_log_fingerprint(CHAT_DB_PATH)
+            if current != cached_ids:
+                return False
+        elif mode == "leaderboard":
+            current = stats_db_fingerprint(STATS_DB_PATH)
             if current != cached_ids:
                 return False
         elif mode == "stats" or mode == "coplayers":
