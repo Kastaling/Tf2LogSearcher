@@ -162,6 +162,7 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
           kdr            REAL,
           kadr           REAL,
           primary_class  TEXT,
+          imported_at    INTEGER NOT NULL,
           UNIQUE(log_id, steamid64)
         );
         CREATE INDEX IF NOT EXISTS idx_log_players_steamid64 ON log_players(steamid64);
@@ -272,6 +273,52 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
+    _migrate_log_players_imported_at(conn)
+
+
+def _migrate_log_players_imported_at(conn: sqlite3.Connection) -> None:
+    """
+    Add ``imported_at`` to ``log_players`` if missing, and keep it aligned with ``logs.imported_at``.
+
+    Runs ``ALTER`` (when needed) and the backfill ``UPDATE`` in one explicit transaction so a
+    failed ``UPDATE`` rolls back together with the ``ADD COLUMN`` on SQLite builds where DDL
+    participates in the transaction. If a partial state still exists (e.g. older SQLite or an
+    interrupted commit), a cheap drift probe on the next run triggers a repair ``UPDATE``.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(log_players)").fetchall()}
+    need_column = "imported_at" not in cols
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if need_column:
+            conn.execute(
+                "ALTER TABLE log_players ADD COLUMN imported_at INTEGER NOT NULL DEFAULT 0"
+            )
+
+        drift = conn.execute(
+            """
+            SELECT 1
+            FROM log_players lp
+            INNER JOIN logs l ON l.log_id = lp.log_id
+            WHERE lp.imported_at != l.imported_at
+            LIMIT 1
+            """
+        ).fetchone()
+
+        if drift is not None:
+            conn.execute(
+                """
+                UPDATE log_players
+                SET imported_at = COALESCE(
+                  (SELECT l.imported_at FROM logs AS l WHERE l.log_id = log_players.log_id),
+                  imported_at
+                )
+                """
+            )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _ubertype_breakdown(stats: dict[str, Any]) -> tuple[int, int, int, int]:
@@ -394,8 +441,12 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
         deaths = _int_safe(stats.get("deaths"), 0)
         dmg = _int_safe(stats.get("dmg"), 0)
         dmg_taken = _int_safe(stats.get("damage_taken") or stats.get("dmg_taken"), 0)
-        # "healing" in logs.tf is heals output (e.g. medic); do not use it for healing received.
-        healing_taken = _int_safe(stats.get("healing_taken"), 0)
+        # Healing received: long name ``healing_taken`` (some exports) or compact ``hr`` (logs.tf /json).
+        # ``heal`` / ``healing`` is healing output (e.g. medic) — do not use for received.
+        if "healing_taken" in stats:
+            healing_taken = _int_safe(stats.get("healing_taken"), 0)
+        else:
+            healing_taken = _int_safe(stats.get("hr"), 0)
 
         u_total, med_u, kritz_u, other_u = _ubertype_breakdown(stats)
         drops = _int_safe(stats.get("drops"), 0)
@@ -405,12 +456,20 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
         hhit_raw = stats.get("headshots_hit")
         hhit = _int_safe(hhit_raw, 0) if hhit_raw is not None else hs
         bs = _int_safe(stats.get("backstabs"), 0)
-        cap = _int_safe(stats.get("captures"), 0)
+        # Captures: ``captures`` or compact ``cpc`` (control points) on logs.tf /json.
+        if "captures" in stats:
+            cap = _int_safe(stats.get("captures"), 0)
+        else:
+            cap = _int_safe(stats.get("cpc"), 0)
         cap_blk = _int_safe(stats.get("captures_blocked"), 0)
         dom = _int_safe(stats.get("dominated"), 0)
         rev = _int_safe(stats.get("revenges"), 0)
         sui = _int_safe(stats.get("suicides"), 0)
-        lstreak = _int_safe(stats.get("longest_killstreak"), 0)
+        # Longest killstreak: long name or compact ``lks`` on logs.tf /json.
+        if "longest_killstreak" in stats:
+            lstreak = _int_safe(stats.get("longest_killstreak"), 0)
+        else:
+            lstreak = _int_safe(stats.get("lks"), 0)
 
         raw_dapm = _float_safe(stats.get("dapm"))
         if raw_dapm is not None:
@@ -483,6 +542,7 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
                 "kdr": kdr_v,
                 "kadr": kadr_v,
                 "primary_class": primary_class,
+                "imported_at": imported_at,
             }
         )
 
@@ -649,8 +709,8 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
               ubers, drops, medigun_ubers, kritz_ubers, other_ubers,
               headshots, headshots_hit, backstabs, captures, captures_blocked,
               dominated, revenges, suicides, longest_killstreak,
-              dapm, kdr, kadr, primary_class
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              dapm, kdr, kadr, primary_class, imported_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -682,6 +742,7 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
                     r["kdr"],
                     r["kadr"],
                     r["primary_class"],
+                    r["imported_at"],
                 )
                 for r in pr
             ],
@@ -988,6 +1049,9 @@ def stats_player_stats_cache_token(db_path: str | Path, steamid64: str) -> froze
     """
     Small fingerprint for per-player stats/coplayers/profile cache validation.
     Avoids loading every ``log_id`` for the player on each cache hit.
+
+    Uses ``log_players.imported_at`` (denormalized from ``logs`` at insert) so validation is a
+    single index lookup on ``steamid64`` with no join.
     """
     path = Path(db_path)
     sid = (steamid64 or "").strip()
@@ -997,15 +1061,26 @@ def stats_player_stats_cache_token(db_path: str | Path, steamid64: str) -> froze
         conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
         try:
             conn.execute("PRAGMA busy_timeout=10000")
-            row = conn.execute(
-                """
-                SELECT COUNT(lp.log_id), COALESCE(MAX(lp.log_id), 0), COALESCE(SUM(l.imported_at), 0)
-                FROM log_players lp
-                INNER JOIN logs l ON l.log_id = lp.log_id
-                WHERE lp.steamid64 = ?
-                """,
-                (sid,),
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*), COALESCE(MAX(log_id), 0), COALESCE(SUM(imported_at), 0)
+                    FROM log_players
+                    WHERE steamid64 = ?
+                    """,
+                    (sid,),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                # Pre-migration DB (column not added yet) or very old file — join ``logs``.
+                row = conn.execute(
+                    """
+                    SELECT COUNT(lp.log_id), COALESCE(MAX(lp.log_id), 0), COALESCE(SUM(l.imported_at), 0)
+                    FROM log_players lp
+                    INNER JOIN logs l ON l.log_id = lp.log_id
+                    WHERE lp.steamid64 = ?
+                    """,
+                    (sid,),
+                ).fetchone()
         finally:
             conn.close()
     except Exception:

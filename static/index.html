@@ -843,7 +843,7 @@
   <div id="coplayers-results" class="results"></div>
 
   <h2>Player profile</h2>
-  <p>Aggregated stats from the indexed stats database for one player. Filters apply across all sections. If no stats are stored yet, run the stats backfill.</p>
+  <p>Aggregated stats from the indexed stats database for one player. Filters apply across all sections. Top logs lists best single-game lines (DPM, kills, damage, etc.) from indexed games. If no stats are stored yet, run the stats backfill.</p>
   <form id="frmProfile">
     <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label>
     <label>Gamemode: <select name="gamemode">
@@ -3794,6 +3794,16 @@
       }
     }
 
+    function formatTopLogPrimaryValue(r) {
+      var m = r.metric != null ? String(r.metric) : '';
+      var v = r.value;
+      if (v == null || (typeof v === 'number' && !Number.isFinite(v))) return '\u2014';
+      if (m === 'dpm' || m === 'kdr' || m === 'kadr') {
+        return (Math.round(Number(v) * 100) / 100).toString();
+      }
+      return String(Math.round(Number(v)));
+    }
+
     function renderProfileResult(el, data, elapsedMs) {
       destroyStatsTrendChart();
       destroyProfileTrendChart();
@@ -3860,6 +3870,36 @@
               '<p class="stats-trend-note">20-game rolling average with per-game points.</p>' +
             '</div>' +
           '</div>';
+      }
+
+      var topLogs = Array.isArray(data.top_logs) ? data.top_logs : [];
+      var topLogsBlock = '';
+      if (data.logs_count > 0) {
+        if (topLogs.length) {
+          var tlHead = '<tr><th>Record</th><th>Best</th><th>Map</th><th>Date</th><th></th></tr>';
+          var tlBody = topLogs.map(function(r) {
+            var best = formatTopLogPrimaryValue(r);
+            var mapStr = r.map != null ? String(r.map) : '';
+            var logId = r.log_id != null ? String(r.log_id) : '';
+            var logUrl = logId ? ('https://logs.tf/' + encodeURIComponent(logId)) : '';
+            var k = r.kills != null ? String(r.kills) : '';
+            var d = r.deaths != null ? String(r.deaths) : '';
+            var a = r.assists != null ? String(r.assists) : '';
+            var dmg = r.damage != null ? String(r.damage) : '';
+            var metaLine = escapeHtml(k + '/' + d + '/' + a + ' K/D/A')
+              + (dmg ? escapeHtml(' · ' + dmg + ' dmg') : '')
+              + (r.dapm != null ? escapeHtml(' · ' + String(r.dapm) + ' DPM') : '');
+            var rowTitle = (r.title != null && String(r.title).trim()) ? ('<br><span class="stats-summary-meta">' + escapeHtml(String(r.title)) + '</span>') : '';
+            var teamStr = r.team != null && String(r.team).trim() ? (' <span class="stats-summary-meta">(' + escapeHtml(String(r.team)) + ')</span>') : '';
+            var linkCell = logUrl
+              ? ('<a href="' + escapeAttr(logUrl) + '" target="_blank" rel="noopener noreferrer">View log</a>')
+              : '\u2014';
+            return '<tr><td>' + escapeHtml(String(r.label || '')) + '</td><td><strong>' + escapeHtml(best) + '</strong>' + teamStr + '<br><span class="stats-summary-meta">' + metaLine + '</span>' + rowTitle + '</td><td>' + escapeHtml(mapStr) + '</td><td>' + profileFormatUnixDate(r.date_ts) + '</td><td>' + linkCell + '</td></tr>';
+          }).join('');
+          topLogsBlock = '<div class="stats-summary profile-top-logs"><p class="stats-summary-title">Top logs</p><p class="stats-summary-meta">Best single-game lines on Red or Blue in this filter (indexed per-game stats).</p><div class="stats-table-wrap"><table class="stats-table"><thead>' + tlHead + '</thead><tbody>' + tlBody + '</tbody></table></div></div>';
+        } else {
+          topLogsBlock = '<div class="stats-summary profile-top-logs"><p class="stats-summary-title">Top logs</p><p class="stats-summary-meta">No Red or Blue team rows in this filter; widen filters or backfill stats to see bests.</p></div>';
+        }
       }
 
       var classes = data.classes || [];
@@ -3942,7 +3982,7 @@
           healList('Healed to', ht) + healList('Healed by', hb) + '</div></div>';
       }
 
-      el.innerHTML = overviewCard + trendBlock + classesTable + weaponsTable + ckTable + roundsCard + healCard + requestTimingFooter(elapsedMs);
+      el.innerHTML = overviewCard + trendBlock + topLogsBlock + classesTable + weaponsTable + ckTable + roundsCard + healCard + requestTimingFooter(elapsedMs);
 
       profileTrendMetric = 'dpm';
       profileTrendHost = el.querySelector('.js-profile-trend');

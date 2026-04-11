@@ -1444,6 +1444,176 @@ def _profile_filter_sql(
     return "".join(parts), params
 
 
+# Best single-log rows for profile: metric id, label, extra WHERE (AND ...), ORDER BY.
+# Only Red/Blue games count (same scope as leaderboards); parameterized queries only.
+_PROFILE_TOP_LOG_SPECS: tuple[tuple[str, str, str, str], ...] = (
+    ("dpm", "Highest DPM", "", "(lp.dapm IS NULL) ASC, lp.dapm DESC, l.date_ts DESC, l.log_id DESC"),
+    ("kills", "Most kills (one game)", "", "lp.kills DESC, l.date_ts DESC, l.log_id DESC"),
+    ("assists", "Most assists (one game)", "", "lp.assists DESC, l.date_ts DESC, l.log_id DESC"),
+    ("damage", "Most damage (one game)", "", "lp.damage DESC, l.date_ts DESC, l.log_id DESC"),
+    (
+        "kdr",
+        "Best KDR (one game)",
+        " AND lp.deaths > 0 AND lp.kdr IS NOT NULL",
+        "lp.kdr DESC, l.date_ts DESC, l.log_id DESC",
+    ),
+    (
+        "kadr",
+        "Best KADR (one game)",
+        " AND lp.deaths > 0 AND lp.kadr IS NOT NULL",
+        "lp.kadr DESC, l.date_ts DESC, l.log_id DESC",
+    ),
+    ("headshots", "Most headshot hits (one game)", "", "lp.headshots_hit DESC, l.date_ts DESC, l.log_id DESC"),
+    ("backstabs", "Most backstabs (one game)", "", "lp.backstabs DESC, l.date_ts DESC, l.log_id DESC"),
+    ("ubers", "Most ubers (one game)", "", "lp.ubers DESC, l.date_ts DESC, l.log_id DESC"),
+    ("healing_taken", "Most healing received (one game)", "", "lp.healing_taken DESC, l.date_ts DESC, l.log_id DESC"),
+    ("captures", "Most captures (one game)", "", "lp.captures DESC, l.date_ts DESC, l.log_id DESC"),
+    (
+        "killstreak",
+        "Longest killstreak (one game)",
+        "",
+        "lp.longest_killstreak DESC, l.date_ts DESC, l.log_id DESC",
+    ),
+)
+
+# Skip rows where the "best" is still zero — otherwise ORDER BY ties pick an arbitrary recent log.
+_PROFILE_TOP_LOG_POSITIVE_METRICS: frozenset[str] = frozenset({
+    "kills",
+    "assists",
+    "damage",
+    "headshots",
+    "backstabs",
+    "ubers",
+    "healing_taken",
+    "captures",
+    "killstreak",
+})
+
+
+def _profile_fetch_top_logs(
+    conn: sqlite3.Connection,
+    steamid64: str,
+    filter_sql: str,
+    filter_params: list[Any],
+) -> list[dict[str, Any]]:
+    """Best individual log rows per metric from ``log_players`` + ``logs``, Red/Blue only."""
+    sid = (steamid64 or "").strip()
+    if not sid:
+        return []
+
+    base_sql = f"""
+        SELECT
+          l.log_id,
+          l.map,
+          l.title,
+          l.date_ts,
+          lp.team,
+          lp.kills,
+          lp.deaths,
+          lp.assists,
+          lp.damage,
+          lp.dapm,
+          lp.kdr,
+          lp.kadr,
+          lp.headshots_hit,
+          lp.backstabs,
+          lp.ubers,
+          lp.healing_taken,
+          lp.captures,
+          lp.longest_killstreak
+        FROM log_players lp
+        JOIN logs l ON l.log_id = lp.log_id
+        WHERE lp.steamid64 = ?
+          AND lp.team IN ('Red', 'Blue')
+          {filter_sql}
+    """
+
+    out: list[dict[str, Any]] = []
+    for metric, label, extra_where, order_clause in _PROFILE_TOP_LOG_SPECS:
+        sql = base_sql + extra_where + f" ORDER BY {order_clause} LIMIT 1"
+        row = conn.execute(sql, (sid, *filter_params)).fetchone()
+        if not row:
+            continue
+        (
+            log_id,
+            map_name,
+            title,
+            date_ts,
+            team,
+            kills,
+            deaths,
+            assists,
+            damage,
+            dapm,
+            kdr,
+            kadr,
+            headshots_hit,
+            backstabs,
+            ubers,
+            healing_taken,
+            captures,
+            longest_killstreak,
+        ) = row
+
+        val: float | int | None
+        if metric == "dpm":
+            val = _round2(dapm)
+        elif metric == "kills":
+            val = int(kills or 0)
+        elif metric == "assists":
+            val = int(assists or 0)
+        elif metric == "damage":
+            val = int(damage or 0)
+        elif metric == "kdr":
+            val = _round2(kdr)
+        elif metric == "kadr":
+            val = _round2(kadr)
+        elif metric == "headshots":
+            val = int(headshots_hit or 0)
+        elif metric == "backstabs":
+            val = int(backstabs or 0)
+        elif metric == "ubers":
+            val = int(ubers or 0)
+        elif metric == "healing_taken":
+            val = int(healing_taken or 0)
+        elif metric == "captures":
+            val = int(captures or 0)
+        elif metric == "killstreak":
+            val = int(longest_killstreak or 0)
+        else:
+            continue
+
+        if val is None and metric in ("dpm", "kdr", "kadr"):
+            continue
+        if metric == "dpm" and val is not None and val <= 0:
+            continue
+        if metric in _PROFILE_TOP_LOG_POSITIVE_METRICS:
+            if val is None or (isinstance(val, (int, float)) and val <= 0):
+                continue
+
+        out.append(
+            {
+                "metric": metric,
+                "label": label,
+                "value": val,
+                "log_id": int(log_id),
+                "map": str(map_name or ""),
+                "title": str(title or ""),
+                "date_ts": int(date_ts) if date_ts is not None else None,
+                "team": str(team) if team else None,
+                "kills": int(kills or 0),
+                "deaths": int(deaths or 0),
+                "assists": int(assists or 0),
+                "damage": int(damage or 0),
+                "dapm": _round2(dapm),
+                "kdr": _round2(kdr),
+                "kadr": _round2(kadr),
+            }
+        )
+
+    return out
+
+
 def _leaderboard_scope_sql(
     gamemode: str,
     date_from: date | None,
@@ -1787,6 +1957,7 @@ def player_profile(
     healed_to_raw: list[tuple[str, int, int]] = []
     healed_by_raw: list[tuple[str, int, int]] = []
     trend_rows: list[dict[str, Any]] = []
+    top_logs: list[dict[str, Any]] = []
     try:
         # --- Overview ---
         overview_sql = f"""
@@ -2092,6 +2263,9 @@ def player_profile(
                 "kdr": _sql_float(kdr_v),
                 "kadr": _sql_float(kadr_v),
             })
+
+        if logs_count > 0:
+            top_logs = _profile_fetch_top_logs(conn, sid, filter_sql, filter_params)
     finally:
         conn.close()
 
@@ -2141,6 +2315,7 @@ def player_profile(
         "rounds": rounds_out,
         "healspread": {"healed_to": healed_to, "healed_by": healed_by},
         "trend_rows": trend_rows,
+        "top_logs": top_logs,
     }
     return profile, log_ids
 

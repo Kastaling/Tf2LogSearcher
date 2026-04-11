@@ -20,3 +20,4 @@ __pycache__/
 *.pyc
 static/favicon.ico
 examples/
+.cursorrules
