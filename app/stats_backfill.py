@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from app.config import LOGS_DIR, STATS_DB_PATH
-from app.stats_db import connect_stats_db, init_stats_db, replace_stats_for_log
+from app.stats_db import connect_stats_db, init_stats_db, rebuild_player_stats_agg, replace_stats_for_log
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -75,6 +75,11 @@ def run_backfill(logs_dir: Path, db_path: Path, batch_size: int) -> None:
         conn.rollback()
         conn.close()
         raise
+    try:
+        n_agg = rebuild_player_stats_agg(conn)
+        logger.info("player_stats_agg rebuilt: %s row(s)", n_agg)
+    except Exception:
+        logger.exception("player_stats_agg rebuild failed after backfill (run python -m app.rebuild_agg)")
     conn.close()
 
     elapsed = max(0.001, time.time() - start)

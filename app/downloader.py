@@ -6,6 +6,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from app.config import (
     LOGS_DIR,
@@ -28,15 +29,110 @@ from app.chat_db import (
     replace_chat_for_log,
     run_alias_fts_rebuild_if_needed,
 )
-from app.stats_db import connect_stats_db, init_stats_db, replace_stats_for_log
-from app.logs_tf import fetch_log_list, fetch_log_json
+from app.stats_db import (
+    connect_stats_db,
+    flush_player_stats_agg,
+    init_stats_db,
+    replace_stats_for_log,
+)
+from app.logs_tf import fetch_log_list, fetch_log_json, steamid3_to_steamid64
 from app.subscriptions import check_log_for_subscriptions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
+
+def _pending_agg_checkpoint_path(state_dir: Path) -> Path:
+    return state_dir / PLAYER_AGG_PENDING_FILE
+
+
+def _load_pending_agg_steamids(state_dir: Path) -> set[str]:
+    """Restore pending SteamIDs from disk after an unclean shutdown (before next flush)."""
+    p = _pending_agg_checkpoint_path(state_dir)
+    if not p.is_file():
+        return set()
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            return set()
+        out = {str(x).strip() for x in raw if x is not None and str(x).strip()}
+        if out:
+            logger.info(
+                "Restored %s pending SteamID(s) for player_stats_agg from %s",
+                len(out),
+                PLAYER_AGG_PENDING_FILE,
+            )
+        return out
+    except Exception as e:
+        logger.warning("Could not load %s: %s (starting with empty pending set)", p, e)
+        return set()
+
+
+def _save_pending_agg_steamids(state_dir: Path, steamids: set[str]) -> None:
+    """Atomic write so a crash mid-write does not leave a half-written checkpoint."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    p = _pending_agg_checkpoint_path(state_dir)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(sorted(steamids), ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    tmp.replace(p)
+
+
+def _clear_pending_agg_checkpoint(state_dir: Path) -> None:
+    p = _pending_agg_checkpoint_path(state_dir)
+    try:
+        p.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning("Could not remove %s: %s", p, e)
+
+
+def _collect_pending_agg_steamids_from_log(
+    data: dict[str, Any],
+    pending_agg_steamids: set[str] | None,
+    log_id: int,
+    state_dir: Path | None = None,
+) -> None:
+    """
+    After stats rows are committed, queue SteamID64s for the next ``player_stats_agg`` flush.
+    Only Red/Blue team players are queued — same as ``log_players`` rows that participate in
+    aggregates (spectators and other teams are excluded; refreshing them would miss in the
+    aggregate query and spuriously delete existing ``player_stats_agg`` rows).
+    Isolated from the stats DB try/except so queue failures cannot be mistaken for insert failures.
+    When ``state_dir`` is set, the pending set is persisted so a crash before flush does not lose work.
+    """
+    if pending_agg_steamids is None:
+        return
+    try:
+        n_before = len(pending_agg_steamids)
+        players_block = data.get("players") if isinstance(data, dict) else None
+        if isinstance(players_block, dict):
+            for sid3, stats in players_block.items():
+                if not isinstance(stats, dict):
+                    continue
+                team_raw = stats.get("team")
+                if team_raw != "Red" and team_raw != "Blue":
+                    continue
+                sid64 = steamid3_to_steamid64(str(sid3).strip())
+                if sid64:
+                    pending_agg_steamids.add(sid64)
+        if state_dir is not None and len(pending_agg_steamids) != n_before:
+            _save_pending_agg_steamids(state_dir, pending_agg_steamids)
+    except Exception as e:
+        logger.warning(
+            "Failed to queue SteamIDs for player_stats_agg refresh (log %s): %s",
+            log_id,
+            e,
+        )
+
+
 STATE_FILE = "downloader_state.json"
 SKIP_FILE = "skipped_log_ids.json"
+# Crash recovery: pending SteamIDs for player_stats_agg flush (survives process restart).
+PLAYER_AGG_PENDING_FILE = "player_stats_agg_pending.json"
 LIMIT = 1000
 # Number of recent writes to use for download rate (ETA fallback)
 RECENT_WRITES_SIZE = 100
@@ -369,6 +465,7 @@ def run_catch_up_newest(
     session_downloads_ref: list[int],
     chat_db_conn: sqlite3.Connection | None = None,
     stats_db_conn: sqlite3.Connection | None = None,
+    pending_agg_steamids: set[str] | None = None,
 ) -> int:
     """Phase 1: Fetch offset=0 (newest logs). Download any we don't have. Does not change next_offset."""
     logger.info("Phase 1: Checking offset=0 for NEW logs (catch up newest first)")
@@ -408,9 +505,11 @@ def run_catch_up_newest(
                 try:
                     with stats_db_conn:
                         n_stats = replace_stats_for_log(stats_db_conn, log_id, data)
-                    logger.info("Indexed stats for log %s (%s player row(s))", log_id, n_stats)
                 except Exception as e:
                     logger.warning("Stats DB indexing failed for log %s: %s", log_id, e)
+                else:
+                    logger.info("Indexed stats for log %s (%s player row(s))", log_id, n_stats)
+                    _collect_pending_agg_steamids_from_log(data, pending_agg_steamids, log_id, state_dir)
             size_bytes = path.stat().st_size
             recent_writes.append((time.time(), log_id))
             downloads_since_progress_ref[0] += 1
@@ -446,6 +545,7 @@ def run_backfill_from_offset(
     session_downloads_ref: list[int],
     chat_db_conn: sqlite3.Connection | None = None,
     stats_db_conn: sqlite3.Connection | None = None,
+    pending_agg_steamids: set[str] | None = None,
 ) -> int:
     """Phase 2: Continue from next_offset toward older logs (work toward 1st/oldest log). Returns new next_offset."""
     logger.info("Phase 2: Continuing backfill from offset=%s toward oldest logs", next_offset)
@@ -494,9 +594,11 @@ def run_backfill_from_offset(
                     try:
                         with stats_db_conn:
                             n_stats = replace_stats_for_log(stats_db_conn, log_id, data)
-                        logger.info("Indexed stats for log %s (%s player row(s))", log_id, n_stats)
                     except Exception as e:
                         logger.warning("Stats DB indexing failed for log %s: %s", log_id, e)
+                    else:
+                        logger.info("Indexed stats for log %s (%s player row(s))", log_id, n_stats)
+                        _collect_pending_agg_steamids_from_log(data, pending_agg_steamids, log_id, state_dir)
                 size_bytes = path.stat().st_size
                 recent_writes.append((time.time(), log_id))
                 downloads_since_progress_ref[0] += 1
@@ -538,6 +640,7 @@ def run_once(logs_dir: Path, state_dir: Path, skipped: set[int], next_offset: in
         [0],
         [0.0],
         [0],
+        None,
         None,
         None,
     )
@@ -608,6 +711,7 @@ def main() -> None:
         downloads_since_progress_ref: list[int] = [0]  # count of logs written since last progress update
         session_start_time_ref: list[float] = [time.time()]  # process start for aggregated ETA rate
         session_downloads_ref: list[int] = [0]  # total logs written this run for aggregated ETA rate
+        pending_agg_steamids: set[str] = _load_pending_agg_steamids(state_dir)
         while True:
             if chat_db_conn is not None and alias_fts_rebuild_pending(chat_db_conn):
                 logger.info(
@@ -636,7 +740,19 @@ def main() -> None:
                     session_downloads_ref,
                     chat_db_conn,
                     stats_db_conn,
+                    pending_agg_steamids=pending_agg_steamids,
                 )
+                if stats_db_conn is not None and pending_agg_steamids:
+                    n_before = len(pending_agg_steamids)
+                    n_flushed = flush_player_stats_agg(stats_db_conn, pending_agg_steamids)
+                    if n_flushed:
+                        logger.info("player_stats_agg flushed: %d player(s) updated", n_flushed)
+                        _clear_pending_agg_checkpoint(state_dir)
+                    elif n_before:
+                        logger.warning(
+                            "player_stats_agg flush failed; %d id(s) kept for a later cycle",
+                            n_before,
+                        )
                 # Phase 2: continue backfill from saved offset toward oldest log
                 next_offset = run_backfill_from_offset(
                     logs_dir,
@@ -651,7 +767,19 @@ def main() -> None:
                     session_downloads_ref,
                     chat_db_conn,
                     stats_db_conn,
+                    pending_agg_steamids=pending_agg_steamids,
                 )
+                if stats_db_conn is not None and pending_agg_steamids:
+                    n_before = len(pending_agg_steamids)
+                    n_flushed = flush_player_stats_agg(stats_db_conn, pending_agg_steamids)
+                    if n_flushed:
+                        logger.info("player_stats_agg flushed: %d player(s) updated", n_flushed)
+                        _clear_pending_agg_checkpoint(state_dir)
+                    elif n_before:
+                        logger.warning(
+                            "player_stats_agg flush failed; %d id(s) kept for a later cycle",
+                            n_before,
+                        )
             except Exception as e:
                 logger.exception("Run failed: %s", e)
             logger.info("Cycle complete. Sleeping %s s until next run.", DOWNLOAD_INTERVAL_SEC)

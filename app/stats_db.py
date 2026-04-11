@@ -14,6 +14,11 @@ from app.logs_tf import steamid3_to_steamid64
 # Garbage / non-class strings sometimes seen in logs.tf class_stats (skip inserts).
 _BAD_CLASS_NAMES: frozenset[str] = frozenset({"", "undefined", "none"})
 
+# SQLite bind parameter limit (stay under 999).
+_PSA_CHUNK = 900
+# Nested transaction for atomic batch refresh (safe with or without an outer transaction).
+_PSA_SAVEPOINT = "psa_refresh"
+
 logger = logging.getLogger(__name__)
 
 
@@ -608,6 +613,9 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
     """
     Replace all stats rows for one log atomically. Caller controls transaction.
     Returns number of player rows inserted.
+
+    Does not update ``player_stats_agg``; callers that need leaderboard aggregates should
+    collect affected SteamID64s and call ``flush_player_stats_agg`` after a batch of writes.
     """
     conn.execute("DELETE FROM logs WHERE log_id = ?", (log_id,))
     data = extract_log_stats(log_id, logtext)
@@ -777,15 +785,6 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
             [(r["steamid64"], r["alias"], r["log_id"], r["date_ts"]) for r in nr],
         )
 
-    try:
-        steam_rows = conn.execute(
-            "SELECT DISTINCT steamid64 FROM log_players WHERE log_id = ? AND team IN ('Red', 'Blue')",
-            (log_id,),
-        ).fetchall()
-        refresh_player_stats_agg_for_steamids(conn, [str(r[0]) for r in steam_rows if r and r[0]])
-    except Exception:
-        logger.exception("player_stats_agg refresh failed after log %s", log_id)
-
     return len(pr)
 
 
@@ -827,12 +826,33 @@ def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
 
 
 def refresh_player_stats_agg_for_steamids(conn: sqlite3.Connection, steamids: Sequence[str]) -> None:
-    """Recompute aggregate rows for the given SteamID64s (after a log insert/update)."""
+    """
+    Recompute aggregate rows for the given SteamID64s (after a batch of log writes).
+    Uses batched ``WHERE steamid64 IN (...)`` queries (chunked at ``_PSA_CHUNK``) instead of one query per player.
+
+    All chunk updates run inside a single ``SAVEPOINT`` so the batch is atomic: on failure, no partial
+    leaderboard rows remain from this call (SQLite rolls back to the savepoint).
+    """
     uniq = list(dict.fromkeys(s.strip() for s in steamids if s and str(s).strip()))
     if not uniq:
         return
     ts = int(time.time())
-    sel = """
+    conn.execute(f"SAVEPOINT {_PSA_SAVEPOINT}")
+    try:
+        _refresh_player_stats_agg_for_steamids_impl(conn, uniq, ts)
+        conn.execute(f"RELEASE SAVEPOINT {_PSA_SAVEPOINT}")
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {_PSA_SAVEPOINT}")
+        conn.execute(f"RELEASE SAVEPOINT {_PSA_SAVEPOINT}")
+        raise
+
+
+def _refresh_player_stats_agg_for_steamids_impl(
+    conn: sqlite3.Connection,
+    uniq: list[str],
+    ts: int,
+) -> None:
+    sel_prefix = """
         SELECT
           lp.steamid64,
           COUNT(*),
@@ -847,7 +867,10 @@ def refresh_player_stats_agg_for_steamids(conn: sqlite3.Connection, steamids: Se
           SUM(lp.drops)
         FROM logs l
         INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
-        WHERE lp.steamid64 = ?
+        WHERE lp.steamid64 IN (
+    """
+    sel_suffix = """
+        )
         GROUP BY lp.steamid64
     """
     upsert = """
@@ -856,28 +879,65 @@ def refresh_player_stats_agg_for_steamids(conn: sqlite3.Connection, steamids: Se
           total_kills, total_damage, total_ubers, total_drops, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
-    for sid in uniq:
-        row = conn.execute(sel, (sid,)).fetchone()
-        if not row or row[1] == 0:
-            conn.execute("DELETE FROM player_stats_agg WHERE steamid64 = ?", (sid,))
-            continue
-        conn.execute(
-            upsert,
-            (
-                row[0],
-                int(row[1] or 0),
-                int(row[2] or 0),
-                int(row[3] or 0),
-                row[4],
-                row[5],
-                row[6],
-                int(row[7] or 0),
-                int(row[8] or 0),
-                int(row[9] or 0),
-                int(row[10] or 0),
-                ts,
-            ),
-        )
+    for i in range(0, len(uniq), _PSA_CHUNK):
+        chunk = uniq[i : i + _PSA_CHUNK]
+        placeholders = ",".join("?" * len(chunk))
+        sql = sel_prefix + placeholders + sel_suffix
+        rows = conn.execute(sql, chunk).fetchall()
+        seen: set[str] = set()
+        for row in rows:
+            if not row or not row[0]:
+                continue
+            sid = str(row[0]).strip()
+            if not sid:
+                continue
+            seen.add(sid)
+            if int(row[1] or 0) == 0:
+                conn.execute("DELETE FROM player_stats_agg WHERE steamid64 = ?", (sid,))
+                continue
+            conn.execute(
+                upsert,
+                (
+                    sid,
+                    int(row[1] or 0),
+                    int(row[2] or 0),
+                    int(row[3] or 0),
+                    row[4],
+                    row[5],
+                    row[6],
+                    int(row[7] or 0),
+                    int(row[8] or 0),
+                    int(row[9] or 0),
+                    int(row[10] or 0),
+                    ts,
+                ),
+            )
+        for sid in chunk:
+            if sid not in seen:
+                conn.execute("DELETE FROM player_stats_agg WHERE steamid64 = ?", (sid,))
+
+
+def flush_player_stats_agg(
+    conn: sqlite3.Connection,
+    pending_steamids: set[str],
+) -> int:
+    """
+    Refresh ``player_stats_agg`` for all SteamID64s in ``pending_steamids``, then clear the set.
+    Returns the number of SteamID64s processed.
+    Call once after a batch of ``replace_stats_for_log`` calls rather than after each one.
+
+    The underlying refresh is atomic (see ``refresh_player_stats_agg_for_steamids``).
+    """
+    if not pending_steamids:
+        return 0
+    ids = list(pending_steamids)
+    try:
+        refresh_player_stats_agg_for_steamids(conn, ids)
+    except Exception:
+        logger.exception("flush_player_stats_agg failed for %d player(s)", len(ids))
+        return 0
+    pending_steamids.clear()
+    return len(ids)
 
 
 def player_stats_agg_nonempty(db_path: str | Path) -> bool:
