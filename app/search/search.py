@@ -82,7 +82,7 @@ _LEADERBOARD_TYPES: dict[str, dict[str, Any]] = {
 LEADERBOARD_TYPE_KEYS: tuple[str, ...] = tuple(_LEADERBOARD_TYPES.keys())
 LEADERBOARD_MAX_ROWS = 100
 LEADERBOARD_MIN_LOGS_DEFAULT = 10
-LEADERBOARD_MIN_LOGS_MAX = 500
+LEADERBOARD_MIN_LOGS_MAX = 5000
 
 
 def _class_playtime_for_logmatch(stats: dict[str, Any]) -> list[dict[str, Any]]:

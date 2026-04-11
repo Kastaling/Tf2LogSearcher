@@ -1,5 +1,6 @@
 """In-memory search result cache with log-based invalidation and TTL fallback."""
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -13,14 +14,17 @@ logger = logging.getLogger(__name__)
 
 # Cache entry: { "payload": {...}, "log_ids": frozenset[int], "created_at": float }
 CACHE_TTL_SEC = 86400 * 2  # 2 days fallback
-CACHE_MAX_ENTRIES = 500
+CACHE_MAX_ENTRIES = 2000
 
 # (endpoint, key_tuple) -> entry
 _cache: dict[tuple[str, tuple[Any, ...]], dict[str, Any]] = {}
 _cache_order: list[tuple[str, tuple[Any, ...]]] = []  # LRU order
+# HTTP workers and background prefetch threads both touch the cache; guard all mutations.
+_cache_lock = threading.RLock()
 
 
 def _evict_lru() -> None:
+    """Drop oldest entries until under CACHE_MAX_ENTRIES. Caller must hold ``_cache_lock``."""
     while len(_cache) >= CACHE_MAX_ENTRIES and _cache_order:
         k = _cache_order.pop(0)
         _cache.pop(k, None)
@@ -82,29 +86,31 @@ def _is_valid(entry: dict[str, Any], mode: str, key_tuple: tuple[Any, ...]) -> b
 def get(mode: str, key_tuple: tuple[Any, ...]) -> dict[str, Any] | None:
     """Return cached payload if present and still valid; else None."""
     k = _cache_key(mode, *key_tuple)
-    entry = _cache.get(k)
-    if entry is None:
-        return None
-    if not _is_valid(entry, mode, key_tuple):
-        _cache.pop(k, None)
+    with _cache_lock:
+        entry = _cache.get(k)
+        if entry is None:
+            return None
+        if not _is_valid(entry, mode, key_tuple):
+            _cache.pop(k, None)
+            if k in _cache_order:
+                _cache_order[:] = [x for x in _cache_order if x != k]
+            return None
         if k in _cache_order:
             _cache_order[:] = [x for x in _cache_order if x != k]
-        return None
-    if k in _cache_order:
-        _cache_order[:] = [x for x in _cache_order if x != k]
-    _cache_order.append(k)
-    return entry["payload"]
+        _cache_order.append(k)
+        return entry["payload"]
 
 
 def set_(mode: str, key_tuple: tuple[Any, ...], payload: dict[str, Any], log_ids: frozenset[int]) -> None:
     """Store result in cache."""
-    _evict_lru()
-    k = _cache_key(mode, *key_tuple)
-    _cache[k] = {
-        "payload": payload,
-        "log_ids": log_ids,
-        "created_at": time.time(),
-    }
-    if k in _cache_order:
-        _cache_order[:] = [x for x in _cache_order if x != k]
-    _cache_order.append(k)
+    with _cache_lock:
+        _evict_lru()
+        k = _cache_key(mode, *key_tuple)
+        _cache[k] = {
+            "payload": payload,
+            "log_ids": log_ids,
+            "created_at": time.time(),
+        }
+        if k in _cache_order:
+            _cache_order[:] = [x for x in _cache_order if x != k]
+        _cache_order.append(k)

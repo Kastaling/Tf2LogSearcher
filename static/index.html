@@ -728,6 +728,16 @@
       outline: 2px solid var(--accent);
       outline-offset: 2px;
     }
+    .profile-logstf-link {
+      font-size: 1.1em;
+      text-decoration: none;
+      margin-left: 0.3em;
+      vertical-align: middle;
+      opacity: 0.85;
+    }
+    .profile-logstf-link:hover {
+      opacity: 1;
+    }
     .profile-avatar {
       display: block;
       width: 184px;
@@ -892,7 +902,7 @@
     <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
     <label>Date from (optional): <input type="date" name="date_from"></label>
     <label>Date to (optional): <input type="date" name="date_to"></label>
-    <label>Minimum logs: <input type="number" name="min_logs" value="10" min="1" max="500" style="width:5rem"></label>
+    <label>Minimum logs: <input type="number" name="min_logs" value="10" min="1" max="5000" style="width:5.5rem"></label>
     <button type="submit">Load leaderboard</button>
   </form>
   <div id="leaderboardResults" class="results"></div>
@@ -1011,7 +1021,7 @@
     function sanitizeLeaderboardMinLogs(v) {
       var n = parseInt(String(v == null ? '' : v).trim(), 10);
       if (!Number.isFinite(n)) return '10';
-      n = Math.max(1, Math.min(500, n));
+      n = Math.max(1, Math.min(5000, n));
       return String(n);
     }
 
@@ -1892,10 +1902,10 @@
         var sid64 = r.steamid64 != null ? String(r.steamid64).trim() : '';
         var displayName = r.name != null ? String(r.name) : '';
         if (!displayName) displayName = sid64 || 'Unknown';
-        var profile = /^\d{17}$/.test(sid64) ? ('https://logs.tf/profile/' + encodeURIComponent(sid64)) : '';
+        var profile = internalProfileHref(sid64);
         var nameCell = steamAvatarPlaceholder(sid64) + (
           profile
-            ? ('<a href="' + escapeAttr(profile) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(displayName) + '</a>')
+            ? ('<a href="' + escapeAttr(profile) + '">' + escapeHtml(displayName) + '</a>')
             : escapeHtml(displayName));
         var opl = Number(r.word_per_log);
         var oplCell = Number.isFinite(opl) ? opl.toFixed(2) : '0.00';
@@ -1910,13 +1920,16 @@
       var summary = 'Top ' + escapeHtml(String(sorted.length)) + ' player(s) for "' + escapeHtml(word) + '"';
       if (logsSearched != null) summary += ' across ' + escapeHtml(String(logsSearched)) + ' log(s)';
       summary += '.';
+      el._chatLbWord = word;
       el.innerHTML =
         '<p class="chat-summary-line">' + summary + '</p>' +
+        '<div class="stats-csv-toolbar"><button type="button" class="js-chat-leaderboard-csv-download" aria-label="Download chat leaderboard table as a CSV file">Download as CSV</button></div>' +
         '<div class="stats-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' +
         lbSubscribe +
         requestTimingFooter(elapsedMs);
 
       loadAvatarsInContainer(el);
+      bindChatLeaderboardCsvDownload(el);
       bindWebhookSubscribeBox(el.querySelector('.webhook-subscribe'));
 
       el.querySelectorAll('th.sortable').forEach(function(th) {
@@ -1946,7 +1959,8 @@
         html += '</div>';
       }
       var resolved64 = data.resolved_steamid64 && /^\d{17}$/.test(String(data.resolved_steamid64)) ? String(data.resolved_steamid64) : null;
-      var profileUrl = resolved64 ? ('https://steamcommunity.com/profiles/' + resolved64) : ((steamid && /^\d{17}$/.test(steamid)) ? ('https://steamcommunity.com/profiles/' + steamid) : '#');
+      var sidForProfile = resolved64 || ((steamid && /^\d{17}$/.test(String(steamid).trim())) ? String(steamid).trim() : '');
+      var profileUrl = sidForProfile ? internalProfileHref(sidForProfile) : '#';
       var sidForAvatar = resolved64;
       if (!sidForAvatar && steamid && /^\d{17}$/.test(String(steamid).trim())) sidForAvatar = String(steamid).trim();
       var label = data.searched_user_name ? escapeHtml(data.searched_user_name) : (profileUrl !== '#' ? profileUrl : escapeHtml(steamid));
@@ -1964,7 +1978,7 @@
         return;
       }
 
-      html += '<p class="chat-summary-line">Total ' + escapeHtml(String(data.total || 0)) + ' occurrence(s) for ' + steamAvatarPlaceholder(sidForAvatar) + '<a href="' + escapeAttr(profileUrl) + '" target="_blank" rel="noopener noreferrer">' + label + '</a> across ' + escapeHtml(String(logsAcross)) + ' log(s).</p>';
+      html += '<p class="chat-summary-line">Total ' + escapeHtml(String(data.total || 0)) + ' occurrence(s) for ' + steamAvatarPlaceholder(sidForAvatar) + '<a href="' + escapeAttr(profileUrl) + '">' + label + '</a> across ' + escapeHtml(String(logsAcross)) + ' log(s).</p>';
       var firstN = Math.min(CHAT_LAZY_CHUNK_SIZE, results.length);
       var listHtml = '';
       for (var j = 0; j < firstN; j++) {
@@ -2237,6 +2251,12 @@
     function steamAvatarPlaceholder(steamid64) {
       if (!steamid64 || !/^\d{17}$/.test(String(steamid64))) return '';
       return '<span class="steam-avatar-wrap" data-steamid64="' + escapeAttr(steamid64) + '"></span>';
+    }
+
+    /** Same-app profile URL for player name links (replaces external Steam / logs.tf profile links). */
+    function internalProfileHref(steamid64) {
+      var s = String(steamid64 || '').trim();
+      return /^\d{17}$/.test(s) ? ('/?mode=profile&steamid=' + encodeURIComponent(s)) : '';
     }
 
     function loadAvatarsInContainer(container) {
@@ -2653,15 +2673,15 @@
       { key: 'steamid64', label: 'SteamID64' },
     ];
 
-    /** Steam profile link when server sent a valid 17-digit SteamID64. */
+    /** Internal profile link for co-players table and leaderboard. */
     function coplayersNameCellHtml(row) {
       var name = row.name != null ? String(row.name) : '';
       var sid64 = row.steamid64 != null ? String(row.steamid64).trim() : '';
       var display = name.trim() ? name : (sid64 || '\u2014');
       var avatar = steamAvatarPlaceholder(sid64);
       if (/^\d{17}$/.test(sid64)) {
-        var href = 'https://steamcommunity.com/profiles/' + encodeURIComponent(sid64);
-        return avatar + '<a href="' + escapeAttr(href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(display) + '</a>';
+        var href = internalProfileHref(sid64);
+        return avatar + '<a href="' + escapeAttr(href) + '">' + escapeHtml(display) + '</a>';
       }
       return avatar + escapeHtml(display);
     }
@@ -2804,6 +2824,17 @@
       { key: 'win_rate_csv', label: 'Win Rate' },
     ];
 
+    var CHAT_LB_CSV_COLUMNS = [
+      { key: 'rank', label: 'Rank' },
+      { key: 'name', label: 'Name' },
+      { key: 'steamid64', label: 'SteamID64' },
+      { key: 'occurrences', label: 'Occurrences' },
+      { key: 'logs_count', label: 'Logs' },
+      { key: 'word_per_log', label: 'Word / log' },
+      { key: 'top_log_id', label: 'Top log ID' },
+      { key: 'top_log_url', label: 'Top log URL' },
+    ];
+
     function leaderboardWinRateCell(row) {
       var w = row.win_rate;
       if (w == null || !Number.isFinite(Number(w))) return '\u2014';
@@ -2877,6 +2908,57 @@
         var d = new Date();
         var lb = container._leaderboardLbType || 'dpm';
         var fn = 'tf2-stats-leaderboard-' + lb + '-' + d.getFullYear() + '-' + (d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate() + '.csv';
+        triggerCsvDownload(fn, csv);
+      });
+    }
+
+    function sanitizeChatLbWordForFilename(w) {
+      var s = String(w || '').trim().slice(0, 60);
+      if (!s) return 'word';
+      var t = s.replace(/[^a-zA-Z0-9\-_]+/g, '_').replace(/^_+|_+$/g, '');
+      return t || 'word';
+    }
+
+    function buildChatLeaderboardCsvContent(sortedRows) {
+      var header = CHAT_LB_CSV_COLUMNS.map(function(c) {
+        return escapeCsvField(c.label);
+      }).join(',');
+      var lines = [header];
+      for (var i = 0; i < sortedRows.length; i++) {
+        var row = sortedRows[i];
+        var rank = i + 1;
+        var sid64 = row.steamid64 != null ? String(row.steamid64).trim() : '';
+        var displayName = row.name != null ? String(row.name) : '';
+        if (!displayName) displayName = sid64 || 'Unknown';
+        var parts = [];
+        for (var j = 0; j < CHAT_LB_CSV_COLUMNS.length; j++) {
+          var ck = CHAT_LB_CSV_COLUMNS[j].key;
+          var raw;
+          if (ck === 'rank') raw = rank;
+          else if (ck === 'name') raw = displayName;
+          else if (ck === 'word_per_log') {
+            var opl = Number(row.word_per_log);
+            raw = Number.isFinite(opl) ? opl : '';
+          } else raw = row[ck];
+          parts.push(statsValueForCsvCell(raw));
+        }
+        lines.push(parts.join(','));
+      }
+      return '\uFEFF' + lines.join('\r\n');
+    }
+
+    function bindChatLeaderboardCsvDownload(el) {
+      var btn = el.querySelector('.js-chat-leaderboard-csv-download');
+      if (!btn || btn.getAttribute('data-csv-bound')) return;
+      btn.setAttribute('data-csv-bound', '1');
+      btn.addEventListener('click', function() {
+        var rows = el._chatLbRows;
+        if (!rows || !rows.length) return;
+        var sorted = getSortedChatLeaderboardRows(rows);
+        var csv = buildChatLeaderboardCsvContent(sorted);
+        var d = new Date();
+        var wordPart = sanitizeChatLbWordForFilename(el._chatLbWord);
+        var fn = 'tf2-chat-leaderboard-' + wordPart + '-' + d.getFullYear() + '-' + (d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate() + '.csv';
         triggerCsvDownload(fn, csv);
       });
     }
@@ -3692,11 +3774,6 @@
       }
     }
 
-    function playerNameSteamProfileHref(steamid64) {
-      var s = String(steamid64 || '').trim();
-      return /^\d{17}$/.test(s) ? ('https://steamcommunity.com/profiles/' + s) : '';
-    }
-
     function renderPlayerNameResult(el, data, queryLabel, elapsedMs) {
       var rows = data.rows || [];
       var cap = data.limit != null && Number.isFinite(Number(data.limit)) ? Number(data.limit) : 200;
@@ -3717,10 +3794,10 @@
         var x = rows[i];
         var sid = x.steamid64 != null ? String(x.steamid64) : '';
         var name = x.display_name != null ? String(x.display_name) : '';
-        var href = playerNameSteamProfileHref(sid);
+        var href = internalProfileHref(sid);
         var nameCell = steamAvatarPlaceholder(sid) + (
           href
-            ? ('<a href="' + escapeAttr(href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(name) + '</a>')
+            ? ('<a href="' + escapeAttr(href) + '">' + escapeHtml(name) + '</a>')
             : escapeHtml(name || sid));
         var chatHref = base + '?mode=chat&steamid=' + encodeURIComponent(sid);
         var statsHref = base + '?mode=stats&steamid=' + encodeURIComponent(sid);
@@ -3837,19 +3914,25 @@
         return '<div class="stats-summary-item"><span class="stats-summary-key">' + escapeHtml(item.key) + '</span><span class="stats-summary-value">' + escapeHtml(item.value) + '</span></div>';
       }).join('');
       var sid64 = data.steamid64 != null ? String(data.steamid64).trim() : '';
+      var steamCommunityProfile = /^\d{17}$/.test(sid64)
+        ? ('https://steamcommunity.com/profiles/' + encodeURIComponent(sid64))
+        : '';
       var logsTfProfile = /^\d{17}$/.test(sid64) ? ('https://logs.tf/profile/' + encodeURIComponent(sid64)) : '';
       var av = data.avatar_url;
       var avatarHtml = '';
       if (av != null && typeof av === 'string' && /^https:\/\//i.test(av.trim())) {
         var imgTag = '<img class="profile-avatar" src="' + escapeAttr(av.trim()) + '" alt="" width="184" height="184" loading="eager" decoding="async" fetchpriority="high" referrerpolicy="no-referrer" />';
-        avatarHtml = logsTfProfile
-          ? '<div class="profile-avatar-wrap"><a class="profile-avatar-link" href="' + escapeAttr(logsTfProfile) + '" target="_blank" rel="noopener noreferrer" title="Open logs.tf profile">' + imgTag + '</a></div>'
+        avatarHtml = steamCommunityProfile
+          ? '<div class="profile-avatar-wrap"><a class="profile-avatar-link" href="' + escapeAttr(steamCommunityProfile) + '" target="_blank" rel="noopener noreferrer" title="Open Steam profile">' + imgTag + '</a></div>'
           : '<div class="profile-avatar-wrap">' + imgTag + '</div>';
       }
+      var logsTfLinkHtml = logsTfProfile
+        ? (' <a href="' + escapeAttr(logsTfProfile) + '" target="_blank" rel="noopener noreferrer" title="View on logs.tf" class="profile-logstf-link">\ud83c\uddfa\ud83c\udde6</a>')
+        : '';
       var overviewCard =
         '<div class="stats-summary profile-overview">' +
         '<div class="profile-overview-head">' + avatarHtml + '<div class="profile-overview-text">' +
-        '<p class="stats-summary-title">' + name + '</p>' +
+        '<p class="stats-summary-title">' + name + logsTfLinkHtml + '</p>' +
         dateRange + mpcLine +
         '</div></div>' +
         '<div class="stats-summary-grid">' + grid + '</div></div>';

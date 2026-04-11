@@ -176,6 +176,31 @@ def _profile_response_payload(stats_payload: dict[str, Any], steamid64: str) -> 
     return out
 
 
+_PREFETCH_MAX = 20  # cap how many profiles to warm per trigger
+_PREFETCH_GAMEMODE_DEFAULT = ""  # warm unfiltered profiles only
+
+
+def _prefetch_profiles_background(steamid64s: list[str]) -> None:
+    """
+    Warm the in-process profile cache for a list of SteamID64s.
+    Runs in a worker thread; does not block the HTTP response.
+    Silently skips players whose profiles are already cached or whose DB data is absent.
+    Caps at _PREFETCH_MAX players to bound the work per trigger.
+    """
+    candidates = [s for s in steamid64s if s and re.fullmatch(r"\d{17}", s)][: _PREFETCH_MAX]
+    gm = _PREFETCH_GAMEMODE_DEFAULT
+    for sid64 in candidates:
+        ck = (sid64, gm, "", "", "")
+        if cache_get("profile", ck) is not None:
+            continue
+        try:
+            profile, _ = player_profile(sid64, gamemode=gm)
+            token = stats_player_stats_cache_token(STATS_DB_PATH, sid64)
+            cache_set("profile", ck, profile, token)
+        except Exception:
+            pass
+
+
 def _client_ip(request: Request) -> str:
     """Prefer X-Forwarded-For when behind NPM/proxy."""
     xff = request.headers.get("x-forwarded-for")
@@ -510,6 +535,16 @@ def _api_search_coplayers_impl(
         rows, log_ids_used = coplayers_search(steamid64, LOGS_DIR, gamemode=gm, map_query=map_query)
         payload = {"rows": rows, "logs_searched": len(log_ids_used), "resolved_steamid64": steamid64}
         cache_set("coplayers", cache_key, payload, stats_player_stats_cache_token(STATS_DB_PATH, steamid64))
+        _sids_to_warm = [r["steamid64"] for r in rows if r.get("steamid64")]
+        if _sids_to_warm:
+            import threading
+
+            threading.Thread(
+                target=_prefetch_profiles_background,
+                args=(_sids_to_warm,),
+                daemon=True,
+                name="profile-prefetch-coplayers",
+            ).start()
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
             request,
@@ -1025,7 +1060,10 @@ def _api_profile_impl(
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/player/profile", 200, duration_ms, steamid=steamid64, gamemode=gm)
-        return JSONResponse(_profile_response_payload(cached, steamid64))
+        return JSONResponse(
+            _profile_response_payload(cached, steamid64),
+            headers={"Cache-Control": "private, max-age=300"},
+        )
     try:
         profile, log_ids = player_profile(
             steamid64,
@@ -1037,7 +1075,10 @@ def _api_profile_impl(
         cache_set("profile", cache_key, profile, stats_player_stats_cache_token(STATS_DB_PATH, steamid64))
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/player/profile", 200, duration_ms, steamid=steamid64, gamemode=gm)
-        return JSONResponse(_profile_response_payload(profile, steamid64))
+        return JSONResponse(
+            _profile_response_payload(profile, steamid64),
+            headers={"Cache-Control": "private, max-age=300"},
+        )
     except RuntimeError:
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/api/player/profile", 404, duration_ms, steamid=steamid64, gamemode=gm)
@@ -1160,6 +1201,16 @@ def _api_leaderboard_impl(
         )
         payload = {"rows": rows, "total_logs": total_logs, "lb_type": lt}
         cache_set("leaderboard", cache_key, payload, stats_db_fingerprint(STATS_DB_PATH))
+        _lb_sids = [r["steamid64"] for r in rows if r.get("steamid64")]
+        if _lb_sids:
+            import threading
+
+            threading.Thread(
+                target=_prefetch_profiles_background,
+                args=(_lb_sids,),
+                daemon=True,
+                name="profile-prefetch-leaderboard",
+            ).start()
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
             request,
