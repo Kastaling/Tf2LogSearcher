@@ -71,6 +71,7 @@ See `.env.example` for all options. Important ones:
 - `LOGS_DIR`, `DOWNLOADER_STATE_DIR` — paths inside the container (compose maps `./logs` and `./downloader_state`).
 - `DOWNLOAD_INTERVAL_SEC` — seconds between download cycles (default 3600).
 - `REQUEST_DELAY_MS`, `MAX_REQUESTS_BEFORE_BACKOFF`, `BACKOFF_SEC` — rate limiting for the logs.tf API.
+- `RATE_LIMIT_PROFILE_PER_MINUTE`, `RATE_LIMIT_LEADERBOARD_PER_MINUTE`, `RATE_LIMIT_WINDOW_SECONDS` — per-IP sliding-window rate limits for the profile and leaderboard endpoints (default: 10 requests per 60 seconds each). Only applied on cache misses; cached responses are always served without consuming a slot.
 - `STEAM_WEB_API_KEY` — Steam Web API key for vanity URL/name resolution.
 - `REQUEST_LOG_PATH` — path to the request log CSV file.
 - `CHAT_DB_PATH` — path to SQLite DB where chat rows are indexed.

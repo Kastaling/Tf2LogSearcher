@@ -23,6 +23,31 @@ _VANITY_URL_RE = re.compile(r"steamcommunity\.com/id/([A-Za-z0-9_-]+)", re.IGNOR
 _VANITY_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
 
 
+def steam_input_requires_vanity_http(raw: str) -> bool:
+    """
+    True if ``resolve_to_steamid64`` would call the Steam ResolveVanityURL HTTP API.
+
+    Used to rate-limit before external calls; local-only paths (SteamID64, SteamID3,
+    ``.../profiles/765...``) return False.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return False
+    if len(raw) == STEAMID64_LEN and raw.isdigit():
+        return False
+    if _STEAMID3_RE.match(raw):
+        return False
+    if "steamcommunity" in raw.lower() or "profiles/" in raw.lower():
+        if _PROFILE_RE.search(raw):
+            return False
+        if _VANITY_URL_RE.search(raw):
+            return True
+        return False
+    if _VANITY_NAME_RE.match(raw):
+        return True
+    return False
+
+
 def resolve_to_steamid64(raw: str, api_key: str | None) -> tuple[str | None, str | None]:
     """
     Resolve arbitrary Steam user input to a 17-digit SteamID64.

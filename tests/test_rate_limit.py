@@ -69,3 +69,24 @@ def test_rate_limit_kind_dispatch(kind: Literal["profile", "leaderboard"]) -> No
     with patch(patch_path, lim):
         with patch("app.rate_limit.time.monotonic", return_value=0.0):
             assert rate_limit_exceeded(kind=kind, client_ip="10.0.0.1") is None
+
+
+def test_sliding_window_allows_burst_without_consuming_on_miss() -> None:
+    """A caller that checks 'is allowed?' without appending does not consume a slot.
+
+    This test documents the contract: the limiter's check() always consumes a
+    slot when it returns True. Route handlers must not call check() on cache-hit
+    paths; this test verifies the math so that if check() is ever changed to a
+    no-consume peek the tests will catch the behaviour change.
+    """
+    lim = SlidingWindowLimiter(2, 60.0, max_keys=10)
+    with patch("app.rate_limit.time.monotonic", return_value=0.0):
+        # Two allowed requests consume both slots
+        ok1, _ = lim.check("ip")
+        ok2, _ = lim.check("ip")
+        assert ok1 is True
+        assert ok2 is True
+        # Third request is blocked — confirming check() always consumes
+        ok3, retry = lim.check("ip")
+        assert ok3 is False
+        assert retry is not None

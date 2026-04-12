@@ -51,7 +51,7 @@ from app.search.search import (
     stats_search,
 )
 from app.search_cache import get as cache_get, set_ as cache_set
-from app.steam_resolver import resolve_to_steamid64
+from app.steam_resolver import resolve_to_steamid64, steam_input_requires_vanity_http
 from app.subscriptions import (
     LEADERBOARD_SUB_WORD_MIN_LEN,
     add_subscription,
@@ -1029,20 +1029,22 @@ def _api_profile_impl(
 ) -> JSONResponse:
     """Shared impl for POST/GET player profile."""
     start = time.perf_counter()
-    rl = rate_limit_exceeded(kind="profile", client_ip=_client_ip(request))
-    if rl is not None:
-        duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(
-            request,
-            "/api/player/profile",
-            429,
-            duration_ms,
-            steamid=(steamid or "").strip(),
-        )
-        return rl
     steamid_input = (steamid or "").strip()
     if not steamid_input:
         return JSONResponse({"error": "Steam ID is required."}, status_code=400)
+    profile_rl_before_vanity_http = steam_input_requires_vanity_http(steamid_input)
+    if profile_rl_before_vanity_http:
+        rl = rate_limit_exceeded(kind="profile", client_ip=_client_ip(request))
+        if rl is not None:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            _log_request(
+                request,
+                "/api/player/profile",
+                429,
+                duration_ms,
+                steamid=steamid_input,
+            )
+            return rl
     steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
     if resolve_error is not None:
         return JSONResponse({"error": resolve_error}, status_code=400)
@@ -1076,6 +1078,19 @@ def _api_profile_impl(
             _profile_response_payload(cached, steamid64),
             headers={"Cache-Control": "private, max-age=300"},
         )
+    if not profile_rl_before_vanity_http:
+        rl = rate_limit_exceeded(kind="profile", client_ip=_client_ip(request))
+        if rl is not None:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            _log_request(
+                request,
+                "/api/player/profile",
+                429,
+                duration_ms,
+                steamid=steamid64,
+                gamemode=gm,
+            )
+            return rl
     try:
         profile, log_ids = player_profile(
             steamid64,
@@ -1155,18 +1170,6 @@ def _api_leaderboard_impl(
     min_logs_raw: str,
 ) -> JSONResponse:
     start = time.perf_counter()
-    rl = rate_limit_exceeded(kind="leaderboard", client_ip=_client_ip(request))
-    if rl is not None:
-        duration_ms = int((time.perf_counter() - start) * 1000)
-        lt_log = (lb_type or "").strip().lower()
-        _log_request(
-            request,
-            "/api/leaderboard",
-            429,
-            duration_ms,
-            classes=f"lb:{lt_log}" if lt_log else "lb:",
-        )
-        return rl
     lt = (lb_type or "").strip().lower()
     if lt not in LEADERBOARD_TYPE_KEYS:
         return JSONResponse({"error": "Invalid leaderboard type."}, status_code=400)
@@ -1213,6 +1216,17 @@ def _api_leaderboard_impl(
             classes=f"lb:{lt}",
         )
         return JSONResponse(cached)
+    rl = rate_limit_exceeded(kind="leaderboard", client_ip=_client_ip(request))
+    if rl is not None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/leaderboard",
+            429,
+            duration_ms,
+            classes=f"lb:{lt}",
+        )
+        return rl
     try:
         rows, total_logs = stats_leaderboard(
             lt,
