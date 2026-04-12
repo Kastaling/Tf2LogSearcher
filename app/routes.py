@@ -51,7 +51,7 @@ from app.search.search import (
     stats_search,
 )
 from app.search_cache import get as cache_get, set_ as cache_set
-from app.steam_resolver import resolve_to_steamid64, steam_input_requires_vanity_http
+from app.steam_resolver import SteamVanityRateLimited, resolve_to_steamid64
 from app.subscriptions import (
     LEADERBOARD_SUB_WORD_MIN_LEN,
     add_subscription,
@@ -1032,20 +1032,29 @@ def _api_profile_impl(
     steamid_input = (steamid or "").strip()
     if not steamid_input:
         return JSONResponse({"error": "Steam ID is required."}, status_code=400)
-    profile_rl_before_vanity_http = steam_input_requires_vanity_http(steamid_input)
-    if profile_rl_before_vanity_http:
-        rl = rate_limit_exceeded(kind="profile", client_ip=_client_ip(request))
-        if rl is not None:
-            duration_ms = int((time.perf_counter() - start) * 1000)
-            _log_request(
-                request,
-                "/api/player/profile",
-                429,
-                duration_ms,
-                steamid=steamid_input,
-            )
-            return rl
-    steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+    try:
+        steamid64, resolve_error = resolve_to_steamid64(
+            steamid_input,
+            STEAM_WEB_API_KEY,
+            vanity_rl_client_ip=_client_ip(request),
+        )
+    except SteamVanityRateLimited as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/player/profile",
+            429,
+            duration_ms,
+            steamid=steamid_input,
+        )
+        return JSONResponse(
+            {
+                "error": "Too many Steam vanity lookups. Please try again in a moment.",
+                "retry_after": e.retry_after,
+            },
+            status_code=429,
+            headers={"Retry-After": str(e.retry_after)},
+        )
     if resolve_error is not None:
         return JSONResponse({"error": resolve_error}, status_code=400)
     assert steamid64 is not None
@@ -1078,19 +1087,18 @@ def _api_profile_impl(
             _profile_response_payload(cached, steamid64),
             headers={"Cache-Control": "private, max-age=300"},
         )
-    if not profile_rl_before_vanity_http:
-        rl = rate_limit_exceeded(kind="profile", client_ip=_client_ip(request))
-        if rl is not None:
-            duration_ms = int((time.perf_counter() - start) * 1000)
-            _log_request(
-                request,
-                "/api/player/profile",
-                429,
-                duration_ms,
-                steamid=steamid64,
-                gamemode=gm,
-            )
-            return rl
+    rl = rate_limit_exceeded(kind="profile", client_ip=_client_ip(request))
+    if rl is not None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/player/profile",
+            429,
+            duration_ms,
+            steamid=steamid64,
+            gamemode=gm,
+        )
+        return rl
     try:
         profile, log_ids = player_profile(
             steamid64,

@@ -32,6 +32,8 @@ def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
 # Requests allowed per IP per window for each expensive endpoint (independent buckets).
 PROFILE_REQUESTS_PER_WINDOW = _int_env("RATE_LIMIT_PROFILE_PER_MINUTE", 10)
 LEADERBOARD_REQUESTS_PER_WINDOW = _int_env("RATE_LIMIT_LEADERBOARD_PER_MINUTE", 10)
+# Steam ResolveVanityURL HTTP (only enforced when about to call the API; vanity RAM cache hits skip this).
+STEAM_VANITY_REQUESTS_PER_WINDOW = _int_env("RATE_LIMIT_STEAM_VANITY_PER_MINUTE", 10)
 WINDOW_SECONDS = float(_int_env("RATE_LIMIT_WINDOW_SECONDS", 60, minimum=1))
 # Bound memory if many distinct IPs connect (LRU eviction of tracking entries).
 MAX_TRACKED_IPS = _int_env("RATE_LIMIT_MAX_TRACKED_IPS", 50_000, minimum=1000)
@@ -99,6 +101,27 @@ class SlidingWindowLimiter:
 
 _profile_limiter = SlidingWindowLimiter(PROFILE_REQUESTS_PER_WINDOW, WINDOW_SECONDS)
 _leaderboard_limiter = SlidingWindowLimiter(LEADERBOARD_REQUESTS_PER_WINDOW, WINDOW_SECONDS)
+_steam_vanity_limiter = SlidingWindowLimiter(STEAM_VANITY_REQUESTS_PER_WINDOW, WINDOW_SECONDS)
+
+
+def steam_vanity_retry_after_if_limited(client_ip: str) -> int | None:
+    """
+    Enforce per-IP limit for outbound Steam ResolveVanityURL calls.
+
+    Returns ``retry_after`` seconds if limited, else ``None`` when the request is
+    allowed (and consumes one slot). In-memory vanity cache hits must not call this.
+    """
+    key = client_ip.strip() if client_ip else "unknown"
+    allowed, retry_after = _steam_vanity_limiter.check(key)
+    if allowed:
+        return None
+    assert retry_after is not None
+    logger.warning(
+        "Steam vanity resolve rate limit exceeded: client_ip=%s retry_after=%ss",
+        key,
+        retry_after,
+    )
+    return retry_after
 
 
 def rate_limit_exceeded(*, kind: Literal["profile", "leaderboard"], client_ip: str) -> JSONResponse | None:

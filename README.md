@@ -72,6 +72,7 @@ See `.env.example` for all options. Important ones:
 - `DOWNLOAD_INTERVAL_SEC` — seconds between download cycles (default 3600).
 - `REQUEST_DELAY_MS`, `MAX_REQUESTS_BEFORE_BACKOFF`, `BACKOFF_SEC` — rate limiting for the logs.tf API.
 - `RATE_LIMIT_PROFILE_PER_MINUTE`, `RATE_LIMIT_LEADERBOARD_PER_MINUTE`, `RATE_LIMIT_WINDOW_SECONDS` — per-IP sliding-window rate limits for the profile and leaderboard endpoints (default: 10 requests per 60 seconds each). Only applied on cache misses; cached responses are always served without consuming a slot.
+- `RATE_LIMIT_STEAM_VANITY_PER_MINUTE` — per-IP limit for outbound Steam vanity (ResolveVanityURL) HTTP calls (default: 10 per 60 seconds). Enforced only when a network call would be made; hits on the in-process vanity cache do not consume a slot.
 - `STEAM_WEB_API_KEY` — Steam Web API key for vanity URL/name resolution.
 - `REQUEST_LOG_PATH` — path to the request log CSV file.
 - `CHAT_DB_PATH` — path to SQLite DB where chat rows are indexed.

@@ -1,5 +1,7 @@
 """Resolve any Steam user identifier to SteamID64. Uses Steam Web API only for vanity; API key never leaves server."""
 import re
+import threading
+import time
 from typing import Any
 
 import requests
@@ -9,6 +11,11 @@ from app.logs_tf import STEAMID64_OFFSET
 STEAMID64_LEN = 17
 RESOLVE_VANITY_TIMEOUT = 10
 RESOLVE_VANITY_URL = "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/"
+# In-process cache for successful vanity→SteamID64 (reduces repeat HTTP; TTL seconds).
+_VANITY_CACHE_TTL_SEC = 3600.0
+_VANITY_CACHE_MAX_ENTRIES = 5000
+_vanity_cache_lock = threading.Lock()
+_vanity_cache: dict[str, tuple[str, float]] = {}  # vanity_lower -> (steamid64, expiry_monotonic)
 
 # SteamID3: [U:1:account_id] or [U:0:account_id]
 _STEAMID3_RE = re.compile(r"^\[U:1:(\d+)\]$", re.IGNORECASE)
@@ -23,38 +30,38 @@ _VANITY_URL_RE = re.compile(r"steamcommunity\.com/id/([A-Za-z0-9_-]+)", re.IGNOR
 _VANITY_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
 
 
-def steam_input_requires_vanity_http(raw: str) -> bool:
-    """
-    True if ``resolve_to_steamid64`` would call the Steam ResolveVanityURL HTTP API.
+class SteamVanityRateLimited(Exception):
+    """Per-IP Steam ResolveVanityURL budget exhausted before an outbound HTTP call."""
 
-    Used to rate-limit before external calls; local-only paths (SteamID64, SteamID3,
-    ``.../profiles/765...``) return False.
-    """
-    raw = (raw or "").strip()
-    if not raw:
-        return False
-    if len(raw) == STEAMID64_LEN and raw.isdigit():
-        return False
-    if _STEAMID3_RE.match(raw):
-        return False
-    if "steamcommunity" in raw.lower() or "profiles/" in raw.lower():
-        if _PROFILE_RE.search(raw):
-            return False
-        if _VANITY_URL_RE.search(raw):
-            return True
-        return False
-    if _VANITY_NAME_RE.match(raw):
-        return True
-    return False
+    def __init__(self, retry_after: int) -> None:
+        self.retry_after = retry_after
 
 
-def resolve_to_steamid64(raw: str, api_key: str | None) -> tuple[str | None, str | None]:
+def _vanity_cache_prune(now: float) -> None:
+    """Drop expired entries; if still over max, remove arbitrary keys (best-effort)."""
+    stale = [k for k, (_, exp) in _vanity_cache.items() if exp <= now]
+    for k in stale:
+        _vanity_cache.pop(k, None)
+    while len(_vanity_cache) > _VANITY_CACHE_MAX_ENTRIES and _vanity_cache:
+        _vanity_cache.pop(next(iter(_vanity_cache)))
+
+
+def resolve_to_steamid64(
+    raw: str,
+    api_key: str | None,
+    *,
+    vanity_rl_client_ip: str | None = None,
+) -> tuple[str | None, str | None]:
     """
     Resolve arbitrary Steam user input to a 17-digit SteamID64.
 
     Supports: SteamID64, SteamID3 ([U:1:x]), profile URL, vanity URL, vanity name.
     Returns (steamid64, error_message). On success error_message is None; on failure steamid64 is None.
     API key is only used for vanity resolution; never logged or returned.
+
+    ``vanity_rl_client_ip``: when set, enforces a per-IP limit immediately before each
+    ResolveVanityURL HTTP call (in-memory vanity cache hits do not consume a slot).
+    May raise :class:`SteamVanityRateLimited`.
     """
     raw = (raw or "").strip()
     if not raw:
@@ -84,12 +91,12 @@ def resolve_to_steamid64(raw: str, api_key: str | None) -> tuple[str | None, str
         vm = _VANITY_URL_RE.search(raw)
         if vm:
             vanity = vm.group(1)
-            return _resolve_vanity(vanity, api_key)
+            return _resolve_vanity(vanity, api_key, vanity_rl_client_ip=vanity_rl_client_ip)
         return None, "Could not parse Steam profile URL. Use a URL like https://steamcommunity.com/profiles/76561197960265728 or https://steamcommunity.com/id/YourName"
 
     # 4) Standalone vanity name
     if _VANITY_NAME_RE.match(raw):
-        return _resolve_vanity(raw, api_key)
+        return _resolve_vanity(raw, api_key, vanity_rl_client_ip=vanity_rl_client_ip)
 
     # 5) Might be a URL we didn't match (e.g. store.steampowered.com) or malformed
     if raw.startswith("http://") or raw.startswith("https://"):
@@ -99,13 +106,34 @@ def resolve_to_steamid64(raw: str, api_key: str | None) -> tuple[str | None, str
     return None, "Could not recognize Steam ID. Use SteamID64 (17 digits), profile URL, or vanity name (requires Steam Web API key in server config)."
 
 
-def _resolve_vanity(vanity: str, api_key: str | None) -> tuple[str | None, str | None]:
+def _resolve_vanity(
+    vanity: str,
+    api_key: str | None,
+    *,
+    vanity_rl_client_ip: str | None = None,
+) -> tuple[str | None, str | None]:
     """Call Steam Web API ResolveVanityURL. API key is never logged or returned."""
     if not api_key:
         return None, "Vanity URL/name resolution requires a Steam Web API key (set STEAM_WEB_API_KEY in server config)."
     vanity = vanity.strip()
     if not vanity:
         return None, "Vanity name is empty."
+    cache_key = vanity.lower()
+    now = time.monotonic()
+    with _vanity_cache_lock:
+        ent = _vanity_cache.get(cache_key)
+        if ent is not None:
+            sid_cached, exp = ent
+            if exp > now:
+                return sid_cached, None
+        _vanity_cache_prune(now)
+    # ``None`` skips RL (e.g. CLI); empty string still limits as "unknown" in rate_limit.
+    if vanity_rl_client_ip is not None:
+        from app.rate_limit import steam_vanity_retry_after_if_limited
+
+        ra = steam_vanity_retry_after_if_limited(vanity_rl_client_ip)
+        if ra is not None:
+            raise SteamVanityRateLimited(ra)
     try:
         # Key is sent only in server-side request; never in response or logs
         r = requests.get(
@@ -122,6 +150,10 @@ def _resolve_vanity(vanity: str, api_key: str | None) -> tuple[str | None, str |
         if success == 1:
             sid = resp.get("steamid")
             if isinstance(sid, str) and len(sid) == STEAMID64_LEN and sid.isdigit():
+                exp = time.monotonic() + _VANITY_CACHE_TTL_SEC
+                with _vanity_cache_lock:
+                    _vanity_cache[cache_key] = (sid, exp)
+                    _vanity_cache_prune(time.monotonic())
                 return sid, None
             return None, "Invalid Steam ID in API response."
         if success == 42:
@@ -130,6 +162,6 @@ def _resolve_vanity(vanity: str, api_key: str | None) -> tuple[str | None, str |
         return None, f"Steam API: {msg}"
     except requests.Timeout:
         return None, "Steam API request timed out. Try again later."
-    except requests.RequestException as e:
+    except requests.RequestException:
         # Do not expose internal details; do not log API key
         return None, "Could not reach Steam API. Try again later."
