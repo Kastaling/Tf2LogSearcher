@@ -84,17 +84,36 @@ def _is_valid(entry: dict[str, Any], mode: str, key_tuple: tuple[Any, ...]) -> b
 
 
 def get(mode: str, key_tuple: tuple[Any, ...]) -> dict[str, Any] | None:
-    """Return cached payload if present and still valid; else None."""
+    """Return cached payload if present and still valid; else None.
+
+    Lock discipline: acquire lock only for the in-memory dict read and for any
+    subsequent mutation (evict or LRU promote). Validation (which may open DB
+    connections) runs outside the lock so background prefetch threads do not
+    serialize on I/O.
+    """
     k = _cache_key(mode, *key_tuple)
+
+    # 1. Read the entry under the lock (fast dict lookup only).
     with _cache_lock:
         entry = _cache.get(k)
-        if entry is None:
-            return None
-        if not _is_valid(entry, mode, key_tuple):
-            _cache.pop(k, None)
-            if k in _cache_order:
-                _cache_order[:] = [x for x in _cache_order if x != k]
-            return None
+    if entry is None:
+        return None
+
+    # 2. Validate outside the lock — may open SQLite connections.
+    if not _is_valid(entry, mode, key_tuple):
+        # Entry is stale: remove it under the lock.
+        with _cache_lock:
+            # Guard against a concurrent set_ that may have replaced the entry
+            # with a fresh one between our validation and this removal.
+            current = _cache.get(k)
+            if current is entry:  # only evict if it's still the same object
+                _cache.pop(k, None)
+                if k in _cache_order:
+                    _cache_order[:] = [x for x in _cache_order if x != k]
+        return None
+
+    # 3. Cache hit: promote to MRU under the lock.
+    with _cache_lock:
         if k in _cache_order:
             _cache_order[:] = [x for x in _cache_order if x != k]
         _cache_order.append(k)

@@ -111,10 +111,34 @@
       border-color: var(--accent-hover);
       color: #fff;
     }
+    /*
+     * a:visited beats .back-button for specificity, so visited "button" links inherited
+     * var(--link) as text color while the fill is also var(--accent) (= var(--link)) — invisible in light mode.
+     */
+    a.back-button,
+    a.back-button:link,
+    a.back-button:visited {
+      color: var(--accent-text);
+    }
+    a.back-button:hover,
+    a.back-button:link:hover,
+    a.back-button:visited:hover {
+      color: var(--accent-text);
+    }
     [data-theme="dark"] button:not(.theme-toggle), [data-theme="dark"] input[type="submit"], [data-theme="dark"] input[type="button"], [data-theme="dark"] input[type="reset"], [data-theme="dark"] .back-button, [data-theme="dark"] .js-chat-subscribe {
       color: #1a1a1a;
     }
+    [data-theme="dark"] a.back-button,
+    [data-theme="dark"] a.back-button:link,
+    [data-theme="dark"] a.back-button:visited {
+      color: #1a1a1a;
+    }
     [data-theme="dark"] button:not(.theme-toggle):hover, [data-theme="dark"] input[type="submit"]:hover, [data-theme="dark"] input[type="button"]:hover, [data-theme="dark"] input[type="reset"]:hover, [data-theme="dark"] .back-button:hover, [data-theme="dark"] .js-chat-subscribe:hover {
+      color: #1a1a1a;
+    }
+    [data-theme="dark"] a.back-button:hover,
+    [data-theme="dark"] a.back-button:link:hover,
+    [data-theme="dark"] a.back-button:visited:hover {
       color: #1a1a1a;
     }
     form { margin-bottom: 1.25rem; }
@@ -1963,7 +1987,7 @@
       var profileUrl = sidForProfile ? internalProfileHref(sidForProfile) : '#';
       var sidForAvatar = resolved64;
       if (!sidForAvatar && steamid && /^\d{17}$/.test(String(steamid).trim())) sidForAvatar = String(steamid).trim();
-      var label = data.searched_user_name ? escapeHtml(data.searched_user_name) : (profileUrl !== '#' ? profileUrl : escapeHtml(steamid));
+      var label = data.searched_user_name ? escapeHtml(data.searched_user_name) : escapeHtml(sidForProfile || steamid);
       var logsAcross = null;
       if (data && typeof data.logs_searched === 'number' && Number.isFinite(data.logs_searched)) {
         logsAcross = data.logs_searched;
