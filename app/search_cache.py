@@ -114,6 +114,11 @@ def get(mode: str, key_tuple: tuple[Any, ...]) -> dict[str, Any] | None:
 
     # 3. Cache hit: promote to MRU under the lock.
     with _cache_lock:
+        current = _cache.get(k)
+        if current is not entry:
+            # Evicted or replaced while validating — must not append a key to
+            # _cache_order that is absent from _cache (LRU / _cache invariant).
+            return entry["payload"]
         if k in _cache_order:
             _cache_order[:] = [x for x in _cache_order if x != k]
         _cache_order.append(k)
