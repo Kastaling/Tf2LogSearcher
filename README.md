@@ -150,6 +150,18 @@ docker-compose up -d downloader
 
 Options: `--raw-logs-dir`, `--db-path` (defaults from `app.config`), `--batch-size` (default 200). Safe to re-run: each log’s rows are replaced atomically.
 
+## Raw gap fetch (JSON on disk, raw zip missing)
+
+If you already have many `{id}.json` files but never downloaded the matching `log_{id}.log.zip`, this pass walks `LOGS_DIR`, skips IDs that already have a raw zip, downloads the rest from logs.tf, and imports into `raw_events.db`. It uses the same rate limits as the downloader (`REQUEST_DELAY_MS`, backoff). **Expect very long runtimes** at large scale (millions of gaps × ~300ms delay is weeks of wall time single-threaded); use `tmux`/`screen`, and optional `--shard-index` / `--shard-total` to parallelize across machines.
+
+```bash
+docker compose stop downloader
+docker compose run --rm downloader python -m app.raw_json_gap_fetch
+docker compose up -d downloader
+```
+
+Use the **`downloader`** service (not `downloader-json`) so `./raw_logs` is mounted. Useful options: `--from-id` / `--to-id`, `--limit` (testing), `--batch-size` (SQLite commits, default 50), `--progress-every`, `--dry-run` (count gaps without network). See `python -m app.raw_json_gap_fetch --help`.
+
 ## Fix log rounds (one-time migration)
 
 If stats were imported before round duration / first-blood parsing was corrected, rebuild only the `log_rounds` table from your existing JSON files (no full stats reimport):

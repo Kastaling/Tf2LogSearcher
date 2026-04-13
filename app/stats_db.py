@@ -1018,6 +1018,29 @@ def player_stats_agg_nonempty(db_path: str | Path) -> bool:
         return False
 
 
+def count_stats_index_rows(db_path: str | Path) -> tuple[int | None, int | None]:
+    """
+    Return (COUNT(log_players), COUNT(player_stats_agg)) for progress UI.
+    (None, None) if the DB is missing or tables are unreadable.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return (None, None)
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            lp = conn.execute("SELECT COUNT(*) FROM log_players").fetchone()
+            pa = conn.execute("SELECT COUNT(*) FROM player_stats_agg").fetchone()
+            a = int(lp[0] or 0) if lp else 0
+            b = int(pa[0] or 0) if pa else 0
+            return (a, b)
+        finally:
+            conn.close()
+    except Exception:
+        return (None, None)
+
+
 def stats_db_fingerprint(db_path: str | Path) -> frozenset[int]:
     """
     Lightweight fingerprint for stats DB contents.

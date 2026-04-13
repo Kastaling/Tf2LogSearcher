@@ -294,6 +294,36 @@ def replace_raw_events_for_log(
     }
 
 
+def count_raw_library_rows(db_path: str | Path) -> tuple[int | None, int | None]:
+    """
+    Return (COUNT(raw_logs), SUM(kill_count)) for progress UI.
+    (None, None) if the DB is missing or unreadable.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return (None, None)
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("SELECT 1 FROM raw_logs LIMIT 1").fetchone()
+            cnt_row = conn.execute("SELECT COUNT(*) FROM raw_logs").fetchone()
+            n = int(cnt_row[0] or 0) if cnt_row else 0
+            cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(raw_logs)").fetchall()}
+            if "kill_count" in cols:
+                s = conn.execute("SELECT COALESCE(SUM(kill_count), 0) FROM raw_logs").fetchone()
+                kill_sum = int(s[0] or 0) if s else 0
+            else:
+                kill_sum = 0
+            return (n, kill_sum)
+        except Exception:
+            return (None, None)
+        finally:
+            conn.close()
+    except Exception:
+        return (None, None)
+
+
 def raw_db_fingerprint(db_path: str | Path) -> frozenset[int]:
     """(log_count, max_log_id, max_imported_at) fingerprint. Same pattern as stats_db_fingerprint."""
     path = Path(db_path)

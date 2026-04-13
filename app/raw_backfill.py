@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from app.config import RAW_EVENTS_DB_PATH, RAW_LOGS_DIR
-from app.downloader import extract_log_content_from_zip
+from app.raw_zip_io import extract_log_content_from_zip
 from app.raw_db import connect_raw_db, init_raw_db, replace_raw_events_for_log
 from app.raw_log_parser import parse_raw_log
 

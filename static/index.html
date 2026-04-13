@@ -290,8 +290,43 @@
       margin: 0 auto;
       text-align: center;
     }
+    .download-progress-inner--wide {
+      max-width: min(100%, 72rem);
+    }
     .download-progress-inner--center {
       text-align: center;
+    }
+    .download-progress-stats-board {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 1rem 1.25rem;
+      justify-content: center;
+      align-items: flex-start;
+      margin-top: 0.75rem;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: 0.35rem;
+      scrollbar-gutter: stable;
+    }
+    .download-progress-stats-block {
+      flex: 1 1 auto;
+      min-width: min(100%, 15.5rem);
+      max-width: 28rem;
+    }
+    .download-progress-stats-board--indexed-only .download-progress-stats-block {
+      max-width: min(100%, 36rem);
+    }
+    .download-progress-stats-block-title {
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.4rem;
+      text-align: left;
+    }
+    .download-progress-stats--indexed {
+      margin-top: 0;
     }
     .download-progress-complete-msg {
       margin: 0;
@@ -1349,13 +1384,13 @@
       tbody.appendChild(tr);
     }
 
-    function appendChatPlaceholderRow(tbody) {
+    function appendIndexedPlaceholderRow(tbody, rowId, extraClass, label) {
       const tr = document.createElement('tr');
-      tr.id = 'downloadProgressChatRow';
-      tr.className = 'download-progress-chat-row';
+      tr.id = rowId;
+      tr.className = 'download-progress-indexed-row' + (extraClass ? ' ' + extraClass : '');
       const th = document.createElement('th');
       th.scope = 'row';
-      th.textContent = 'Indexed chat lines (chat.db)';
+      th.textContent = label;
       const td = document.createElement('td');
       td.className = 'download-progress-value';
       td.setAttribute('aria-busy', 'true');
@@ -1363,6 +1398,16 @@
       tr.appendChild(th);
       tr.appendChild(td);
       tbody.appendChild(tr);
+    }
+
+    function buildIndexedLibrariesTbody() {
+      const tbody = document.createElement('tbody');
+      appendIndexedPlaceholderRow(tbody, 'downloadProgressChatRow', 'download-progress-chat-row', 'Indexed chat lines (chat.db)');
+      appendIndexedPlaceholderRow(tbody, 'downloadProgressRawLogsRow', 'download-progress-row--raw', 'Raw logs indexed (raw_events.db)');
+      appendIndexedPlaceholderRow(tbody, 'downloadProgressRawKillsRow', 'download-progress-row--raw', 'Kill events indexed (raw_logs)');
+      appendIndexedPlaceholderRow(tbody, 'downloadProgressLogPlayersRow', '', 'Stats DB rows (log_players)');
+      appendIndexedPlaceholderRow(tbody, 'downloadProgressLeaderboardRow', '', 'Leaderboard players (player_stats_agg)');
+      return tbody;
     }
 
     function fetchChatMessageCountAndPatch() {
@@ -1387,6 +1432,85 @@
         });
     }
 
+    function fetchRawEventsStatsAndPatch() {
+      const rLogs = document.getElementById('downloadProgressRawLogsRow');
+      const rKills = document.getElementById('downloadProgressRawKillsRow');
+      if (!rLogs || !rKills) return;
+      const tdLogs = rLogs.querySelector('td.download-progress-value');
+      const tdKills = rKills.querySelector('td.download-progress-value');
+      fetch('/api/raw-events-stats')
+        .then(function(res) { return res.ok ? res.json() : null; })
+        .then(function(d) {
+          if (!rLogs.isConnected || !rKills.isConnected || !tdLogs || !tdKills) return;
+          if (!d || d.download_raw_enabled === false) {
+            rLogs.style.display = 'none';
+            rKills.style.display = 'none';
+            rLogs.setAttribute('aria-hidden', 'true');
+            rKills.setAttribute('aria-hidden', 'true');
+            tdLogs.removeAttribute('aria-busy');
+            tdKills.removeAttribute('aria-busy');
+            return;
+          }
+          tdLogs.removeAttribute('aria-busy');
+          tdKills.removeAttribute('aria-busy');
+          if (d.raw_logs_count != null && typeof d.raw_logs_count === 'number' && Number.isFinite(d.raw_logs_count)) {
+            tdLogs.textContent = fmtProgressNum(d.raw_logs_count);
+          } else {
+            tdLogs.textContent = '\u2014';
+          }
+          if (d.kill_events_total != null && typeof d.kill_events_total === 'number' && Number.isFinite(d.kill_events_total)) {
+            tdKills.textContent = fmtProgressNum(d.kill_events_total);
+          } else {
+            tdKills.textContent = '\u2014';
+          }
+        })
+        .catch(function() {
+          if (!rLogs.isConnected || !rKills.isConnected || !tdLogs || !tdKills) return;
+          tdLogs.removeAttribute('aria-busy');
+          tdKills.removeAttribute('aria-busy');
+          tdLogs.textContent = '\u2014';
+          tdKills.textContent = '\u2014';
+        });
+    }
+
+    function fetchStatsIndexCountsAndPatch() {
+      const rLp = document.getElementById('downloadProgressLogPlayersRow');
+      const rLb = document.getElementById('downloadProgressLeaderboardRow');
+      if (!rLp || !rLb) return;
+      const tdLp = rLp.querySelector('td.download-progress-value');
+      const tdLb = rLb.querySelector('td.download-progress-value');
+      fetch('/api/stats-index-counts')
+        .then(function(res) { return res.ok ? res.json() : null; })
+        .then(function(d) {
+          if (!rLp.isConnected || !rLb.isConnected || !tdLp || !tdLb) return;
+          tdLp.removeAttribute('aria-busy');
+          tdLb.removeAttribute('aria-busy');
+          if (d && d.log_players_count != null && typeof d.log_players_count === 'number' && Number.isFinite(d.log_players_count)) {
+            tdLp.textContent = fmtProgressNum(d.log_players_count);
+          } else {
+            tdLp.textContent = '\u2014';
+          }
+          if (d && d.leaderboard_players_count != null && typeof d.leaderboard_players_count === 'number' && Number.isFinite(d.leaderboard_players_count)) {
+            tdLb.textContent = fmtProgressNum(d.leaderboard_players_count);
+          } else {
+            tdLb.textContent = '\u2014';
+          }
+        })
+        .catch(function() {
+          if (!rLp.isConnected || !rLb.isConnected || !tdLp || !tdLb) return;
+          tdLp.removeAttribute('aria-busy');
+          tdLb.removeAttribute('aria-busy');
+          tdLp.textContent = '\u2014';
+          tdLb.textContent = '\u2014';
+        });
+    }
+
+    function fetchIndexedLibraryStatsAndPatch() {
+      fetchChatMessageCountAndPatch();
+      fetchRawEventsStatsAndPatch();
+      fetchStatsIndexCountsAndPatch();
+    }
+
     function renderProgress(data) {
       const el = document.getElementById('downloadProgress');
       if (!el) return;
@@ -1395,7 +1519,7 @@
         el.className = 'download-progress download-progress--panel';
         el.innerHTML = '';
         const wrap = document.createElement('div');
-        wrap.className = 'download-progress-inner download-progress-inner--center';
+        wrap.className = 'download-progress-inner download-progress-inner--wide download-progress-inner--center';
         const p = document.createElement('p');
         p.className = 'download-progress-complete-msg';
         p.appendChild(document.createTextNode('Full backfill complete. New logs are added periodically. You can search across all logs we have. ('));
@@ -1404,7 +1528,22 @@
         p.appendChild(strong);
         p.appendChild(document.createTextNode(')'));
         wrap.appendChild(p);
+        const board = document.createElement('div');
+        board.className = 'download-progress-stats-board download-progress-stats-board--indexed-only';
+        const blockIdx = document.createElement('div');
+        blockIdx.className = 'download-progress-stats-block';
+        const titleIdx = document.createElement('div');
+        titleIdx.className = 'download-progress-stats-block-title';
+        titleIdx.textContent = 'Indexed libraries';
+        const tableIdx = document.createElement('table');
+        tableIdx.className = 'download-progress-stats download-progress-stats--indexed';
+        tableIdx.appendChild(buildIndexedLibrariesTbody());
+        blockIdx.appendChild(titleIdx);
+        blockIdx.appendChild(tableIdx);
+        board.appendChild(blockIdx);
+        wrap.appendChild(board);
         el.appendChild(wrap);
+        fetchIndexedLibraryStatsAndPatch();
         return;
       }
 
@@ -1437,7 +1576,7 @@
       el.className = 'download-progress download-progress--panel';
       el.innerHTML = '';
       const wrap = document.createElement('div');
-      wrap.className = 'download-progress-inner';
+      wrap.className = 'download-progress-inner download-progress-inner--wide';
 
       if (pct != null) {
         const barSection = document.createElement('div');
@@ -1461,25 +1600,33 @@
         wrap.appendChild(barSection);
       }
 
-      const table = document.createElement('table');
-      table.className = 'download-progress-stats';
-      const tbody = document.createElement('tbody');
+      const board = document.createElement('div');
+      board.className = 'download-progress-stats-board';
+
+      const blockQueue = document.createElement('div');
+      blockQueue.className = 'download-progress-stats-block';
+      const titleQueue = document.createElement('div');
+      titleQueue.className = 'download-progress-stats-block-title';
+      titleQueue.textContent = 'Download queue';
+      const tableQueue = document.createElement('table');
+      tableQueue.className = 'download-progress-stats';
+      const tbodyQueue = document.createElement('tbody');
 
       if (data.total_files != null) {
-        appendProgressRow(tbody, 'Log files', fmtProgressNum(Number(data.total_files)) + ' indexed');
+        appendProgressRow(tbodyQueue, 'Log files', fmtProgressNum(Number(data.total_files)) + ' indexed');
       }
       if (data.min_id != null && data.max_id != null) {
         appendProgressRow(
-          tbody,
+          tbodyQueue,
           'ID range',
           fmtProgressNum(Number(data.max_id)) + ' \u2013 ' + fmtProgressNum(Number(data.min_id))
         );
       }
       if (data.remaining != null && data.remaining > 0) {
-        appendProgressRow(tbody, 'Remaining to log 1', fmtProgressNum(Number(data.remaining)));
+        appendProgressRow(tbodyQueue, 'Remaining to log 1', fmtProgressNum(Number(data.remaining)));
       }
       if (data.eta_human) {
-        appendProgressRow(tbody, 'ETA', String(data.eta_human));
+        appendProgressRow(tbodyQueue, 'ETA', String(data.eta_human));
       }
       if (data.rate_logs_per_sec != null || data.rate_logs_per_sec_aggregated != null) {
         let rateText = '';
@@ -1490,25 +1637,40 @@
         } else {
           rateText = String(data.rate_logs_per_sec) + ' logs/s';
         }
-        appendProgressRow(tbody, 'Download rate', rateText);
+        appendProgressRow(tbodyQueue, 'Download rate', rateText);
       }
       if (data.updated_at) {
-        appendProgressRow(tbody, 'Last updated', formatUpdatedAt(data.updated_at));
+        appendProgressRow(tbodyQueue, 'Last updated', formatUpdatedAt(data.updated_at));
       }
       if (data.earliest_log_timestamp != null) {
         const earliestStr = formatEarliestLogDate(data.earliest_log_timestamp);
-        if (earliestStr) appendProgressRow(tbody, 'Earliest log', earliestStr);
+        if (earliestStr) appendProgressRow(tbodyQueue, 'Earliest log', earliestStr);
       }
       if (data.logs_downloaded_since_last_update != null && typeof data.logs_downloaded_since_last_update === 'number') {
-        appendProgressRow(tbody, 'Logs this update', fmtProgressNum(data.logs_downloaded_since_last_update));
+        appendProgressRow(tbodyQueue, 'Logs this update', fmtProgressNum(data.logs_downloaded_since_last_update));
       } else {
-        appendProgressRow(tbody, 'Logs this update', 'N/A');
+        appendProgressRow(tbodyQueue, 'Logs this update', 'N/A');
       }
-      appendChatPlaceholderRow(tbody);
+      tableQueue.appendChild(tbodyQueue);
+      blockQueue.appendChild(titleQueue);
+      blockQueue.appendChild(tableQueue);
 
-      table.appendChild(tbody);
-      wrap.appendChild(table);
+      const blockIdx = document.createElement('div');
+      blockIdx.className = 'download-progress-stats-block';
+      const titleIdx = document.createElement('div');
+      titleIdx.className = 'download-progress-stats-block-title';
+      titleIdx.textContent = 'Indexed libraries';
+      const tableIdx = document.createElement('table');
+      tableIdx.className = 'download-progress-stats download-progress-stats--indexed';
+      tableIdx.appendChild(buildIndexedLibrariesTbody());
+      blockIdx.appendChild(titleIdx);
+      blockIdx.appendChild(tableIdx);
+
+      board.appendChild(blockQueue);
+      board.appendChild(blockIdx);
+      wrap.appendChild(board);
       el.appendChild(wrap);
+      fetchIndexedLibraryStatsAndPatch();
     }
 
     function formatUpdatedAt(isoString) {
@@ -1560,7 +1722,6 @@
           return null;
         }
         renderProgress(data);
-        fetchChatMessageCountAndPatch();
         return data;
       } catch (_) {
         const el = document.getElementById('downloadProgress');

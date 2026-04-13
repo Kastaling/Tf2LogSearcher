@@ -16,8 +16,10 @@ from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from app.config import (
     AVATAR_DB_PATH,
     CHAT_DB_PATH,
+    DOWNLOAD_RAW_ENABLED,
     DOWNLOADER_STATE_DIR,
     LOGS_DIR,
+    RAW_EVENTS_DB_PATH,
     REQUEST_LOG_PATH,
     STATS_DB_PATH,
     STEAM_WEB_API_KEY,
@@ -30,7 +32,8 @@ from app.avatar_db import (
     set_cached_avatars_bulk,
 )
 from app.chat_db import chat_log_fingerprint, count_chat_messages
-from app.stats_db import stats_db_fingerprint, stats_player_stats_cache_token
+from app.raw_db import count_raw_library_rows
+from app.stats_db import count_stats_index_rows, stats_db_fingerprint, stats_player_stats_cache_token
 from app.rate_limit import rate_limit_exceeded
 from app.request_log import append_request_log
 from app.search.search import (
@@ -1003,6 +1006,58 @@ async def api_chat_message_count():
     _chat_message_count_cache["n"] = n
     _chat_message_count_cache["ts"] = now
     return JSONResponse({"chat_message_count": n})
+
+
+# Cheap aggregates on raw_events.db — short TTL so polling does not hammer SQLite.
+_RAW_EVENTS_STATS_CACHE_TTL_SEC = 120.0
+_raw_events_stats_cache: dict[str, Any] = {"payload": None, "ts": 0.0}
+
+
+@router.get("/api/raw-events-stats")
+async def api_raw_events_stats():
+    """raw_logs COUNT + SUM(kill_count); cached ~2 min. Omitted when DOWNLOAD_RAW_ENABLED is off."""
+    if not DOWNLOAD_RAW_ENABLED:
+        return JSONResponse(
+            {
+                "download_raw_enabled": False,
+                "raw_logs_count": None,
+                "kill_events_total": None,
+            }
+        )
+    now = time.time()
+    ts = float(_raw_events_stats_cache["ts"])
+    if ts > 0 and (now - ts) < _RAW_EVENTS_STATS_CACHE_TTL_SEC:
+        return JSONResponse(_raw_events_stats_cache["payload"])
+    cnt, kill_sum = await asyncio.to_thread(count_raw_library_rows, RAW_EVENTS_DB_PATH)
+    payload = {
+        "download_raw_enabled": True,
+        "raw_logs_count": cnt,
+        "kill_events_total": kill_sum,
+    }
+    _raw_events_stats_cache["payload"] = payload
+    _raw_events_stats_cache["ts"] = now
+    return JSONResponse(payload)
+
+
+_STATS_INDEX_COUNTS_CACHE_TTL_SEC = 120.0
+_stats_index_counts_cache: dict[str, Any] = {"payload": None, "ts": 0.0}
+
+
+@router.get("/api/stats-index-counts")
+async def api_stats_index_counts():
+    """log_players and player_stats_agg row counts; cached ~2 min."""
+    now = time.time()
+    ts = float(_stats_index_counts_cache["ts"])
+    if ts > 0 and (now - ts) < _STATS_INDEX_COUNTS_CACHE_TTL_SEC:
+        return JSONResponse(_stats_index_counts_cache["payload"])
+    lp, agg = await asyncio.to_thread(count_stats_index_rows, STATS_DB_PATH)
+    payload = {
+        "log_players_count": lp,
+        "leaderboard_players_count": agg,
+    }
+    _stats_index_counts_cache["payload"] = payload
+    _stats_index_counts_cache["ts"] = now
+    return JSONResponse(payload)
 
 
 def _static_path(name: str) -> Path:
