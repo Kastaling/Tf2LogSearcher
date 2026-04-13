@@ -73,13 +73,21 @@ def _init_stats_db_background() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     from app.avatar_db import connect_avatar_db, init_avatar_db
-    from app.config import AVATAR_DB_PATH
+    from app.config import AVATAR_DB_PATH, DOWNLOAD_RAW_ENABLED, RAW_EVENTS_DB_PATH
+    from app.raw_db import connect_raw_db, init_raw_db
 
     conn = connect_avatar_db(AVATAR_DB_PATH)
     try:
         init_avatar_db(conn)
     finally:
         conn.close()
+
+    if DOWNLOAD_RAW_ENABLED or Path(RAW_EVENTS_DB_PATH).is_file():
+        rconn = connect_raw_db(RAW_EVENTS_DB_PATH)
+        try:
+            init_raw_db(rconn)
+        finally:
+            rconn.close()
 
     # Run in a daemon thread so uvicorn can listen immediately. Otherwise init_stats_db (CREATE INDEX
     # on large tables) blocks the whole app for minutes and contends with the downloader for locks.

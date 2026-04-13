@@ -15,19 +15,35 @@ A small web app and downloader for searching [logs.tf](https://logs.tf) TF2 matc
    cd Tf2LogSearcher
    ```
 
-2. **Optional:** Copy `.env.example` to `.env` and adjust settings (log paths, rate limits, etc.):
+2. **Create your Compose file** (tracked template → local `docker-compose.yml`, which is gitignored so you can customize ports/volumes without polluting the repo):
+   ```bash
+   cp docker-compose.example.yml docker-compose.yml
+   ```
+
+3. **Optional:** Copy `.env.example` to `.env` and adjust settings (log paths, rate limits, etc.):
    ```bash
    cp .env.example .env
    ```
 
-3. **Start both services**
+4. **Start both services**
    ```bash
    docker-compose up -d
    ```
    - Web UI: http://localhost:8027  
-   - Downloader runs in the background and fills `./logs` with log JSONs. State is stored in `./downloader_state`.
+   - The default **downloader** service (no profile) downloads **both** logs.tf JSON and raw `.log.zip` files. JSONs go to `./logs`; raw zips go to `./raw_logs`; position/event rows are stored in `./downloader_state/raw_events.db`. State (offset, skip list, progress) is in `./downloader_state`.
 
-4. **View logs**
+**Alternative downloader modes** (only one downloader variant should run at a time):
+
+- **JSON only** (no raw zips / raw DB updates):
+  ```bash
+  docker-compose --profile json-only up -d downloader-json
+  ```
+- **Raw only** (no new JSON files; still walks the logs.tf API and downloads `log_<id>.log.zip` when missing):
+  ```bash
+  docker-compose --profile raw-only up -d downloader-raw
+  ```
+
+5. **View logs**
    ```bash
    docker-compose logs -f downloader
    ```
@@ -60,9 +76,21 @@ docker-compose up downloader
 | Downloader state  | `./downloader_state`   | Offset, skip list, progress JSON  |
 | Chat SQLite DB    | `./downloader_state/chat.db` | Chat index written by downloader/backfill |
 | Stats SQLite DB   | `./downloader_state/stats.db` | Per-log player stats (downloader/backfill) |
+| Raw log zips      | `./raw_logs`           | `log_<id>.log.zip` from logs.tf (not extracted on disk) |
+| Raw events DB     | `./downloader_state/raw_events.db` | Kills (incl. XYZ + assists), spawns, uber deploy/end, caps, rounds — from raw logs (storage-only for now) |
 | Request log (web)| `./request_logs`       | CSV of API requests (web only)   |
 
-- **Web port:** 8027 (host) → 8000 (container). Change the left number in `docker-compose.yml` if needed.
+- **Web port:** 8027 (host) → 8000 (container). Change the left number in your local `docker-compose.yml` if needed.
+
+### Docker Compose layout
+
+The repo ships **`docker-compose.example.yml`** (web + downloader variants). Copy it to **`docker-compose.yml`** once; the latter is listed in `.gitignore` for local overrides.
+
+**Downloader profiles** (Compose v2+): a service can set `profiles: [name]`. Services with a **non-empty** profile do **not** start on plain `docker-compose up` unless you pass `--profile name`. Here:
+
+- **`downloader`** has `profiles: []` (empty), so it **is** included in the default project — that is the “JSON + raw” downloader.
+- **`downloader-json`** has `profiles: [json-only]` — start with `--profile json-only` when you want that service instead of the default downloader (stop the default downloader first so only one runs).
+- **`downloader-raw`** has `profiles: [raw-only]` — same idea for raw-only mode.
 
 ## Configuration
 
@@ -77,6 +105,11 @@ See `.env.example` for all options. Important ones:
 - `REQUEST_LOG_PATH` — path to the request log CSV file.
 - `CHAT_DB_PATH` — path to SQLite DB where chat rows are indexed.
 - `STATS_DB_PATH` — path to SQLite DB where per-log player stats are stored.
+- `RAW_LOGS_DIR` — directory for `log_<id>.log.zip` files (stored compressed; parsing reads zips in memory).
+- `RAW_EVENTS_DB_PATH` — SQLite DB for position-related events from raw logs (kills with XYZ, uber deploys/charge ends, per-capper caps, spawns, round markers).
+- `DOWNLOAD_JSON_ENABLED` / `DOWNLOAD_RAW_ENABLED` — set to `0` to disable that download path independently (default `1` for both).
+
+Raw zips are typically **much larger** than JSON for the same match (often on the order of **5–20×**); plan disk space accordingly.
 
 ## Chat DB backfill (one-time migration)
 
@@ -104,6 +137,18 @@ docker-compose up -d downloader
 ```
 
 The downloader writes stats for every newly fetched log into `STATS_DB_PATH`. Re-running the backfill is safe: each log is replaced atomically.
+
+## Raw events DB backfill (re-parse zips)
+
+If you already have `log_*.log.zip` files under `RAW_LOGS_DIR` (e.g. after a parser upgrade), rebuild `raw_events.db` without re-downloading:
+
+```bash
+docker-compose stop downloader
+docker-compose run --rm downloader python -m app.raw_backfill --batch-size 200
+docker-compose up -d downloader
+```
+
+Options: `--raw-logs-dir`, `--db-path` (defaults from `app.config`), `--batch-size` (default 200). Safe to re-run: each log’s rows are replaced atomically.
 
 ## Fix log rounds (one-time migration)
 

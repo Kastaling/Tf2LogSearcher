@@ -1,0 +1,99 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8027:8000"
+    env_file:
+      - .env
+    environment:
+      - LOGS_DIR=/app/logs
+      - DOWNLOADER_STATE_DIR=/app/downloader_state
+      - REQUEST_LOG_PATH=/app/request_logs/request_log.csv
+      - CHAT_DB_PATH=/app/downloader_state/chat.db
+      - AVATAR_DB_PATH=/app/downloader_state/avatars.db
+      - STATS_DB_PATH=/app/downloader_state/stats.db
+      - RAW_LOGS_DIR=/app/raw_logs
+      - RAW_EVENTS_DB_PATH=/app/downloader_state/raw_events.db
+      - STEAM_WEB_API_KEY=${STEAM_WEB_API_KEY}
+    volumes:
+      - ./logs:/app/logs
+      - ./downloader_state:/app/downloader_state
+      - ./request_logs:/app/request_logs
+      - ./raw_logs:/app/raw_logs
+    restart: unless-stopped
+
+  # Default: both JSON and raw
+  downloader:
+    profiles: []
+    build: .
+    command: ["python", "-m", "app.downloader"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DOWNLOAD_JSON_ENABLED=1
+      - DOWNLOAD_RAW_ENABLED=1
+      - LOGS_DIR=/app/logs
+      - DOWNLOADER_STATE_DIR=/app/downloader_state
+      - RAW_LOGS_DIR=/app/raw_logs
+      - RAW_EVENTS_DB_PATH=/app/downloader_state/raw_events.db
+      - CHAT_DB_PATH=/app/downloader_state/chat.db
+      - STATS_DB_PATH=/app/downloader_state/stats.db
+      - DOWNLOAD_INTERVAL_SEC=3600
+      - REQUEST_DELAY_MS=300
+      - MAX_REQUESTS_BEFORE_BACKOFF=1500
+      - BACKOFF_SEC=60
+      - RETRY_ATTEMPTS=3
+      - STEAM_WEB_API_KEY=${STEAM_WEB_API_KEY}
+    volumes:
+      - ./logs:/app/logs
+      - ./downloader_state:/app/downloader_state
+      - ./raw_logs:/app/raw_logs
+    restart: unless-stopped
+
+  downloader-json:
+    profiles: [json-only]
+    build: .
+    command: ["python", "-m", "app.downloader"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DOWNLOAD_JSON_ENABLED=1
+      - DOWNLOAD_RAW_ENABLED=0
+      - LOGS_DIR=/app/logs
+      - DOWNLOADER_STATE_DIR=/app/downloader_state
+      - CHAT_DB_PATH=/app/downloader_state/chat.db
+      - STATS_DB_PATH=/app/downloader_state/stats.db
+      - DOWNLOAD_INTERVAL_SEC=3600
+      - REQUEST_DELAY_MS=300
+      - MAX_REQUESTS_BEFORE_BACKOFF=1500
+      - BACKOFF_SEC=60
+      - RETRY_ATTEMPTS=3
+      - STEAM_WEB_API_KEY=${STEAM_WEB_API_KEY}
+    volumes:
+      - ./logs:/app/logs
+      - ./downloader_state:/app/downloader_state
+    restart: unless-stopped
+
+  downloader-raw:
+    profiles: [raw-only]
+    build: .
+    command: ["python", "-m", "app.downloader"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DOWNLOAD_JSON_ENABLED=0
+      - DOWNLOAD_RAW_ENABLED=1
+      - LOGS_DIR=/app/logs
+      - DOWNLOADER_STATE_DIR=/app/downloader_state
+      - RAW_LOGS_DIR=/app/raw_logs
+      - RAW_EVENTS_DB_PATH=/app/downloader_state/raw_events.db
+      - CHAT_DB_PATH=/app/downloader_state/chat.db
+      - STATS_DB_PATH=/app/downloader_state/stats.db
+      - DOWNLOAD_INTERVAL_SEC=3600
+      - REQUEST_DELAY_MS=300
+      - MAX_REQUESTS_BEFORE_BACKOFF=1500
+      - BACKOFF_SEC=60
+      - RETRY_ATTEMPTS=3
+      - STEAM_WEB_API_KEY=${STEAM_WEB_API_KEY}
+    volumes:
+      - ./logs:/app/logs
+      - ./downloader_state:/app/downloader_state
+      - ./raw_logs:/app/raw_logs
+    restart: unless-stopped

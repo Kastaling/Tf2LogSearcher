@@ -1,4 +1,7 @@
 logs/
+raw_logs/
+# Local overrides; copy from docker-compose.example.yml
+docker-compose.yml
 .env
 .cursorignore
 request_logs/

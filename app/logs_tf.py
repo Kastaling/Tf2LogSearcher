@@ -6,11 +6,10 @@ from typing import Any
 import requests
 
 from app.config import LOGS_TF_API_BASE
+from app.steamid_constants import STEAMID64_OFFSET
 
 # Timeout for API requests (seconds)
 REQUEST_TIMEOUT = 30
-
-STEAMID64_OFFSET = 76561197960265728
 
 _STEAMID3_RE = re.compile(r"^\[U:1:(\d+)\]$")
 

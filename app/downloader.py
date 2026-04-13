@@ -19,6 +19,10 @@ from app.config import (
     RETRY_ATTEMPTS,
     CHAT_DB_PATH,
     STATS_DB_PATH,
+    RAW_LOGS_DIR,
+    RAW_EVENTS_DB_PATH,
+    DOWNLOAD_JSON_ENABLED,
+    DOWNLOAD_RAW_ENABLED,
 )
 from app.chat_db import (
     ALIAS_FTS_CYCLE_BUSY_ATTEMPTS,
@@ -35,6 +39,8 @@ from app.stats_db import (
     init_stats_db,
     replace_stats_for_log,
 )
+from app.raw_db import connect_raw_db, init_raw_db, replace_raw_events_for_log
+from app.raw_log_parser import parse_raw_log
 from app.logs_tf import fetch_log_list, fetch_log_json, steamid3_to_steamid64
 from app.subscriptions import check_log_for_subscriptions
 
@@ -453,6 +459,183 @@ def fetch_log_json_with_retry(log_id: int):
     return None, False
 
 
+def fetch_raw_log_zip_with_retry(log_id: int) -> bytes | None:
+    """
+    Download log_{log_id}.log.zip from logs.tf.
+    Returns the raw zip bytes, or None on 404 or repeated failure.
+    URL: https://logs.tf/logs/log_{log_id}.log.zip
+    Uses same RETRY_ATTEMPTS and timeout pattern as fetch_log_json_with_retry.
+    """
+    import requests
+
+    from app.config import LOGS_TF_API_BASE
+
+    url = f"{LOGS_TF_API_BASE}/logs/log_{log_id}.log.zip"
+    last_exc = None
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            r = requests.get(url, timeout=30)
+            if r.status_code == 404:
+                return None
+            if r.status_code == 429:
+                retry_after = r.headers.get("Retry-After")
+                wait = int(retry_after) if retry_after and retry_after.isdigit() else 60
+                logger.info("Rate limited (429) on raw zip, waiting %s s", wait)
+                time.sleep(wait)
+                continue
+            if r.status_code >= 500:
+                time.sleep(30 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            return r.content
+        except requests.RequestException as e:
+            last_exc = e
+            logger.warning("Raw zip log %s attempt %s: %s", log_id, attempt + 1, e)
+            time.sleep(30 * (attempt + 1))
+    if last_exc:
+        logger.warning("Raw zip log %s: giving up after %s attempts", log_id, RETRY_ATTEMPTS)
+    return None
+
+
+def save_raw_log_zip(log_id: int, zip_bytes: bytes, raw_logs_dir: Path) -> Path | None:
+    """
+    Save zip_bytes to raw_logs_dir/log_{id}.log.zip.
+    Returns path on success, None on OSError.
+    """
+    try:
+        raw_logs_dir.mkdir(parents=True, exist_ok=True)
+        path = raw_logs_dir / f"log_{log_id}.log.zip"
+        path.write_bytes(zip_bytes)
+        return path
+    except OSError as e:
+        logger.warning("Could not save raw zip for log %s: %s", log_id, e)
+        return None
+
+
+def _zip_entry_name_safe(name: str) -> bool:
+    """Reject zip-slip paths (e.g. ../../outside)."""
+    if not name or name.startswith("/"):
+        return False
+    parts = Path(name.replace("\\", "/")).parts
+    return ".." not in parts
+
+
+def extract_log_content_from_zip(zip_bytes: bytes) -> str | None:
+    """
+    Extract the .log file content from zip bytes in memory.
+    Returns decoded string content, or None on failure.
+    Never writes to disk.
+    """
+    import io
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            names = zf.namelist()
+            if not names:
+                return None
+            choice: str | None = None
+            for n in names:
+                if not _zip_entry_name_safe(n):
+                    continue
+                if n.lower().endswith(".log"):
+                    choice = n
+                    break
+            if choice is None:
+                for n in names:
+                    if _zip_entry_name_safe(n):
+                        choice = n
+                        break
+            if choice is None:
+                return None
+            raw = zf.read(choice)
+            return raw.decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+def _raw_zip_path(log_id: int, raw_logs_dir: Path) -> Path:
+    return raw_logs_dir / f"log_{log_id}.log.zip"
+
+
+def _should_index_raw_for_log(
+    json_path: Path,
+    raw_path: Path,
+) -> bool:
+    """True when we still need to fetch/store raw for this log_id."""
+    if not DOWNLOAD_RAW_ENABLED:
+        return False
+    if raw_path.is_file():
+        return False
+    if DOWNLOAD_JSON_ENABLED and not json_path.is_file():
+        return False
+    return True
+
+
+def try_raw_download_and_index(
+    log_id: int,
+    logs_dir: Path,
+    raw_logs_dir: Path,
+    raw_db_conn: sqlite3.Connection | None,
+    request_count_ref: list[int],
+    recent_writes: list[tuple[float, int]],
+    downloads_since_progress_ref: list[int],
+    session_downloads_ref: list[int],
+) -> bool:
+    """
+    Rate-limit, fetch raw zip, save, parse, store in raw_events.db.
+    Skips quietly when raw is disabled, DB unavailable, or JSON is required but missing.
+
+    Returns True only if the zip was saved and raw events were stored successfully.
+    """
+    if raw_db_conn is None or not DOWNLOAD_RAW_ENABLED:
+        return False
+    jp = logs_dir / f"{log_id}.json"
+    rp = _raw_zip_path(log_id, raw_logs_dir)
+    if not _should_index_raw_for_log(jp, rp):
+        return False
+
+    request_count_ref[0] += 1
+    if request_count_ref[0] > 0 and request_count_ref[0] % MAX_REQUESTS_BEFORE_BACKOFF == 0:
+        logger.info("Backoff after %s requests for %s s", request_count_ref[0], BACKOFF_SEC)
+        time.sleep(BACKOFF_SEC)
+    time.sleep(REQUEST_DELAY_MS / 1000.0)
+
+    zip_bytes = fetch_raw_log_zip_with_retry(log_id)
+    if zip_bytes is None:
+        return False
+    saved = save_raw_log_zip(log_id, zip_bytes, raw_logs_dir)
+    if saved is None:
+        return False
+    content = extract_log_content_from_zip(zip_bytes)
+    if content is None:
+        logger.warning("Could not read raw log from zip for log %s", log_id)
+        return False
+    try:
+        parsed = parse_raw_log(log_id, content)
+        with raw_db_conn:
+            counts = replace_raw_events_for_log(raw_db_conn, log_id, parsed)
+        logger.info(
+            "Raw events for log %s: kills=%s ubers=%s charge_ends=%s caps=%s spawns=%s",
+            log_id,
+            counts.get("kills", 0),
+            counts.get("ubers", 0),
+            counts.get("charge_ends", 0),
+            counts.get("captures", 0),
+            counts.get("spawns", 0),
+        )
+    except Exception as e:
+        logger.warning("Raw log parse/store failed for %s: %s", log_id, e)
+        return False
+
+    recent_writes.append((time.time(), log_id))
+    downloads_since_progress_ref[0] += 1
+    session_downloads_ref[0] += 1
+    if len(recent_writes) > RECENT_WRITES_SIZE:
+        del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
+    return True
+
+
 def run_catch_up_newest(
     logs_dir: Path,
     state_dir: Path,
@@ -465,6 +648,7 @@ def run_catch_up_newest(
     session_downloads_ref: list[int],
     chat_db_conn: sqlite3.Connection | None = None,
     stats_db_conn: sqlite3.Connection | None = None,
+    raw_db_conn: sqlite3.Connection | None = None,
     pending_agg_steamids: set[str] | None = None,
 ) -> int:
     """Phase 1: Fetch offset=0 (newest logs). Download any we don't have. Does not change next_offset."""
@@ -475,6 +659,7 @@ def run_catch_up_newest(
         return 0
     logger.info("Phase 1: Got %s log IDs at offset 0", len(logs))
     downloaded = 0
+    raw_logs_dir = RAW_LOGS_DIR
     for entry in logs:
         log_id = entry.get("id")
         if log_id is None:
@@ -483,8 +668,26 @@ def run_catch_up_newest(
         if log_id in skipped:
             continue
         path = logs_dir / f"{log_id}.json"
-        if path.exists():
+        rp = _raw_zip_path(log_id, raw_logs_dir)
+        need_json = DOWNLOAD_JSON_ENABLED and not path.is_file()
+        need_raw = DOWNLOAD_RAW_ENABLED and raw_db_conn is not None and not rp.is_file()
+        if not need_json and not need_raw:
             continue
+
+        if not need_json and need_raw:
+            if try_raw_download_and_index(
+                log_id,
+                logs_dir,
+                raw_logs_dir,
+                raw_db_conn,
+                request_count_ref,
+                recent_writes,
+                downloads_since_progress_ref,
+                session_downloads_ref,
+            ):
+                downloaded += 1
+            continue
+
         request_count_ref[0] += 1
         if request_count_ref[0] > 0 and request_count_ref[0] % MAX_REQUESTS_BEFORE_BACKOFF == 0:
             logger.info("Backoff after %s requests for %s s", request_count_ref[0], BACKOFF_SEC)
@@ -522,6 +725,16 @@ def run_catch_up_newest(
                 check_log_for_subscriptions(log_id, logs_dir, state_dir)
             except Exception as e:
                 logger.warning("Webhook check failed for log %s: %s", log_id, e)
+            try_raw_download_and_index(
+                log_id,
+                logs_dir,
+                raw_logs_dir,
+                raw_db_conn,
+                request_count_ref,
+                recent_writes,
+                downloads_since_progress_ref,
+                session_downloads_ref,
+            )
         else:
             skipped.add(log_id)
             save_skip_list(state_dir, skipped)
@@ -545,10 +758,12 @@ def run_backfill_from_offset(
     session_downloads_ref: list[int],
     chat_db_conn: sqlite3.Connection | None = None,
     stats_db_conn: sqlite3.Connection | None = None,
+    raw_db_conn: sqlite3.Connection | None = None,
     pending_agg_steamids: set[str] | None = None,
 ) -> int:
     """Phase 2: Continue from next_offset toward older logs (work toward 1st/oldest log). Returns new next_offset."""
     logger.info("Phase 2: Continuing backfill from offset=%s toward oldest logs", next_offset)
+    raw_logs_dir = RAW_LOGS_DIR
     while True:
         logs = fetch_log_list(next_offset, LIMIT)
         if not logs:
@@ -570,9 +785,26 @@ def run_backfill_from_offset(
                 skipped_this_page += 1
                 continue
             path = logs_dir / f"{log_id}.json"
-            if path.exists():
+            rp = _raw_zip_path(log_id, raw_logs_dir)
+            need_json = DOWNLOAD_JSON_ENABLED and not path.is_file()
+            need_raw = DOWNLOAD_RAW_ENABLED and raw_db_conn is not None and not rp.is_file()
+            if not need_json and not need_raw:
                 already_had += 1
                 continue
+            if not need_json and need_raw:
+                if try_raw_download_and_index(
+                    log_id,
+                    logs_dir,
+                    raw_logs_dir,
+                    raw_db_conn,
+                    request_count_ref,
+                    recent_writes,
+                    downloads_since_progress_ref,
+                    session_downloads_ref,
+                ):
+                    downloaded += 1
+                continue
+
             request_count_ref[0] += 1
             if request_count_ref[0] > 0 and request_count_ref[0] % MAX_REQUESTS_BEFORE_BACKOFF == 0:
                 logger.info("Backoff after %s requests for %s s", request_count_ref[0], BACKOFF_SEC)
@@ -611,6 +843,16 @@ def run_backfill_from_offset(
                     check_log_for_subscriptions(log_id, logs_dir, state_dir)
                 except Exception as e:
                     logger.warning("Webhook check failed for log %s: %s", log_id, e)
+                try_raw_download_and_index(
+                    log_id,
+                    logs_dir,
+                    raw_logs_dir,
+                    raw_db_conn,
+                    request_count_ref,
+                    recent_writes,
+                    downloads_since_progress_ref,
+                    session_downloads_ref,
+                )
             else:
                 skipped.add(log_id)
                 save_skip_list(state_dir, skipped)
@@ -643,6 +885,7 @@ def run_once(logs_dir: Path, state_dir: Path, skipped: set[int], next_offset: in
         None,
         None,
         None,
+        None,
     )
 
 
@@ -652,11 +895,13 @@ def main() -> None:
     chat_db_path = CHAT_DB_PATH
     stats_db_path = STATS_DB_PATH
     logger.info(
-        "Downloader started. LOGS_DIR=%s (log files only) STATE_DIR=%s CHAT_DB_PATH=%s STATS_DB_PATH=%s",
+        "Downloader started. LOGS_DIR=%s STATE_DIR=%s CHAT_DB_PATH=%s STATS_DB_PATH=%s RAW_LOGS_DIR=%s RAW_EVENTS_DB_PATH=%s",
         logs_dir,
         state_dir,
         chat_db_path,
         stats_db_path,
+        RAW_LOGS_DIR,
+        RAW_EVENTS_DB_PATH,
     )
     chat_db_conn: sqlite3.Connection | None = None
     try:
@@ -705,6 +950,23 @@ def main() -> None:
             except Exception:
                 pass
 
+    raw_db_conn: sqlite3.Connection | None = None
+    if DOWNLOAD_RAW_ENABLED:
+        try:
+            RAW_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            raw_db_conn = connect_raw_db(RAW_EVENTS_DB_PATH)
+            init_raw_db(raw_db_conn)
+            logger.info("Raw events DB ready at %s", RAW_EVENTS_DB_PATH)
+        except Exception as e:
+            logger.warning(
+                "Failed to init raw events DB (%s): %s. Raw downloading disabled.",
+                RAW_EVENTS_DB_PATH,
+                e,
+            )
+            raw_db_conn = None
+
+    logger.info("Download modes: JSON=%s RAW=%s", DOWNLOAD_JSON_ENABLED, DOWNLOAD_RAW_ENABLED)
+
     try:
         recent_writes: list[tuple[float, int]] = []  # sliding window for ETA rate (fallback)
         last_progress_write_ref: list[float] = [0.0]  # last time we wrote progress.json
@@ -740,6 +1002,7 @@ def main() -> None:
                     session_downloads_ref,
                     chat_db_conn,
                     stats_db_conn,
+                    raw_db_conn,
                     pending_agg_steamids=pending_agg_steamids,
                 )
                 if stats_db_conn is not None and pending_agg_steamids:
@@ -767,6 +1030,7 @@ def main() -> None:
                     session_downloads_ref,
                     chat_db_conn,
                     stats_db_conn,
+                    raw_db_conn,
                     pending_agg_steamids=pending_agg_steamids,
                 )
                 if stats_db_conn is not None and pending_agg_steamids:
@@ -788,6 +1052,11 @@ def main() -> None:
         if stats_db_conn is not None:
             try:
                 stats_db_conn.close()
+            except Exception:
+                pass
+        if raw_db_conn is not None:
+            try:
+                raw_db_conn.close()
             except Exception:
                 pass
         if chat_db_conn is not None:

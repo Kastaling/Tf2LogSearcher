@@ -56,3 +56,13 @@ AVATAR_DB_PATH = Path(_str("AVATAR_DB_PATH", "./downloader_state/avatars.db"))
 
 # SQLite DB for per-log player stats (populated by downloader and backfill script)
 STATS_DB_PATH = Path(_str("STATS_DB_PATH", "./downloader_state/stats.db"))
+
+# Raw TF2 server log zip files (stored as .zip, never unzipped to disk)
+RAW_LOGS_DIR = Path(_str("RAW_LOGS_DIR", "./raw_logs"))
+
+# SQLite DB for position events parsed from raw logs
+RAW_EVENTS_DB_PATH = Path(_str("RAW_EVENTS_DB_PATH", "./downloader_state/raw_events.db"))
+
+# Feature flags
+DOWNLOAD_JSON_ENABLED = _str("DOWNLOAD_JSON_ENABLED", "1") == "1"
+DOWNLOAD_RAW_ENABLED = _str("DOWNLOAD_RAW_ENABLED", "1") == "1"
