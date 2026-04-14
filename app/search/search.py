@@ -2053,6 +2053,32 @@ def player_profile(
         if mpc_row and mpc_row[0]:
             overview["most_played_class"] = _class_label_norm(mpc_row[0])
 
+        overview["first_log_id"] = None
+        overview["last_log_id"] = None
+        if logs_count > 0:
+            fl_sql = f"""
+                SELECT l.log_id FROM log_players lp
+                JOIN logs l ON l.log_id = lp.log_id
+                WHERE lp.steamid64 = ?
+                  {filter_sql}
+                ORDER BY l.date_ts ASC, l.log_id ASC
+                LIMIT 1
+            """
+            ll_sql = f"""
+                SELECT l.log_id FROM log_players lp
+                JOIN logs l ON l.log_id = lp.log_id
+                WHERE lp.steamid64 = ?
+                  {filter_sql}
+                ORDER BY l.date_ts DESC, l.log_id DESC
+                LIMIT 1
+            """
+            fr = conn.execute(fl_sql, (sid, *filter_params)).fetchone()
+            lr = conn.execute(ll_sql, (sid, *filter_params)).fetchone()
+            if fr and fr[0] is not None:
+                overview["first_log_id"] = int(fr[0])
+            if lr and lr[0] is not None:
+                overview["last_log_id"] = int(lr[0])
+
         # --- Classes ---
         classes_sql = f"""
             SELECT

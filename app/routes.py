@@ -215,6 +215,11 @@ def _client_ip(request: Request) -> str:
     return ""
 
 
+def _req_log_date_iso(d: date | None) -> str:
+    """YYYY-MM-DD for CSV; empty when unset."""
+    return d.isoformat() if d is not None else ""
+
+
 def _log_request(
     request: Request,
     endpoint: str,
@@ -226,8 +231,14 @@ def _log_request(
     gamemode: str = "",
     classes: str = "",
     steamids: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    map_query: str = "",
+    lb_type: str = "",
+    lb_class_filter: str = "",
+    min_logs: str = "",
 ) -> None:
-    """Write one row to request log CSV."""
+    """Write one row to request log CSV (see app.request_log.CSV_HEADER)."""
     try:
         append_request_log({
             "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -242,6 +253,12 @@ def _log_request(
             "gamemode": gamemode,
             "classes": classes,
             "steamids": steamids,
+            "date_from": date_from,
+            "date_to": date_to,
+            "map_query": map_query,
+            "lb_type": lb_type,
+            "lb_class_filter": lb_class_filter,
+            "min_logs": min_logs,
             "result_count": result_count if result_count is not None else "",
             "status_code": status_code,
             "duration_ms": duration_ms,
@@ -329,7 +346,18 @@ def _api_search_chat_impl(
     cached = cache_get(cache_mode, cache_key)
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/chat", 200, duration_ms, result_count=cached.get("total", 0), word=word, steamid=steamid64)
+        _log_request(
+            request,
+            "/api/search/chat",
+            200,
+            duration_ms,
+            result_count=cached.get("total", 0),
+            word=word,
+            steamid=steamid64,
+            date_from=_req_log_date_iso(date_from),
+            date_to=_req_log_date_iso(date_to),
+            map_query=map_query,
+        )
         return JSONResponse(cached)
 
     status_code = 200
@@ -382,12 +410,34 @@ def _api_search_chat_impl(
             }
             cache_set("chat", cache_key, payload, log_ids_used)
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/chat", status_code, duration_ms, result_count=result_count, word=word, steamid=steamid64)
+        _log_request(
+            request,
+            "/api/search/chat",
+            status_code,
+            duration_ms,
+            result_count=result_count,
+            word=word,
+            steamid=steamid64,
+            date_from=_req_log_date_iso(date_from),
+            date_to=_req_log_date_iso(date_to),
+            map_query=map_query,
+        )
         return JSONResponse(payload)
     except Exception as e:
         status_code = 500
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/chat", status_code, duration_ms, result_count=None, word=word, steamid=steamid64)
+        _log_request(
+            request,
+            "/api/search/chat",
+            status_code,
+            duration_ms,
+            result_count=None,
+            word=word,
+            steamid=steamid64,
+            date_from=_req_log_date_iso(date_from),
+            date_to=_req_log_date_iso(date_to),
+            map_query=map_query,
+        )
         return JSONResponse({"results": [], "total": 0, "error": str(e)}, status_code=500)
 
 
@@ -475,7 +525,19 @@ def _api_search_stats_impl(
     cached = cache_get("stats", cache_key)
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/stats", 200, duration_ms, result_count=len(cached.get("rows", [])), steamid=steamid64, gamemode=gamemode, classes=classes)
+        _log_request(
+            request,
+            "/api/search/stats",
+            200,
+            duration_ms,
+            result_count=len(cached.get("rows", [])),
+            steamid=steamid64,
+            gamemode=gamemode,
+            classes=classes,
+            date_from=_req_log_date_iso(date_from),
+            date_to=_req_log_date_iso(date_to),
+            map_query=map_query,
+        )
         return JSONResponse(cached)
     try:
         rows, log_ids_used = stats_search(
@@ -490,11 +552,34 @@ def _api_search_stats_impl(
         payload = {"rows": rows}
         cache_set("stats", cache_key, payload, stats_player_stats_cache_token(STATS_DB_PATH, steamid64))
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/stats", 200, duration_ms, result_count=len(rows), steamid=steamid64, gamemode=gamemode, classes=classes)
+        _log_request(
+            request,
+            "/api/search/stats",
+            200,
+            duration_ms,
+            result_count=len(rows),
+            steamid=steamid64,
+            gamemode=gamemode,
+            classes=classes,
+            date_from=_req_log_date_iso(date_from),
+            date_to=_req_log_date_iso(date_to),
+            map_query=map_query,
+        )
         return JSONResponse(payload)
     except Exception as e:
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/stats", 500, duration_ms, steamid=steamid64, gamemode=gamemode, classes=classes)
+        _log_request(
+            request,
+            "/api/search/stats",
+            500,
+            duration_ms,
+            steamid=steamid64,
+            gamemode=gamemode,
+            classes=classes,
+            date_from=_req_log_date_iso(date_from),
+            date_to=_req_log_date_iso(date_to),
+            map_query=map_query,
+        )
         return JSONResponse({"rows": [], "error": str(e)}, status_code=500)
 
 
@@ -531,6 +616,7 @@ def _api_search_coplayers_impl(
             result_count=len(cached.get("rows", [])),
             steamid=steamid64,
             gamemode=gm,
+            map_query=map_query,
         )
         body = dict(cached)
         body["resolved_steamid64"] = steamid64
@@ -558,11 +644,20 @@ def _api_search_coplayers_impl(
             result_count=len(rows),
             steamid=steamid64,
             gamemode=gm,
+            map_query=map_query,
         )
         return JSONResponse(payload)
     except Exception as e:
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/coplayers", 500, duration_ms, steamid=steamid64, gamemode=gm)
+        _log_request(
+            request,
+            "/api/search/coplayers",
+            500,
+            duration_ms,
+            steamid=steamid64,
+            gamemode=gm,
+            map_query=map_query,
+        )
         return JSONResponse({"rows": [], "error": str(e)}, status_code=500)
 
 
@@ -855,7 +950,15 @@ def _api_search_logmatch_impl(request: Request, steamids: str, map_query_raw: st
     cached = cache_get("logmatch", (sid_tuple, map_query.lower()))
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/logmatch", 200, duration_ms, result_count=cached.get("total", 0), steamids=",".join(sid_list))
+        _log_request(
+            request,
+            "/api/search/logmatch",
+            200,
+            duration_ms,
+            result_count=cached.get("total", 0),
+            steamids=",".join(sid_list),
+            map_query=map_query,
+        )
         return JSONResponse(cached)
 
     status_code = 200
@@ -867,12 +970,27 @@ def _api_search_logmatch_impl(request: Request, steamids: str, map_query_raw: st
         payload = {"results": results, "total": result_count, "head_to_head": head_to_head}
         cache_set("logmatch", (sid_tuple, map_query.lower()), payload, matching_log_ids)
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/logmatch", status_code, duration_ms, result_count=result_count, steamids=",".join(sid_list))
+        _log_request(
+            request,
+            "/api/search/logmatch",
+            status_code,
+            duration_ms,
+            result_count=result_count,
+            steamids=",".join(sid_list),
+            map_query=map_query,
+        )
         return JSONResponse(payload)
     except Exception as e:
         status_code = 500
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/search/logmatch", status_code, duration_ms, steamids=",".join(sid_list))
+        _log_request(
+            request,
+            "/api/search/logmatch",
+            status_code,
+            duration_ms,
+            steamids=",".join(sid_list),
+            map_query=map_query,
+        )
         return JSONResponse({"results": [], "total": 0, "error": str(e)}, status_code=500)
 
 
@@ -1092,6 +1210,9 @@ def _api_profile_impl(
     steamid_input = (steamid or "").strip()
     if not steamid_input:
         return JSONResponse({"error": "Steam ID is required."}, status_code=400)
+    gm = (gamemode or "").strip()
+    if gm not in ("", "hl", "7s", "6s", "ud"):
+        return JSONResponse({"error": "Invalid gamemode."}, status_code=400)
     try:
         steamid64, resolve_error = resolve_to_steamid64(
             steamid_input,
@@ -1106,6 +1227,7 @@ def _api_profile_impl(
             429,
             duration_ms,
             steamid=steamid_input,
+            gamemode=gm,
         )
         return JSONResponse(
             {
@@ -1129,9 +1251,6 @@ def _api_profile_impl(
     map_query = (map_query_raw or "").strip()
     if len(map_query) > MAP_QUERY_MAX_LENGTH:
         return JSONResponse({"error": "Map filter is too long."}, status_code=400)
-    gm = (gamemode or "").strip()
-    if gm not in ("", "hl", "7s", "6s", "ud"):
-        gm = ""
     cache_key = (
         steamid64,
         gm,
@@ -1142,7 +1261,17 @@ def _api_profile_impl(
     cached = cache_get("profile", cache_key)
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/player/profile", 200, duration_ms, steamid=steamid64, gamemode=gm)
+        _log_request(
+            request,
+            "/api/player/profile",
+            200,
+            duration_ms,
+            steamid=steamid64,
+            gamemode=gm,
+            date_from=_req_log_date_iso(date_from),
+            date_to=_req_log_date_iso(date_to),
+            map_query=map_query,
+        )
         return JSONResponse(
             _profile_response_payload(cached, steamid64),
             headers={"Cache-Control": "private, max-age=300"},
@@ -1157,6 +1286,9 @@ def _api_profile_impl(
             duration_ms,
             steamid=steamid64,
             gamemode=gm,
+            date_from=_req_log_date_iso(date_from),
+            date_to=_req_log_date_iso(date_to),
+            map_query=map_query,
         )
         return rl
     try:
@@ -1169,21 +1301,51 @@ def _api_profile_impl(
         )
         cache_set("profile", cache_key, profile, stats_player_stats_cache_token(STATS_DB_PATH, steamid64))
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/player/profile", 200, duration_ms, steamid=steamid64, gamemode=gm)
+        _log_request(
+            request,
+            "/api/player/profile",
+            200,
+            duration_ms,
+            steamid=steamid64,
+            gamemode=gm,
+            date_from=_req_log_date_iso(date_from),
+            date_to=_req_log_date_iso(date_to),
+            map_query=map_query,
+        )
         return JSONResponse(
             _profile_response_payload(profile, steamid64),
             headers={"Cache-Control": "private, max-age=300"},
         )
     except RuntimeError:
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/player/profile", 404, duration_ms, steamid=steamid64, gamemode=gm)
+        _log_request(
+            request,
+            "/api/player/profile",
+            404,
+            duration_ms,
+            steamid=steamid64,
+            gamemode=gm,
+            date_from=_req_log_date_iso(date_from),
+            date_to=_req_log_date_iso(date_to),
+            map_query=map_query,
+        )
         return JSONResponse(
             {"error": "Stats DB not available for this player.", "steamid64": steamid64},
             status_code=404,
         )
     except Exception as e:
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/player/profile", 500, duration_ms, steamid=steamid64, gamemode=gm)
+        _log_request(
+            request,
+            "/api/player/profile",
+            500,
+            duration_ms,
+            steamid=steamid64,
+            gamemode=gm,
+            date_from=_req_log_date_iso(date_from),
+            date_to=_req_log_date_iso(date_to),
+            map_query=map_query,
+        )
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
@@ -1263,6 +1425,15 @@ def _api_leaderboard_impl(
     except ValueError:
         ml = LEADERBOARD_MIN_LOGS_DEFAULT
     ml = max(1, min(ml, LEADERBOARD_MIN_LOGS_MAX))
+    _lb_log = dict(
+        gamemode=gm,
+        date_from=_req_log_date_iso(date_from),
+        date_to=_req_log_date_iso(date_to),
+        map_query=map_query,
+        lb_type=lt,
+        lb_class_filter=cf,
+        min_logs=str(ml),
+    )
     cache_key = (
         lt,
         gm,
@@ -1281,7 +1452,7 @@ def _api_leaderboard_impl(
             200,
             duration_ms,
             result_count=len(cached.get("rows") or []),
-            classes=f"lb:{lt}",
+            **_lb_log,
         )
         return JSONResponse(cached)
     rl = rate_limit_exceeded(kind="leaderboard", client_ip=_client_ip(request))
@@ -1292,7 +1463,7 @@ def _api_leaderboard_impl(
             "/api/leaderboard",
             429,
             duration_ms,
-            classes=f"lb:{lt}",
+            **_lb_log,
         )
         return rl
     try:
@@ -1324,16 +1495,16 @@ def _api_leaderboard_impl(
             200,
             duration_ms,
             result_count=len(rows),
-            classes=f"lb:{lt}",
+            **_lb_log,
         )
         return JSONResponse(payload)
     except RuntimeError as e:
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/leaderboard", 503, duration_ms, classes=f"lb:{lt}")
+        _log_request(request, "/api/leaderboard", 503, duration_ms, **_lb_log)
         return JSONResponse({"error": str(e)}, status_code=503)
     except Exception as e:
         duration_ms = int((time.perf_counter() - start) * 1000)
-        _log_request(request, "/api/leaderboard", 500, duration_ms, classes=f"lb:{lt}")
+        _log_request(request, "/api/leaderboard", 500, duration_ms, **_lb_log)
         return JSONResponse({"error": str(e)}, status_code=500)
 
 

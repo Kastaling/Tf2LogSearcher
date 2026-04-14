@@ -3540,6 +3540,58 @@
       return out;
     }
 
+    /** Bounds from 2nd–98th percentile; used to clamp plotted Y values (Chart.js always expands the axis to data). */
+    function computeTrendYBounds(rowsSorted, metric) {
+      var vals = [];
+      if (metric === 'dpm') {
+        for (var i = 0; i < rowsSorted.length; i++) {
+          var v = Number(rowsSorted[i] && rowsSorted[i].dpm);
+          if (Number.isFinite(v)) vals.push(v);
+        }
+      } else {
+        for (var j = 0; j < rowsSorted.length; j++) {
+          var r = rowsSorted[j];
+          var a = Number(r && r.kdr);
+          var b = Number(r && r.kadr);
+          if (Number.isFinite(a)) vals.push(a);
+          if (Number.isFinite(b)) vals.push(b);
+        }
+      }
+      if (vals.length < 4) return null;
+      vals.sort(function(a, b) { return a - b; });
+      var n = vals.length;
+      var loI = Math.max(0, Math.floor(n * 0.02));
+      var hiI = Math.min(n - 1, Math.ceil(n * 0.98) - 1);
+      if (hiI <= loI) return null;
+      var lo = vals[loI];
+      var hi = vals[hiI];
+      var span = hi - lo;
+      if (!Number.isFinite(span) || span <= 0) {
+        span = Math.max(Math.abs(hi), Math.abs(lo), 1e-9) * 0.15;
+      }
+      var pad = span * 0.08;
+      lo = lo - pad;
+      hi = hi + pad;
+      if (metric === 'dpm') {
+        lo = Math.max(0, lo);
+      }
+      if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return null;
+      return { min: lo, max: hi };
+    }
+
+    function clampTrendY(v, bounds) {
+      if (bounds == null || !Number.isFinite(v)) return v;
+      return Math.min(bounds.max, Math.max(bounds.min, v));
+    }
+
+    function formatTrendTooltipValue(v) {
+      if (!Number.isFinite(v)) return '\u2014';
+      var a = Math.abs(v);
+      if (a >= 1000) return String(Math.round(v));
+      if (a >= 100) return String(Math.round(v));
+      return (Math.round(v * 100) / 100).toString();
+    }
+
     function colorVar(name) {
       return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     }
@@ -3561,7 +3613,7 @@
       return color;
     }
 
-    function buildTrendDatasets(rowsSorted, metric) {
+    function buildTrendDatasets(rowsSorted, metric, yBounds) {
       var link = colorVar('--link') || '#2e6c80';
       var kdrBlue = '#547d8c';
       var kadrRed = '#a7584b';
@@ -3572,10 +3624,12 @@
           var n = Number(r && r[key]);
           return Number.isFinite(n) ? n : NaN;
         });
+        var rawPlot = yBounds ? raw.map(function(v) { return clampTrendY(v, yBounds); }) : raw;
         if (!useRolling) {
           out.push({
             label: label,
-            data: raw,
+            data: rawPlot,
+            _tooltipY: raw,
             showLine: false,
             pointRadius: 2.4,
             pointHoverRadius: 3,
@@ -3586,9 +3640,12 @@
           });
           return;
         }
+        var roll = rollingAverage(raw, 20);
+        var rollPlot = yBounds ? roll.map(function(v) { return clampTrendY(v, yBounds); }) : roll;
         out.push({
           label: label + ' (raw)',
-          data: raw,
+          data: rawPlot,
+          _tooltipY: raw,
           showLine: false,
           pointRadius: 2,
           pointHoverRadius: 2,
@@ -3599,7 +3656,8 @@
         });
         out.push({
           label: label + ' (20-game avg)',
-          data: rollingAverage(raw, 20),
+          data: rollPlot,
+          _tooltipY: roll,
           borderColor: col,
           backgroundColor: withAlpha(col, 0.18),
           pointRadius: 0,
@@ -3639,7 +3697,8 @@
       if (!canvas) return;
       var sorted = statsTrendSortRows(rows);
       var labels = sorted.map(function(r) { return (r && r.date) ? String(r.date) : ''; });
-      var datasets = buildTrendDatasets(sorted, metric);
+      var yBounds = computeTrendYBounds(sorted, metric === 'kpair' ? 'kpair' : 'dpm');
+      var datasets = buildTrendDatasets(sorted, metric, yBounds);
       var showLegend = metric !== 'dpm';
       destroyTrendState(state);
       loadChartJsIfNeeded().then(function() {
@@ -3657,7 +3716,20 @@
             normalized: true,
             plugins: {
               legend: { display: showLegend, labels: { color: text, boxWidth: 14, usePointStyle: true } },
-              tooltip: { mode: 'index', intersect: false }
+              tooltip: {
+                mode: 'index',
+                intersect: false,
+                callbacks: {
+                  label: function(ctx) {
+                    var ds = ctx.dataset;
+                    var arr = ds._tooltipY;
+                    var y = arr && arr[ctx.dataIndex];
+                    if (!Number.isFinite(y)) y = ctx.parsed.y;
+                    var lab = ds.label != null ? String(ds.label) : '';
+                    return lab ? (lab + ': ' + formatTrendTooltipValue(y)) : formatTrendTooltipValue(y);
+                  }
+                }
+              }
             },
             scales: {
               x: { ticks: { color: textMuted, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { color: withAlpha(border, 0.35) } },
@@ -3760,7 +3832,7 @@
               '<button type="button" class="stats-trend-btn js-stats-trend-btn" data-metric="kpair" role="tab" aria-selected="false">KDR / KADR</button>' +
             '</div>' +
             '<div class="stats-trend-canvas-wrap"><canvas class="js-trend-chart-canvas" aria-label="Trends over time chart"></canvas></div>' +
-            '<p class="stats-trend-note">20-game rolling average with per-game points.</p>' +
+            '<p class="stats-trend-note">20-game rolling average with per-game points. Y-axis trimmed to the middle ~96% of values so bad logs do not flatten the curve; tooltips show exact stats.</p>' +
           '</div>';
       }
       return '<div class="stats-summary">' +
@@ -4079,6 +4151,16 @@
       }
     }
 
+    /** Link to logs.tf for a numeric log id; otherwise escape label as plain text (security). */
+    function profileLogsTfDateLink(logId, dateLabel) {
+      var label = dateLabel != null ? String(dateLabel) : '\u2014';
+      if (logId == null || logId === '') return escapeHtml(label);
+      var idStr = String(logId).trim();
+      if (!/^\d+$/.test(idStr)) return escapeHtml(label);
+      var url = 'https://logs.tf/' + encodeURIComponent(idStr);
+      return '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(label) + '</a>';
+    }
+
     function profileFormatPlaytime(totalSec) {
       var n = Math.max(0, Math.floor(Number(totalSec) || 0));
       var h = Math.floor(n / 3600);
@@ -4136,6 +4218,87 @@
       return String(Math.round(Number(v)));
     }
 
+    function profileClassRowHtml(c) {
+      var cn = c && c['class'] != null ? c['class'] : '';
+      return '<tr><td>' + profileClassCell(cn) + '</td><td>' + escapeHtml(String(c.logs_count != null ? c.logs_count : '')) + '</td><td>' +
+        escapeHtml(profileFormatPlaytime(c.total_playtime_secs)) + '</td><td>' + escapeHtml(String(c.total_kills != null ? c.total_kills : '')) + '</td><td>' +
+        escapeHtml(String(c.total_deaths != null ? c.total_deaths : '')) + '</td><td>' + (c.avg_dpm != null ? escapeHtml(String(c.avg_dpm)) : '\u2014') + '</td><td>' +
+        (c.avg_kdr != null ? escapeHtml(String(c.avg_kdr)) : '\u2014') + '</td></tr>';
+    }
+
+    var PROFILE_CLASS_COLUMNS = [
+      { key: 'class', label: 'Class', type: 'text' },
+      { key: 'logs_count', label: 'Logs', type: 'number' },
+      { key: 'total_playtime_secs', label: 'Playtime', type: 'number' },
+      { key: 'total_kills', label: 'Kills', type: 'number' },
+      { key: 'total_deaths', label: 'Deaths', type: 'number' },
+      { key: 'avg_dpm', label: 'Avg DPM', type: 'number' },
+      { key: 'avg_kdr', label: 'Avg KDR', type: 'number' }
+    ];
+
+    function profileClassSortValue(row, colKey, type) {
+      if (type === 'text') {
+        var t = row[colKey];
+        return (t != null ? String(t) : '').toLowerCase();
+      }
+      var v = row[colKey];
+      var n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function profileClassSortedRows(rows, sortCol, sortDir) {
+      var colDef = PROFILE_CLASS_COLUMNS.find(function(c) { return c.key === sortCol; });
+      if (!colDef) return rows.slice();
+      var sorted = rows.slice();
+      sorted.sort(function(a, b) {
+        var va = profileClassSortValue(a, colDef.key, colDef.type);
+        var vb = profileClassSortValue(b, colDef.key, colDef.type);
+        if (va === null && vb === null) return 0;
+        if (va === null) return 1;
+        if (vb === null) return -1;
+        if (colDef.type === 'text') {
+          if (va < vb) return -sortDir;
+          if (va > vb) return sortDir;
+          return 0;
+        }
+        if (va < vb) return -sortDir;
+        if (va > vb) return sortDir;
+        return 0;
+      });
+      return sorted;
+    }
+
+    function profileClassTableInnerHtml(rows, sortCol, sortDir) {
+      var thead = '<tr>';
+      PROFILE_CLASS_COLUMNS.forEach(function(c) {
+        var cls = 'sortable';
+        if (c.key === sortCol) cls += sortDir === 1 ? ' sorted-asc' : ' sorted-desc';
+        thead += '<th class="' + cls + '" data-col="' + escapeHtml(c.key) + '" scope="col">' + escapeHtml(c.label) + '</th>';
+      });
+      thead += '</tr>';
+      var bodyRows = profileClassSortedRows(rows, sortCol, sortDir);
+      var tbody = bodyRows.map(profileClassRowHtml).join('');
+      return '<thead>' + thead + '</thead><tbody>' + tbody + '</tbody>';
+    }
+
+    function bindProfileClassTableSort(table) {
+      table.addEventListener('click', function(ev) {
+        var th = ev.target.closest('th.sortable');
+        if (!th || !table.contains(th)) return;
+        var col = th.getAttribute('data-col');
+        if (!col) return;
+        var rows = table._profileClassRows;
+        if (!rows || !rows.length) return;
+        if (table._sortCol === col) {
+          table._sortDir *= -1;
+        } else {
+          table._sortCol = col;
+          table._sortDir = col === 'class' ? 1 : -1;
+        }
+        table.innerHTML = profileClassTableInnerHtml(rows, table._sortCol, table._sortDir);
+      });
+    }
+
     function renderProfileResult(el, data, elapsedMs) {
       destroyStatsTrendChart();
       destroyProfileTrendChart();
@@ -4148,7 +4311,8 @@
         ? ('<p class="stats-summary-meta">Most played: ' + profileClassCell(mpc) + '</p>')
         : '';
       var dateRange = '<p class="stats-summary-meta">Logs: ' + escapeHtml(String(data.logs_count != null ? data.logs_count : '')) +
-        ' &middot; ' + profileFormatUnixDate(ov.first_log_ts) + ' \u2192 ' + profileFormatUnixDate(ov.last_log_ts) + '</p>';
+        ' &middot; ' + profileLogsTfDateLink(ov.first_log_id, profileFormatUnixDate(ov.first_log_ts)) +
+        ' \u2192 ' + profileLogsTfDateLink(ov.last_log_id, profileFormatUnixDate(ov.last_log_ts)) + '</p>';
       var gridItems = [
         { key: 'Wins', value: ov.wins != null ? String(ov.wins) : '\u2014' },
         { key: 'Losses', value: ov.losses != null ? String(ov.losses) : '\u2014' },
@@ -4205,7 +4369,7 @@
                 '<button type="button" class="stats-trend-btn js-profile-trend-btn" data-metric="kpair" role="tab" aria-selected="false">KDR / KADR</button>' +
               '</div>' +
               '<div class="stats-trend-canvas-wrap"><canvas class="js-trend-chart-canvas" aria-label="Profile DPM and KDR trends"></canvas></div>' +
-              '<p class="stats-trend-note">20-game rolling average with per-game points.</p>' +
+              '<p class="stats-trend-note">20-game rolling average with per-game points. Y-axis trimmed to the middle ~96% of values so bad logs do not flatten the curve; tooltips show exact stats.</p>' +
             '</div>' +
           '</div>';
       }
@@ -4243,24 +4407,17 @@
       var classes = data.classes || [];
       var classesOther = data.classes_other || [];
       var classesTable = '';
-      function profileClassRowHtml(c) {
-        var cn = c && c['class'] != null ? c['class'] : '';
-        return '<tr><td>' + profileClassCell(cn) + '</td><td>' + escapeHtml(String(c.logs_count != null ? c.logs_count : '')) + '</td><td>' +
-          escapeHtml(profileFormatPlaytime(c.total_playtime_secs)) + '</td><td>' + escapeHtml(String(c.total_kills != null ? c.total_kills : '')) + '</td><td>' +
-          escapeHtml(String(c.total_deaths != null ? c.total_deaths : '')) + '</td><td>' + (c.avg_dpm != null ? escapeHtml(String(c.avg_dpm)) : '\u2014') + '</td><td>' +
-          (c.avg_kdr != null ? escapeHtml(String(c.avg_kdr)) : '\u2014') + '</td></tr>';
-      }
+      var profileClassDefaultSortCol = 'total_playtime_secs';
+      var profileClassDefaultSortDir = -1;
       if (classes.length) {
-        var cthead = '<tr><th>Class</th><th>Logs</th><th>Playtime</th><th>Kills</th><th>Deaths</th><th>Avg DPM</th><th>Avg KDR</th></tr>';
-        var cbody = classes.map(profileClassRowHtml).join('');
-        classesTable = '<div class="stats-summary"><p class="stats-summary-title">By class</p><div class="stats-table-wrap"><table class="stats-table"><thead>' + cthead + '</thead><tbody>' + cbody + '</tbody></table></div></div>';
+        var cInner = profileClassTableInnerHtml(classes, profileClassDefaultSortCol, profileClassDefaultSortDir);
+        classesTable = '<div class="stats-summary"><p class="stats-summary-title">By class</p><p class="stats-summary-meta">Click a column header to sort; click again to reverse.</p><div class="stats-table-wrap"><table class="stats-table js-profile-classes-main">' + cInner + '</table></div></div>';
       }
       if (classesOther.length) {
-        var othead = '<tr><th>Class</th><th>Logs</th><th>Playtime</th><th>Kills</th><th>Deaths</th><th>Avg DPM</th><th>Avg KDR</th></tr>';
-        var obody = classesOther.map(profileClassRowHtml).join('');
+        var oInner = profileClassTableInnerHtml(classesOther, profileClassDefaultSortCol, profileClassDefaultSortDir);
         classesTable += '<details class="profile-classes-other"><summary>Other classes (' + escapeHtml(String(classesOther.length)) + ')</summary>' +
-          '<p class="stats-summary-meta">Spectator, mod classes, or legacy labels not in the standard nine.</p>' +
-          '<div class="stats-table-wrap"><table class="stats-table"><thead>' + othead + '</thead><tbody>' + obody + '</tbody></table></div></details>';
+          '<p class="stats-summary-meta">Spectator, mod classes, or legacy labels not in the standard nine. Click column headers to sort.</p>' +
+          '<div class="stats-table-wrap"><table class="stats-table js-profile-classes-other">' + oInner + '</table></div></details>';
       }
 
       var weapons = data.weapons || [];
@@ -4328,6 +4485,21 @@
       if (profileTrendHost && profileTrendRows && profileTrendRows.length >= 2) {
         bindProfileTrendControls(el);
         renderProfileTrendChart(profileTrendHost, profileTrendRows, profileTrendMetric);
+      }
+
+      var tm = el.querySelector('table.js-profile-classes-main');
+      if (tm && classes.length) {
+        tm._profileClassRows = classes;
+        tm._sortCol = profileClassDefaultSortCol;
+        tm._sortDir = profileClassDefaultSortDir;
+        bindProfileClassTableSort(tm);
+      }
+      var to = el.querySelector('table.js-profile-classes-other');
+      if (to && classesOther.length) {
+        to._profileClassRows = classesOther;
+        to._sortCol = profileClassDefaultSortCol;
+        to._sortDir = profileClassDefaultSortDir;
+        bindProfileClassTableSort(to);
       }
     }
 

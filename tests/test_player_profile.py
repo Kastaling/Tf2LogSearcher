@@ -142,6 +142,8 @@ def test_profile_overview_counts(populated_db, monkeypatch):
     assert ov["total_kills"] == 24   # 12 + 12
     assert ov["logs_count"] == 2
     assert ov["best_killstreak"] == 4
+    assert ov["first_log_id"] == 1001
+    assert ov["last_log_id"] == 1002
     assert 1001 in log_ids and 1002 in log_ids
 
 
