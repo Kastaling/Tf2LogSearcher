@@ -1020,8 +1020,11 @@ def player_stats_agg_nonempty(db_path: str | Path) -> bool:
 
 def count_stats_index_rows(db_path: str | Path) -> tuple[int | None, int | None]:
     """
-    Return (COUNT(log_players), COUNT(player_stats_agg)) for progress UI.
-    (None, None) if the DB is missing or tables are unreadable.
+    Cheap size proxies for the progress UI (avoids COUNT(*) full table scans on large DBs).
+
+    ``log_players`` uses ``MAX(id)`` (INTEGER PRIMARY KEY AUTOINCREMENT). ``player_stats_agg``
+    uses ``MAX(rowid)`` as a row-count proxy (ordinary rowid table; inexpensive vs COUNT(*)).
+    Both can exceed true row counts if rows were deleted (gaps); close enough for a dashboard.
     """
     path = Path(db_path)
     if not path.is_file():
@@ -1030,8 +1033,8 @@ def count_stats_index_rows(db_path: str | Path) -> tuple[int | None, int | None]
         conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
         try:
             conn.execute("PRAGMA busy_timeout=10000")
-            lp = conn.execute("SELECT COUNT(*) FROM log_players").fetchone()
-            pa = conn.execute("SELECT COUNT(*) FROM player_stats_agg").fetchone()
+            lp = conn.execute("SELECT COALESCE(MAX(id), 0) FROM log_players").fetchone()
+            pa = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM player_stats_agg").fetchone()
             a = int(lp[0] or 0) if lp else 0
             b = int(pa[0] or 0) if pa else 0
             return (a, b)

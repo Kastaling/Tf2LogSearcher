@@ -1050,7 +1050,7 @@ _stats_index_counts_cache: dict[str, Any] = {"payload": None, "ts": 0.0}
 
 @router.get("/api/stats-index-counts")
 async def api_stats_index_counts():
-    """log_players and player_stats_agg row counts; cached ~2 min."""
+    """Cheap size proxies (MAX id / MAX rowid), not full COUNT(*); cached ~2 min."""
     now = time.time()
     ts = float(_stats_index_counts_cache["ts"])
     if ts > 0 and (now - ts) < _STATS_INDEX_COUNTS_CACHE_TTL_SEC:

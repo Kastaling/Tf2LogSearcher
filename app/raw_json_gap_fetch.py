@@ -280,6 +280,10 @@ def main() -> None:
 
         conn.commit()
     finally:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         conn.close()
 
     elapsed = time.perf_counter() - t0
