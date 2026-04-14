@@ -300,13 +300,19 @@
       display: flex;
       flex-wrap: nowrap;
       gap: 1rem 1.25rem;
-      justify-content: center;
+      /* flex-start so overflow scroll starts at the first column (center would clip the left). */
+      justify-content: flex-start;
       align-items: flex-start;
       margin-top: 0.75rem;
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
       padding-bottom: 0.35rem;
       scrollbar-gutter: stable;
+    }
+    @media (min-width: 900px) {
+      .download-progress-stats-board {
+        justify-content: center;
+      }
     }
     .download-progress-stats-block {
       flex: 1 1 auto;
@@ -393,6 +399,17 @@
     }
     .download-progress-stats .download-progress-value {
       font-variant-numeric: tabular-nums;
+    }
+    .download-progress-value--stacked .download-progress-log-line-primary {
+      font-weight: 600;
+    }
+    .download-progress-log-line-sub {
+      font-size: 0.86em;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-top: 0.3rem;
+      line-height: 1.35;
+      word-break: break-word;
     }
     @media (max-width: 640px) {
       .download-progress--panel {
@@ -1384,6 +1401,61 @@
       tbody.appendChild(tr);
     }
 
+    function appendLogsThisUpdateRow(tbody, data) {
+      const tr = document.createElement('tr');
+      const th = document.createElement('th');
+      th.scope = 'row';
+      th.textContent = 'Logs this update';
+      const td = document.createElement('td');
+      td.className = 'download-progress-value download-progress-value--stacked';
+      const j = data.logs_json_this_update;
+      const r = data.logs_raw_this_update;
+      const legacy = data.logs_downloaded_since_last_update;
+      const hasNewJson = j != null && typeof j === 'number' && Number.isFinite(j);
+      const hasNewRaw = r != null && typeof r === 'number' && Number.isFinite(r);
+      const dlJson = data.download_json_enabled !== false;
+      const dlRaw = data.download_raw_enabled === true;
+      const main = document.createElement('div');
+      main.className = 'download-progress-log-line-primary';
+      if (hasNewJson || hasNewRaw) {
+        const parts = [];
+        if (dlJson && hasNewJson) parts.push('JSON ' + fmtProgressNum(j));
+        if (dlRaw && hasNewRaw) parts.push('Raw ' + fmtProgressNum(r));
+        main.textContent = parts.length ? parts.join(' \u00b7 ') : '\u2014';
+      } else if (legacy != null && typeof legacy === 'number' && Number.isFinite(legacy)) {
+        main.textContent = fmtProgressNum(legacy);
+      } else {
+        main.textContent = 'N/A';
+      }
+      td.appendChild(main);
+      function nz(v) {
+        if (v == null || typeof v !== 'number' || !Number.isFinite(v)) return 0;
+        return Math.trunc(v);
+      }
+      const jf = nz(data.logs_json_failed_this_update);
+      const rfz = nz(data.raw_failed_zip_this_update);
+      const rfs = nz(data.raw_failed_save_this_update);
+      const rfx = nz(data.raw_failed_extract_this_update);
+      const rfi = nz(data.raw_failed_index_this_update);
+      const failBits = [];
+      if (jf > 0) failBits.push('JSON fetch failed ' + fmtProgressNum(jf));
+      const rawParts = [];
+      if (rfz > 0) rawParts.push('zip/download ' + fmtProgressNum(rfz));
+      if (rfs > 0) rawParts.push('save ' + fmtProgressNum(rfs));
+      if (rfx > 0) rawParts.push('read zip ' + fmtProgressNum(rfx));
+      if (rfi > 0) rawParts.push('parse/DB ' + fmtProgressNum(rfi));
+      if (rawParts.length) failBits.push('Raw: ' + rawParts.join(', '));
+      if (failBits.length) {
+        const sub = document.createElement('div');
+        sub.className = 'download-progress-log-line-sub';
+        sub.textContent = 'Issues: ' + failBits.join(' \u00b7 ');
+        td.appendChild(sub);
+      }
+      tr.appendChild(th);
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+
     function appendIndexedPlaceholderRow(tbody, rowId, extraClass, label) {
       const tr = document.createElement('tr');
       tr.id = rowId;
@@ -1565,7 +1637,9 @@
         data.rate_logs_per_sec_aggregated != null ||
         data.updated_at ||
         data.earliest_log_timestamp != null ||
-        data.logs_downloaded_since_last_update != null;
+        data.logs_downloaded_since_last_update != null ||
+        data.logs_json_this_update != null ||
+        data.logs_raw_this_update != null;
 
       if (!hasStats && pct == null) {
         el.className = 'download-progress';
@@ -1646,11 +1720,7 @@
         const earliestStr = formatEarliestLogDate(data.earliest_log_timestamp);
         if (earliestStr) appendProgressRow(tbodyQueue, 'Earliest log', earliestStr);
       }
-      if (data.logs_downloaded_since_last_update != null && typeof data.logs_downloaded_since_last_update === 'number') {
-        appendProgressRow(tbodyQueue, 'Logs this update', fmtProgressNum(data.logs_downloaded_since_last_update));
-      } else {
-        appendProgressRow(tbodyQueue, 'Logs this update', 'N/A');
-      }
+      appendLogsThisUpdateRow(tbodyQueue, data);
       tableQueue.appendChild(tbodyQueue);
       blockQueue.appendChild(titleQueue);
       blockQueue.appendChild(tableQueue);

@@ -257,6 +257,19 @@ def _log_stats_and_eta(logs_dir: Path, recent_writes: list[tuple[float, int]]) -
 PROGRESS_FILENAME = "progress.json"
 
 
+def _empty_progress_interval() -> dict[str, int]:
+    """Counters reset each progress.json write (DOWNLOADER interval)."""
+    return {
+        "json_ok": 0,
+        "raw_ok": 0,
+        "json_failed": 0,
+        "raw_failed_zip": 0,
+        "raw_failed_save": 0,
+        "raw_failed_extract": 0,
+        "raw_failed_index": 0,
+    }
+
+
 def _rate_logs_per_sec(recent_writes: list[tuple[float, int]]) -> float | None:
     """Return logs per second from recent window, or None if not enough data."""
     if len(recent_writes) < 2:
@@ -303,7 +316,7 @@ def _write_progress_if_due(
     state_dir: Path,
     recent_writes: list[tuple[float, int]],
     last_progress_write_ref: list[float],
-    downloads_since_progress_ref: list[int],
+    progress_interval_ref: list[dict[str, int]],
     session_start_time_ref: list[float],
     session_downloads_ref: list[int],
 ) -> None:
@@ -330,9 +343,17 @@ def _write_progress_if_due(
         if eta_str == "N/A" and recent_rate is not None:
             eta_str = _format_eta_from_rate(recent_rate, remaining)
     earliest_ts = _earliest_log_timestamp(logs_dir, min_id)
-    logs_this_update = downloads_since_progress_ref[0]
-    downloads_since_progress_ref[0] = 0  # reset for next interval
-    payload: dict[str, int | float | str | None] = {
+    c = progress_interval_ref[0]
+    progress_interval_ref[0] = _empty_progress_interval()
+    json_ok = int(c.get("json_ok", 0))
+    raw_ok = int(c.get("raw_ok", 0))
+    json_failed = int(c.get("json_failed", 0))
+    rf_zip = int(c.get("raw_failed_zip", 0))
+    rf_save = int(c.get("raw_failed_save", 0))
+    rf_ex = int(c.get("raw_failed_extract", 0))
+    rf_idx = int(c.get("raw_failed_index", 0))
+    logs_this_update = json_ok + raw_ok
+    payload: dict[str, int | float | str | None | bool] = {
         "min_id": min_id,
         "max_id": max_id,
         "total_files": count,
@@ -345,7 +366,16 @@ def _write_progress_if_due(
         "backfill_complete": backfill_complete,
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "earliest_log_timestamp": earliest_ts,
+        "download_json_enabled": DOWNLOAD_JSON_ENABLED,
+        "download_raw_enabled": DOWNLOAD_RAW_ENABLED,
         "logs_downloaded_since_last_update": logs_this_update,
+        "logs_json_this_update": json_ok,
+        "logs_raw_this_update": raw_ok,
+        "logs_json_failed_this_update": json_failed,
+        "raw_failed_zip_this_update": rf_zip,
+        "raw_failed_save_this_update": rf_save,
+        "raw_failed_extract_this_update": rf_ex,
+        "raw_failed_index_this_update": rf_idx,
     }
     try:
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -485,7 +515,7 @@ def try_raw_download_and_index(
     raw_db_conn: sqlite3.Connection | None,
     request_count_ref: list[int],
     recent_writes: list[tuple[float, int]],
-    downloads_since_progress_ref: list[int],
+    progress_interval_ref: list[dict[str, int]],
     session_downloads_ref: list[int],
 ) -> bool:
     """
@@ -509,13 +539,16 @@ def try_raw_download_and_index(
 
     zip_bytes = fetch_raw_log_zip_with_retry(log_id)
     if zip_bytes is None:
+        progress_interval_ref[0]["raw_failed_zip"] += 1
         return False
     saved = save_raw_log_zip(log_id, zip_bytes, raw_logs_dir)
     if saved is None:
+        progress_interval_ref[0]["raw_failed_save"] += 1
         return False
     content = extract_log_content_from_zip(zip_bytes)
     if content is None:
         logger.warning("Could not read raw log from zip for log %s", log_id)
+        progress_interval_ref[0]["raw_failed_extract"] += 1
         return False
     try:
         parsed = parse_raw_log(log_id, content)
@@ -532,10 +565,11 @@ def try_raw_download_and_index(
         )
     except Exception as e:
         logger.warning("Raw log parse/store failed for %s: %s", log_id, e)
+        progress_interval_ref[0]["raw_failed_index"] += 1
         return False
 
     recent_writes.append((time.time(), log_id))
-    downloads_since_progress_ref[0] += 1
+    progress_interval_ref[0]["raw_ok"] += 1
     session_downloads_ref[0] += 1
     if len(recent_writes) > RECENT_WRITES_SIZE:
         del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
@@ -549,7 +583,7 @@ def run_catch_up_newest(
     request_count_ref: list[int],
     recent_writes: list[tuple[float, int]],
     last_progress_write_ref: list[float],
-    downloads_since_progress_ref: list[int],
+    progress_interval_ref: list[dict[str, int]],
     session_start_time_ref: list[float],
     session_downloads_ref: list[int],
     chat_db_conn: sqlite3.Connection | None = None,
@@ -588,7 +622,7 @@ def run_catch_up_newest(
                 raw_db_conn,
                 request_count_ref,
                 recent_writes,
-                downloads_since_progress_ref,
+                progress_interval_ref,
                 session_downloads_ref,
             ):
                 downloaded += 1
@@ -621,7 +655,7 @@ def run_catch_up_newest(
                     _collect_pending_agg_steamids_from_log(data, pending_agg_steamids, log_id, state_dir)
             size_bytes = path.stat().st_size
             recent_writes.append((time.time(), log_id))
-            downloads_since_progress_ref[0] += 1
+            progress_interval_ref[0]["json_ok"] += 1
             session_downloads_ref[0] += 1
             if len(recent_writes) > RECENT_WRITES_SIZE:
                 del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
@@ -638,16 +672,17 @@ def run_catch_up_newest(
                 raw_db_conn,
                 request_count_ref,
                 recent_writes,
-                downloads_since_progress_ref,
+                progress_interval_ref,
                 session_downloads_ref,
             )
         else:
+            progress_interval_ref[0]["json_failed"] += 1
             skipped.add(log_id)
             save_skip_list(state_dir, skipped)
             logger.info("Skipped log %s (failed or invalid)", log_id)
     logger.info("Phase 1 done: downloaded %s new log(s) from offset 0", downloaded)
     _log_stats_and_eta(logs_dir, recent_writes)
-    _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, downloads_since_progress_ref, session_start_time_ref, session_downloads_ref)
+    _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, progress_interval_ref, session_start_time_ref, session_downloads_ref)
     return downloaded
 
 
@@ -659,7 +694,7 @@ def run_backfill_from_offset(
     request_count_ref: list[int],
     recent_writes: list[tuple[float, int]],
     last_progress_write_ref: list[float],
-    downloads_since_progress_ref: list[int],
+    progress_interval_ref: list[dict[str, int]],
     session_start_time_ref: list[float],
     session_downloads_ref: list[int],
     chat_db_conn: sqlite3.Connection | None = None,
@@ -676,7 +711,7 @@ def run_backfill_from_offset(
             logger.info("No more logs at offset %s (reached end of API)", next_offset)
             save_next_offset(state_dir, next_offset)
             _log_stats_and_eta(logs_dir, recent_writes)
-            _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, downloads_since_progress_ref, session_start_time_ref, session_downloads_ref)
+            _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, progress_interval_ref, session_start_time_ref, session_downloads_ref)
             return next_offset
         logger.info("Got %s log IDs from API (offset %s)", len(logs), next_offset)
         downloaded = 0
@@ -705,7 +740,7 @@ def run_backfill_from_offset(
                     raw_db_conn,
                     request_count_ref,
                     recent_writes,
-                    downloads_since_progress_ref,
+                    progress_interval_ref,
                     session_downloads_ref,
                 ):
                     downloaded += 1
@@ -739,7 +774,7 @@ def run_backfill_from_offset(
                         _collect_pending_agg_steamids_from_log(data, pending_agg_steamids, log_id, state_dir)
                 size_bytes = path.stat().st_size
                 recent_writes.append((time.time(), log_id))
-                downloads_since_progress_ref[0] += 1
+                progress_interval_ref[0]["json_ok"] += 1
                 session_downloads_ref[0] += 1
                 if len(recent_writes) > RECENT_WRITES_SIZE:
                     del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
@@ -756,10 +791,11 @@ def run_backfill_from_offset(
                     raw_db_conn,
                     request_count_ref,
                     recent_writes,
-                    downloads_since_progress_ref,
+                    progress_interval_ref,
                     session_downloads_ref,
                 )
             else:
+                progress_interval_ref[0]["json_failed"] += 1
                 skipped.add(log_id)
                 save_skip_list(state_dir, skipped)
                 skipped_this_page += 1
@@ -767,7 +803,7 @@ def run_backfill_from_offset(
         next_offset += len(logs)
         save_next_offset(state_dir, next_offset)
         _log_stats_and_eta(logs_dir, recent_writes)
-        _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, downloads_since_progress_ref, session_start_time_ref, session_downloads_ref)
+        _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, progress_interval_ref, session_start_time_ref, session_downloads_ref)
         logger.info("Page done: offset now %s | downloaded=%s skipped=%s already_had=%s", next_offset, downloaded, skipped_this_page, already_had)
         if len(logs) < LIMIT:
             break
@@ -785,7 +821,7 @@ def run_once(logs_dir: Path, state_dir: Path, skipped: set[int], next_offset: in
         request_count_ref,
         [],
         [0.0],
-        [0],
+        [_empty_progress_interval()],
         [0.0],
         [0],
         None,
@@ -876,7 +912,7 @@ def main() -> None:
     try:
         recent_writes: list[tuple[float, int]] = []  # sliding window for ETA rate (fallback)
         last_progress_write_ref: list[float] = [0.0]  # last time we wrote progress.json
-        downloads_since_progress_ref: list[int] = [0]  # count of logs written since last progress update
+        progress_interval_ref: list[dict[str, int]] = [_empty_progress_interval()]
         session_start_time_ref: list[float] = [time.time()]  # process start for aggregated ETA rate
         session_downloads_ref: list[int] = [0]  # total logs written this run for aggregated ETA rate
         pending_agg_steamids: set[str] = _load_pending_agg_steamids(state_dir)
@@ -903,7 +939,7 @@ def main() -> None:
                     request_count_ref,
                     recent_writes,
                     last_progress_write_ref,
-                    downloads_since_progress_ref,
+                    progress_interval_ref,
                     session_start_time_ref,
                     session_downloads_ref,
                     chat_db_conn,
@@ -931,7 +967,7 @@ def main() -> None:
                     request_count_ref,
                     recent_writes,
                     last_progress_write_ref,
-                    downloads_since_progress_ref,
+                    progress_interval_ref,
                     session_start_time_ref,
                     session_downloads_ref,
                     chat_db_conn,

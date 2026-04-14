@@ -985,6 +985,11 @@ async def api_download_progress(request: Request):
         "remaining", "eta_human", "rate_logs_per_sec", "rate_logs_per_sec_aggregated",
         "backfill_complete", "updated_at",
         "earliest_log_timestamp", "logs_downloaded_since_last_update",
+        "download_json_enabled", "download_raw_enabled",
+        "logs_json_this_update", "logs_raw_this_update",
+        "logs_json_failed_this_update",
+        "raw_failed_zip_this_update", "raw_failed_save_this_update",
+        "raw_failed_extract_this_update", "raw_failed_index_this_update",
     }
     out = {k: data[k] for k in allowed if k in data}
     return JSONResponse(out)
