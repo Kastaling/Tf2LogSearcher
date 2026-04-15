@@ -1,4 +1,16 @@
 services:
+  # Full pytest suite (not started by `docker compose up`; use --profile test)
+  test:
+    profiles: [test]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    # Intentionally no env_file: tests do not need real API keys (HTTP is mocked).
+
   web:
     build: .
     ports:

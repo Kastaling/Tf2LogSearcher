@@ -220,6 +220,35 @@ def _req_log_date_iso(d: date | None) -> str:
     return d.isoformat() if d is not None else ""
 
 
+def _resolve_steamid64_for_api(
+    request: Request,
+    steamid_input: str,
+) -> tuple[str | None, str | None, int | None]:
+    """
+    Resolve Steam identifiers with per-IP vanity rate limiting (same budget as /api/player/profile).
+
+    Returns (steamid64, resolve_error, retry_after_sec). On success: (sid, None, None).
+    On Steam vanity rate limit: (None, None, retry_after). On API/parse error: (None, message, None).
+    """
+    try:
+        sid, err = resolve_to_steamid64(
+            steamid_input,
+            STEAM_WEB_API_KEY,
+            vanity_rl_client_ip=_client_ip(request),
+        )
+        return sid, err, None
+    except SteamVanityRateLimited as e:
+        return None, None, e.retry_after
+
+
+def _resolve_steamid64_for_embed(request: Request, steamid_in: str) -> tuple[str | None, str | None]:
+    """OG/meta card: same vanity RL as APIs; on limit, behave like unresolved (generic title/desc)."""
+    sid, err, rl = _resolve_steamid64_for_api(request, steamid_in)
+    if rl is not None:
+        return None, None
+    return sid, err
+
+
 def _log_request(
     request: Request,
     endpoint: str,
@@ -318,7 +347,31 @@ def _api_search_chat_impl(
 
     steamid64 = ""
     if not is_leaderboard:
-        steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+        steamid64, resolve_error, vanity_rl = _resolve_steamid64_for_api(request, steamid_input)
+        if vanity_rl is not None:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            _log_request(
+                request,
+                "/api/search/chat",
+                429,
+                duration_ms,
+                result_count=None,
+                word=word,
+                steamid=steamid_input,
+                date_from=_req_log_date_iso(date_from),
+                date_to=_req_log_date_iso(date_to),
+                map_query=map_query,
+            )
+            return JSONResponse(
+                {
+                    "results": [],
+                    "total": 0,
+                    "error": "Too many Steam vanity lookups. Please try again in a moment.",
+                    "retry_after": vanity_rl,
+                },
+                status_code=429,
+                headers={"Retry-After": str(vanity_rl)},
+            )
         if resolve_error is not None:
             return JSONResponse(
                 {"results": [], "total": 0, "error": resolve_error},
@@ -495,7 +548,27 @@ def _api_search_stats_impl(
     steamid_input = (steamid or "").strip()
     if not steamid_input:
         return JSONResponse({"rows": [], "error": "Steam ID is required."}, status_code=400)
-    steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+    steamid64, resolve_error, vanity_rl = _resolve_steamid64_for_api(request, steamid_input)
+    if vanity_rl is not None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/search/stats",
+            429,
+            duration_ms,
+            steamid=steamid_input,
+            gamemode=gamemode,
+            classes=classes,
+        )
+        return JSONResponse(
+            {
+                "rows": [],
+                "error": "Too many Steam vanity lookups. Please try again in a moment.",
+                "retry_after": vanity_rl,
+            },
+            status_code=429,
+            headers={"Retry-After": str(vanity_rl)},
+        )
     if resolve_error is not None:
         return JSONResponse({"rows": [], "error": resolve_error}, status_code=400)
     assert steamid64 is not None
@@ -594,7 +667,26 @@ def _api_search_coplayers_impl(
     steamid_input = (steamid or "").strip()
     if not steamid_input:
         return JSONResponse({"rows": [], "error": "Steam ID is required."}, status_code=400)
-    steamid64, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+    steamid64, resolve_error, vanity_rl = _resolve_steamid64_for_api(request, steamid_input)
+    if vanity_rl is not None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(
+            request,
+            "/api/search/coplayers",
+            429,
+            duration_ms,
+            steamid=steamid_input,
+            gamemode=(gamemode or "").strip(),
+        )
+        return JSONResponse(
+            {
+                "rows": [],
+                "error": "Too many Steam vanity lookups. Please try again in a moment.",
+                "retry_after": vanity_rl,
+            },
+            status_code=429,
+            headers={"Retry-After": str(vanity_rl)},
+        )
     if resolve_error is not None:
         return JSONResponse({"rows": [], "error": resolve_error}, status_code=400)
     assert steamid64 is not None
@@ -938,7 +1030,27 @@ def _api_search_logmatch_impl(request: Request, steamids: str, map_query_raw: st
         return JSONResponse({"results": [], "total": 0, "error": "At least one Steam ID is required."}, status_code=400)
     sid_list: list[str] = []
     for i, raw in enumerate(raw_list):
-        steamid64, resolve_error = resolve_to_steamid64(raw, STEAM_WEB_API_KEY)
+        steamid64, resolve_error, vanity_rl = _resolve_steamid64_for_api(request, raw)
+        if vanity_rl is not None:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            _log_request(
+                request,
+                "/api/search/logmatch",
+                429,
+                duration_ms,
+                steamids=",".join(sid_list) if sid_list else "",
+                map_query=map_query,
+            )
+            return JSONResponse(
+                {
+                    "results": [],
+                    "total": 0,
+                    "error": "Too many Steam vanity lookups. Please try again in a moment.",
+                    "retry_after": vanity_rl,
+                },
+                status_code=429,
+                headers={"Retry-After": str(vanity_rl)},
+            )
         if resolve_error is not None:
             return JSONResponse(
                 {"results": [], "total": 0, "error": f"Could not resolve Steam ID {i + 1}: {resolve_error}"},
@@ -1041,7 +1153,17 @@ async def api_add_chat_subscription(
             )
         steamid64 = ""
     else:
-        resolved, resolve_error = resolve_to_steamid64(steamid_input, STEAM_WEB_API_KEY)
+        resolved, resolve_error, vanity_rl = _resolve_steamid64_for_api(request, steamid_input)
+        if vanity_rl is not None:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Too many Steam vanity lookups. Please try again in a moment.",
+                    "retry_after": vanity_rl,
+                },
+                status_code=429,
+                headers={"Retry-After": str(vanity_rl)},
+            )
         if resolve_error is not None:
             return JSONResponse({"ok": False, "error": resolve_error}, status_code=400)
         assert resolved is not None
@@ -1614,7 +1736,7 @@ def _build_results_embed_meta(request: Request) -> str:
             else:
                 title = "Chat search results"
                 # Best effort resolve for cache lookup; if it fails, still show generic embed.
-                steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
+                steamid64, err = _resolve_steamid64_for_embed(request, steamid_in)
                 if err is None and steamid64:
                     og_image_url = _steam_profile_image_url(steamid64)
                     ck = (steamid64, word, date_from, date_to, map_query.lower())
@@ -1640,7 +1762,7 @@ def _build_results_embed_meta(request: Request) -> str:
             map_query = (qp.get("map_query") or "").strip()
             title = "Stats Sorter results"
             if steamid_in:
-                steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
+                steamid64, err = _resolve_steamid64_for_embed(request, steamid_in)
                 if err is None and steamid64:
                     og_image_url = _steam_profile_image_url(steamid64)
                     class_parts = [c.strip() for c in classes.split(",") if c.strip()]
@@ -1670,7 +1792,7 @@ def _build_results_embed_meta(request: Request) -> str:
             map_query = (qp.get("map_query") or "").strip()
             title = "Frequent co-players"
             if steamid_in:
-                steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
+                steamid64, err = _resolve_steamid64_for_embed(request, steamid_in)
                 if err is None and steamid64:
                     og_image_url = _steam_profile_image_url(steamid64)
                     gm = gamemode if gamemode in ("", "hl", "7s", "6s", "ud") else ""
@@ -1698,7 +1820,7 @@ def _build_results_embed_meta(request: Request) -> str:
                 raw_list = [s.strip() for s in steamids.replace(",", " ").split() if s.strip()]
                 sid_list: list[str] = []
                 for raw in raw_list[:20]:  # hard cap for embed work
-                    sid64, err = resolve_to_steamid64(raw, STEAM_WEB_API_KEY)
+                    sid64, err = _resolve_steamid64_for_embed(request, raw)
                     if err is None and sid64:
                         sid_list.append(sid64)
                 sid_tuple = tuple(sorted(sid_list))
@@ -1715,7 +1837,7 @@ def _build_results_embed_meta(request: Request) -> str:
             title = "Player profile"
             desc = "TF2 competitive log stats."
             if steamid_in:
-                steamid64, err = resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY)
+                steamid64, err = _resolve_steamid64_for_embed(request, steamid_in)
                 if err is None and steamid64:
                     og_image_url = _steam_profile_image_url(steamid64)
                     gm = (qp.get("gamemode") or "").strip()

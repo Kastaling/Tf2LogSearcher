@@ -7,6 +7,57 @@ A small web app and downloader for searching [logs.tf](https://logs.tf) TF2 matc
 - [Docker](https://docs.docker.com/get-docker/)
 - [Docker Compose](https://docs.docker.com/compose/install/)
 
+---
+
+## Running tests (pytest)
+
+The project includes an automated **pytest** suite under [`tests/`](tests/). It covers search helpers, player profile aggregation, rate limiting, log-match logic, and HTTP-mocked Steam avatar calls. Tests use **temporary directories** and **do not** read your real `./logs` or `./downloader_state` data.
+
+### Docker Compose (recommended)
+
+Use the dedicated **`test`** service (Compose **profile** `test` so it never starts with a plain `docker compose up`):
+
+```bash
+# From the repo root (use docker-compose.yml copied from docker-compose.example.yml if needed)
+docker compose --profile test build test
+docker compose --profile test run --rm test
+```
+
+If you still use **Compose V1**, replace `docker compose` with `docker-compose` (same arguments).
+
+- **`build test`** — builds the `test` stage of the [`Dockerfile`](Dockerfile): same dependencies as the app image, plus `tests/` and `pytest.ini`, running as a **non-root** user inside the container.
+- **`run --rm test`** — runs `pytest -v tests` once and removes the container. Exit code **0** means all tests passed; **non-zero** means at least one failure or error.
+
+**Optional arguments** (forwarded to pytest):
+
+```bash
+docker compose --profile test run --rm test python -m pytest tests/test_search_utils.py -q
+docker compose --profile test run --rm test python -m pytest tests/ --tb=long --maxfail=1
+```
+
+**Security / environment:** the `test` service does **not** load `.env`. You do not need a real `STEAM_WEB_API_KEY` for the suite; outbound calls are mocked where relevant.
+
+### Local Python (without Docker)
+
+If you have **Python 3.11+** and prefer running on the host:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python -m pytest -v tests
+```
+
+### Understanding the output
+
+- **Header** — pytest version, Python version, and `rootdir` (should list `tests` discovery from `pytest.ini`).
+- **Per test** — each line is a test name; `PASSED` / `FAILED` / `ERROR` shows the outcome. `ERROR` usually means an exception during setup or import, not a failed assertion.
+- **Failures** — pytest prints a **short traceback** by default; use `-vv` or `--tb=long` for full tracebacks. The **first** failure in the log is often the root cause when several tests cascade.
+- **Warnings** — a **warnings summary** at the end lists deprecations or library notices; it does not fail the run unless warnings are turned into errors (not configured here).
+- **Exit code** — `0` = success; `1` = tests failed; `2` = user error (bad args); `3` = internal error; `4` = pytest usage error; `5` = no tests collected.
+
+---
+
 ## Quick start (web + downloader)
 
 1. **Clone the repo**

@@ -296,7 +296,12 @@ def replace_raw_events_for_log(
 
 def count_raw_library_rows(db_path: str | Path) -> tuple[int | None, int | None]:
     """
-    Return (COUNT(raw_logs), SUM(kill_count)) for progress UI.
+    Return (approximate raw_logs row count, SUM(kill_count)) for progress UI.
+
+    Row count uses ``COALESCE(MAX(log_id), 0)`` (``log_id`` is INTEGER PRIMARY KEY) to avoid a
+    full-table ``COUNT(*)`` scan on large DBs. If rows are deleted, this can exceed the true count
+    (gaps); same tradeoff as ``count_stats_index_rows`` proxies.
+
     (None, None) if the DB is missing or unreadable.
     """
     path = Path(db_path)
@@ -307,7 +312,7 @@ def count_raw_library_rows(db_path: str | Path) -> tuple[int | None, int | None]
         try:
             conn.execute("PRAGMA busy_timeout=10000")
             conn.execute("SELECT 1 FROM raw_logs LIMIT 1").fetchone()
-            cnt_row = conn.execute("SELECT COUNT(*) FROM raw_logs").fetchone()
+            cnt_row = conn.execute("SELECT COALESCE(MAX(log_id), 0) FROM raw_logs").fetchone()
             n = int(cnt_row[0] or 0) if cnt_row else 0
             cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(raw_logs)").fetchall()}
             if "kill_count" in cols:

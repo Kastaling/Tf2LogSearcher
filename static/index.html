@@ -626,6 +626,198 @@
       height: 24px;
       vertical-align: middle;
       margin-right: 0.35em;
+      flex-shrink: 0;
+    }
+    .profile-coplayers-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 0.75rem;
+      margin: 0.35rem 0 0.25rem;
+    }
+    .profile-coplayers-toolbar .profile-coplayers-toolbar-label {
+      margin: 0;
+    }
+    .profile-coplayers-toggle {
+      flex: 1 1 auto;
+      min-width: min(100%, 14rem);
+    }
+    .profile-maps-expand-cell {
+      width: 2.25rem;
+      text-align: center;
+      vertical-align: middle;
+    }
+    .profile-maps-expand-btn {
+      background: none;
+      border: none;
+      color: var(--accent);
+      cursor: pointer;
+      font-size: 0.85rem;
+      padding: 0.2rem 0.35rem;
+      line-height: 1;
+    }
+    .profile-maps-expand-btn:hover {
+      text-decoration: underline;
+    }
+    .profile-maps-expand-placeholder {
+      display: inline-block;
+      width: 1rem;
+    }
+    .profile-maps-version td {
+      color: var(--text-muted);
+    }
+    .js-profile-layout-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .profile-section-overview {
+      flex-shrink: 0;
+    }
+    .profile-section {
+      border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .profile-section-toolbar {
+      display: flex;
+      align-items: stretch;
+      min-height: 2.75rem;
+      padding: 0;
+      background: rgba(0, 0, 0, 0.22);
+      border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.06));
+    }
+    .profile-section-collapse-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      width: 100%;
+      text-align: left;
+      background: none;
+      border: none;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+      padding: 0.45rem 0.65rem;
+      min-height: 2.75rem;
+      box-sizing: border-box;
+    }
+    .profile-section-collapse-toggle:hover {
+      color: var(--accent);
+    }
+    .profile-section-collapse-toggle:hover .profile-section-chevron-wrap {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+    .profile-section-chevron-wrap {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 2rem;
+      height: 2rem;
+      flex-shrink: 0;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-sizing: border-box;
+    }
+    .profile-section-chevron {
+      display: block;
+      font-size: 0.62rem;
+      line-height: 1;
+      margin: 0;
+      padding: 0;
+      transform: translateY(0.5px);
+    }
+    .profile-section-toolbar-label {
+      font-weight: 600;
+      flex: 1;
+      align-self: center;
+    }
+    .profile-section-panel {
+      padding: 0.35rem 0.5rem 0.65rem;
+    }
+    .js-profile-layout-stack .profile-section .profile-section-panel > .stats-summary:first-child > p.stats-summary-title:first-of-type {
+      display: none;
+    }
+    .profile-layout-settings-details {
+      margin-top: 1rem;
+    }
+    .profile-layout-settings-summary {
+      list-style: none;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 1.05rem;
+      padding: 0.5rem 0.65rem;
+      min-height: 2.75rem;
+      display: flex;
+      align-items: center;
+      box-sizing: border-box;
+      border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.22);
+    }
+    .profile-layout-settings-summary::-webkit-details-marker {
+      display: none;
+    }
+    .profile-layout-settings-summary::before {
+      content: '\25B6';
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 2rem;
+      height: 2rem;
+      margin-right: 0.65rem;
+      flex-shrink: 0;
+      font-size: 0.62rem;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-sizing: border-box;
+    }
+    .profile-layout-settings-details[open] > .profile-layout-settings-summary::before {
+      content: '\25BC';
+    }
+    .profile-layout-settings-body {
+      padding: 0.5rem 0.35rem 0;
+    }
+    .profile-layout-collapse-opt {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.4rem;
+      margin: 0.5rem 0;
+      cursor: pointer;
+    }
+    .profile-layout-collapse-opt input {
+      margin-top: 0.2rem;
+    }
+    .profile-layout-sort-list {
+      list-style: none;
+      margin: 0.35rem 0 0;
+      padding: 0;
+      max-width: 28rem;
+    }
+    .profile-layout-sort-item {
+      padding: 0.4rem 0.5rem;
+      margin: 0.15rem 0;
+      border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+      border-radius: 4px;
+      cursor: grab;
+      background: rgba(0, 0, 0, 0.15);
+    }
+    .profile-layout-sort-item:active {
+      cursor: grabbing;
+    }
+    .profile-layout-sort-item.dragging {
+      opacity: 0.55;
+    }
+    .profile-layout-sort-item-missing {
+      opacity: 0.72;
+    }
+    .profile-layout-sort-hint {
+      color: var(--text-muted);
+      font-size: 0.88em;
+      font-weight: normal;
     }
     .stats-trend-canvas-wrap {
       position: relative;
@@ -4299,6 +4491,515 @@
       });
     }
 
+    /** Co-players search for the profile subject; gamemode/map match profile filters (dates are profile-only). */
+    function profileCoplayersSearchHref(data) {
+      var base = window.location.origin + '/';
+      var sid = data.steamid64 != null ? String(data.steamid64).trim() : '';
+      if (!/^\d{17}$/.test(sid)) return '';
+      var fa = data.filters_applied || {};
+      var p = new URLSearchParams();
+      p.set('mode', 'coplayers');
+      p.set('steamid', sid);
+      var gm = fa.gamemode != null ? String(fa.gamemode).trim() : '';
+      if (gm) p.set('gamemode', gm);
+      var mq = fa.map_query != null ? String(fa.map_query).trim() : '';
+      if (mq) p.set('map_query', mq);
+      return base + '?' + p.toString();
+    }
+
+    function profileTopCoplayersRowHtml(r, mode) {
+      var name = r.name != null ? String(r.name) : '';
+      var sid = r.steamid64 != null ? String(r.steamid64).trim() : '';
+      var display = name.trim() ? name : sid;
+      var avatar = steamAvatarPlaceholder(sid);
+      var nameCell;
+      if (/^\d{17}$/.test(sid)) {
+        var phref = internalProfileHref(sid);
+        nameCell = avatar + '<a href="' + escapeAttr(phref) + '">' + escapeHtml(display) + '</a>';
+      } else {
+        nameCell = avatar + escapeHtml(display || '\u2014');
+      }
+      var tl;
+      var wr;
+      var mcHtml;
+      var pt;
+      if (mode === 'against') {
+        tl = r.total_logs != null ? String(r.total_logs) : '\u2014';
+        wr = r.win_rate_against;
+        mcHtml = r.most_common_class_against != null ? profileClassCell(r.most_common_class_against) : '\u2014';
+        pt = profileFormatPlaytime(r.total_playtime_opposing_secs);
+      } else {
+        tl = r.total_logs != null ? String(r.total_logs) : '\u2014';
+        wr = r.win_rate_with;
+        mcHtml = r.most_common_class_with != null ? profileClassCell(r.most_common_class_with) : '\u2014';
+        pt = profileFormatPlaytime(r.total_playtime_together_secs);
+      }
+      var wrStr = (wr != null && Number.isFinite(Number(wr)))
+        ? (Math.round(Number(wr) * 10000) / 100 + '%')
+        : '\u2014';
+      return '<tr><td>' + nameCell + '</td><td>' + escapeHtml(tl) + '</td><td>' + escapeHtml(wrStr) + '</td><td>' + mcHtml + '</td><td>' + escapeHtml(pt) + '</td></tr>';
+    }
+
+    function profileTopCoplayersBlock(data) {
+      var withRows = data.top_coplayers;
+      var againstRows = data.top_coplayers_opposing;
+      var hasWith = withRows && withRows.length;
+      var hasAgainst = againstRows && againstRows.length;
+      if (!hasWith && !hasAgainst) return '';
+      var href = profileCoplayersSearchHref(data);
+      var more = href
+        ? ('<p class="stats-summary-meta"><a href="' + escapeAttr(href) + '">Open full co-players search</a> (same gamemode / map filter).</p>')
+        : '';
+      var theadWith = '<tr><th>Player</th><th>Logs</th><th>Win% (with)</th><th>Class (with you)</th><th>Playtime (with you)</th></tr>';
+      var theadAgainst = '<tr><th>Player</th><th>Logs</th><th>Win% (vs)</th><th>Class (vs you)</th><th>Playtime (vs you)</th></tr>';
+      var bodyWith = hasWith
+        ? withRows.map(function(r) { return profileTopCoplayersRowHtml(r, 'with'); }).join('')
+        : '<tr><td colspan="5" class="stats-summary-meta">No qualifying co-players in this filter.</td></tr>';
+      var bodyAgainst = hasAgainst
+        ? againstRows.map(function(r) { return profileTopCoplayersRowHtml(r, 'against'); }).join('')
+        : '<tr><td colspan="5" class="stats-summary-meta">No qualifying opponents in this filter.</td></tr>';
+      var emptyWith = hasWith ? '0' : '1';
+      var emptyAgainst = hasAgainst ? '0' : '1';
+      return '<div class="stats-summary profile-top-coplayers js-profile-coplayers" data-with-empty="' + emptyWith + '" data-against-empty="' + emptyAgainst + '">' +
+        '<p class="stats-summary-title">Most frequent co-players</p>' +
+        '<div class="profile-coplayers-toolbar">' +
+        '<span class="stats-summary-meta profile-coplayers-toolbar-label">Show</span>' +
+        '<div class="stats-trend-toggle profile-coplayers-toggle" role="tablist" aria-label="Co-player relation">' +
+        '<button type="button" class="stats-trend-btn js-coplayers-tab active" data-pane="with" role="tab" aria-selected="true">With you</button>' +
+        '<button type="button" class="stats-trend-btn js-coplayers-tab" data-pane="against" role="tab" aria-selected="false">Against you</button>' +
+        '</div></div>' +
+        '<p class="stats-summary-meta js-coplayers-desc" data-pane="with">Top 5 by shared logs (teammate + opponent). Win rate, class, and playtime count only games on the same team.</p>' +
+        '<p class="stats-summary-meta js-coplayers-desc" data-pane="against" hidden>Top 5 by games on opposite teams. Logs column: total shared logs (teammate + opponent), same meaning as With you. Win rate, class, and playtime: opposite-team games only.</p>' +
+        more +
+        '<div class="js-coplayers-pane" data-pane="with"><div class="stats-table-wrap"><table class="stats-table"><thead>' + theadWith + '</thead><tbody>' + bodyWith + '</tbody></table></div></div>' +
+        '<div class="js-coplayers-pane" data-pane="against" hidden><div class="stats-table-wrap"><table class="stats-table"><thead>' + theadAgainst + '</thead><tbody>' + bodyAgainst + '</tbody></table></div></div>' +
+        '</div>';
+    }
+
+    function bindProfileCoplayersToggle(root) {
+      var wrap = root.querySelector('.js-profile-coplayers');
+      if (!wrap) return;
+      var tabs = wrap.querySelectorAll('.js-coplayers-tab');
+      var panes = wrap.querySelectorAll('.js-coplayers-pane');
+      var descs = wrap.querySelectorAll('.js-coplayers-desc');
+      function show(pane) {
+        var i;
+        for (i = 0; i < panes.length; i++) {
+          panes[i].hidden = panes[i].getAttribute('data-pane') !== pane;
+        }
+        for (i = 0; i < descs.length; i++) {
+          descs[i].hidden = descs[i].getAttribute('data-pane') !== pane;
+        }
+        for (i = 0; i < tabs.length; i++) {
+          var t = tabs[i];
+          var on = t.getAttribute('data-pane') === pane;
+          t.classList.toggle('active', on);
+          t.setAttribute('aria-selected', on ? 'true' : 'false');
+        }
+      }
+      var preferAgainst = wrap.getAttribute('data-with-empty') === '1' && wrap.getAttribute('data-against-empty') === '0';
+      show(preferAgainst ? 'against' : 'with');
+      tabs.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var p = btn.getAttribute('data-pane');
+          if (p) show(p);
+        });
+      });
+    }
+
+    function profileMapsPctDisplay(pct) {
+      if (pct == null || !Number.isFinite(Number(pct))) return '\u2014';
+      return (Math.round(Number(pct) * 10000) / 100).toFixed(2) + '%';
+    }
+
+    function profileMapsWinRateDisplay(wr) {
+      if (wr == null || !Number.isFinite(Number(wr))) return '\u2014';
+      return (Math.round(Number(wr) * 10000) / 100).toFixed(2) + '%';
+    }
+
+    var PROFILE_MAPS_COLUMNS = [
+      { key: 'map_label', label: 'Map', type: 'text' },
+      { key: 'logs_count', label: 'Logs', type: 'number' },
+      { key: 'pct_of_total', label: '% of logs', type: 'number' },
+      { key: 'win_rate', label: 'Win%', type: 'number' },
+      { key: 'wins', label: 'W', type: 'number' },
+      { key: 'losses', label: 'L', type: 'number' }
+    ];
+
+    function profileMapsSortValue(row, colKey, type) {
+      if (type === 'text') {
+        var t = row[colKey];
+        return (t != null ? String(t) : '').toLowerCase();
+      }
+      var v = row[colKey];
+      if (v == null || (typeof v === 'number' && !Number.isFinite(v))) return null;
+      return Number(v);
+    }
+
+    function profileMapsSortedParents(rows, sortCol, sortDir) {
+      var colDef = PROFILE_MAPS_COLUMNS.find(function(c) { return c.key === sortCol; });
+      if (!colDef) return rows.slice();
+      var sorted = rows.slice();
+      sorted.sort(function(a, b) {
+        var va = profileMapsSortValue(a, colDef.key, colDef.type);
+        var vb = profileMapsSortValue(b, colDef.key, colDef.type);
+        if (va === null && vb === null) {
+          return String(a.map_key || '').localeCompare(String(b.map_key || ''));
+        }
+        if (va === null) return 1;
+        if (vb === null) return -1;
+        if (colDef.type === 'text') {
+          if (va < vb) return -sortDir;
+          if (va > vb) return sortDir;
+        } else {
+          if (va < vb) return -sortDir;
+          if (va > vb) return sortDir;
+        }
+        return String(a.map_key || '').localeCompare(String(b.map_key || ''));
+      });
+      return sorted;
+    }
+
+    function profileMapsTheadHtml(sortCol, sortDir) {
+      var h = '<tr><th class="profile-maps-expand-cell" scope="col"></th>';
+      PROFILE_MAPS_COLUMNS.forEach(function(c) {
+        var cls = 'sortable';
+        if (c.key === sortCol) cls += sortDir === 1 ? ' sorted-asc' : ' sorted-desc';
+        h += '<th class="' + cls + '" data-col="' + escapeHtml(c.key) + '" scope="col">' + escapeHtml(c.label) + '</th>';
+      });
+      h += '</tr>';
+      return '<thead>' + h + '</thead>';
+    }
+
+    function profileMapsRowsOnly(sortedParents, expandedMap) {
+      var map = expandedMap || {};
+      var html = '';
+      sortedParents.forEach(function(p) {
+        var mkey = p.map_key != null ? String(p.map_key) : '';
+        var vers = Array.isArray(p.versions) ? p.versions : [];
+        var hasVers = vers.length > 1;
+        var exp = !!map[mkey];
+        html += profileMapsParentRowHtml(p, hasVers, exp);
+        if (hasVers && exp) {
+          vers.forEach(function(v) {
+            html += profileMapsVersionRowHtml(v);
+          });
+        }
+      });
+      return html;
+    }
+
+    function profileMapsParentRowHtml(p, hasVers, expanded) {
+      var btn = '';
+      if (hasVers) {
+        btn = '<button type="button" class="profile-maps-expand-btn" aria-expanded="' + (expanded ? 'true' : 'false') + '" data-map-key="' + escapeAttr(String(p.map_key)) + '" title="Show versions">' +
+          (expanded ? '\u25BC' : '\u25B6') + '</button>';
+      } else {
+        btn = '<span class="profile-maps-expand-placeholder" aria-hidden="true">\u00a0</span>';
+      }
+      var pl = p.map_label != null ? String(p.map_label) : '';
+      var pct = profileMapsPctDisplay(p.pct_of_total);
+      var wr = profileMapsWinRateDisplay(p.win_rate);
+      var u = p.undecided_logs != null ? Number(p.undecided_logs) : 0;
+      var undec = (u > 0) ? (' <span class="stats-summary-meta">(' + escapeHtml(String(u)) + ' undecided)</span>') : '';
+      return '<tr class="profile-maps-parent" data-map-key="' + escapeAttr(String(p.map_key)) + '">' +
+        '<td class="profile-maps-expand-cell">' + btn + '</td>' +
+        '<td>' + escapeHtml(pl) + undec + '</td>' +
+        '<td>' + escapeHtml(String(p.logs_count != null ? p.logs_count : '')) + '</td>' +
+        '<td>' + (pct === '\u2014' ? '\u2014' : escapeHtml(pct)) + '</td>' +
+        '<td>' + (wr === '\u2014' ? '\u2014' : escapeHtml(wr)) + '</td>' +
+        '<td>' + escapeHtml(String(p.wins != null ? p.wins : '')) + '</td>' +
+        '<td>' + escapeHtml(String(p.losses != null ? p.losses : '')) + '</td>' +
+        '</tr>';
+    }
+
+    function profileMapsVersionRowHtml(v) {
+      var pl = v.map != null ? String(v.map) : '';
+      var pct = profileMapsPctDisplay(v.pct_of_total);
+      var wr = profileMapsWinRateDisplay(v.win_rate);
+      var u = v.undecided_logs != null ? Number(v.undecided_logs) : 0;
+      var undec = (u > 0) ? (' <span class="stats-summary-meta">(' + escapeHtml(String(u)) + ' undecided)</span>') : '';
+      return '<tr class="profile-maps-version">' +
+        '<td class="profile-maps-expand-cell"></td>' +
+        '<td class="profile-maps-version-map">' + escapeHtml(pl) + undec + '</td>' +
+        '<td>' + escapeHtml(String(v.logs_count != null ? v.logs_count : '')) + '</td>' +
+        '<td>' + (pct === '\u2014' ? '\u2014' : escapeHtml(pct)) + '</td>' +
+        '<td>' + (wr === '\u2014' ? '\u2014' : escapeHtml(wr)) + '</td>' +
+        '<td>' + escapeHtml(String(v.wins != null ? v.wins : '')) + '</td>' +
+        '<td>' + escapeHtml(String(v.losses != null ? v.losses : '')) + '</td>' +
+        '</tr>';
+    }
+
+    function profileMapsTableShellHtml() {
+      return profileMapsTheadHtml('logs_count', -1) + '<tbody class="js-profile-maps-tbody"></tbody>';
+    }
+
+    function profileTopMapsBlock() {
+      return '<div class="stats-summary profile-top-maps">' +
+        '<p class="stats-summary-title">Most played maps</p>' +
+        '<p class="stats-summary-meta">Maps with the same base name are grouped (RC / beta / final suffixes). Expand a row to see per-version stats. Column headers sort grouped rows only.</p>' +
+        '<div class="stats-table-wrap"><table class="stats-table js-profile-maps">' + profileMapsTableShellHtml() + '</table></div></div>';
+    }
+
+    function bindProfileMapsTable(table) {
+      var tbody = table.querySelector('tbody.js-profile-maps-tbody');
+      if (!tbody) return;
+      function render() {
+        var parents = table._profileMapRows || [];
+        var sorted = profileMapsSortedParents(parents, table._sortCol, table._sortDir);
+        tbody.innerHTML = profileMapsRowsOnly(sorted, table._mapsExpanded || {});
+        var oldThead = table.querySelector('thead');
+        if (oldThead) {
+          oldThead.outerHTML = profileMapsTheadHtml(table._sortCol, table._sortDir);
+        }
+      }
+      table.addEventListener('click', function(ev) {
+        var btn = ev.target.closest('button.profile-maps-expand-btn');
+        if (btn && table.contains(btn)) {
+          ev.preventDefault();
+          var mk = btn.getAttribute('data-map-key');
+          if (!mk) return;
+          var ex = table._mapsExpanded || {};
+          ex[mk] = !ex[mk];
+          table._mapsExpanded = ex;
+          render();
+          return;
+        }
+        var th = ev.target.closest('th.sortable');
+        if (!th || !table.contains(th)) return;
+        var col = th.getAttribute('data-col');
+        if (!col) return;
+        var rows = table._profileMapRows;
+        if (!rows || !rows.length) return;
+        if (table._sortCol === col) {
+          table._sortDir *= -1;
+        } else {
+          table._sortCol = col;
+          table._sortDir = col === 'map_label' ? 1 : -1;
+        }
+        render();
+      });
+      render();
+    }
+
+    var PROFILE_LAYOUT_COOKIE = 'tf2ls_profile_layout_v1';
+    var PROFILE_LAYOUT_COOKIE_MAX_AGE = 31536000;
+    var PROFILE_LAYOUT_SECTION_IDS = [
+      'trend', 'top_logs', 'coplayers', 'top_maps', 'classes', 'weapons', 'class_kills', 'rounds', 'healspread'
+    ];
+    var PROFILE_LAYOUT_LABELS = {
+      trend: 'DPM / KDR over time',
+      top_logs: 'Top logs',
+      coplayers: 'Most frequent co-players',
+      top_maps: 'Most played maps',
+      classes: 'Class statistics',
+      weapons: 'Weapons',
+      class_kills: 'Kills by victim class',
+      rounds: 'Rounds',
+      healspread: 'Heal spread'
+    };
+
+    function sanitizeProfileLayoutOrder(raw) {
+      var seen = Object.create(null);
+      var out = [];
+      if (Array.isArray(raw)) {
+        raw.forEach(function(id) {
+          if (PROFILE_LAYOUT_SECTION_IDS.indexOf(id) >= 0 && !seen[id]) {
+            seen[id] = true;
+            out.push(id);
+          }
+        });
+      }
+      PROFILE_LAYOUT_SECTION_IDS.forEach(function(id) {
+        if (!seen[id]) out.push(id);
+      });
+      return out;
+    }
+
+    function readProfileLayoutSettings() {
+      var d = { order: PROFILE_LAYOUT_SECTION_IDS.slice(), collapseDefault: false };
+      try {
+        var all = typeof document !== 'undefined' && document.cookie ? document.cookie : '';
+        if (!all) return d;
+        var prefix = PROFILE_LAYOUT_COOKIE + '=';
+        var idx = all.indexOf(prefix);
+        if (idx < 0) return d;
+        var start = idx + prefix.length;
+        var end = all.indexOf(';', start);
+        var raw = decodeURIComponent(end < 0 ? all.slice(start) : all.slice(start, end));
+        var o = JSON.parse(raw);
+        if (o && typeof o === 'object') {
+          if (Array.isArray(o.order)) d.order = sanitizeProfileLayoutOrder(o.order);
+          if (typeof o.collapseDefault === 'boolean') d.collapseDefault = o.collapseDefault;
+        }
+      } catch (e) {}
+      return d;
+    }
+
+    function writeProfileLayoutSettings(settings) {
+      try {
+        var payload = encodeURIComponent(JSON.stringify({
+          order: sanitizeProfileLayoutOrder(settings.order || []),
+          collapseDefault: !!settings.collapseDefault
+        }));
+        document.cookie = PROFILE_LAYOUT_COOKIE + '=' + payload + ';path=/;max-age=' + PROFILE_LAYOUT_COOKIE_MAX_AGE + ';SameSite=Lax';
+      } catch (e) {}
+    }
+
+    function wrapProfileOverview(innerHtml) {
+      return '<div class="profile-section profile-section-overview" data-section="overview" data-layout-fixed="1">' + innerHtml + '</div>';
+    }
+
+    function wrapProfileSection(id, innerHtml, startCollapsed) {
+      if (!innerHtml) return '';
+      var label = PROFILE_LAYOUT_LABELS[id] || id;
+      var exp = startCollapsed ? 'false' : 'true';
+      var hiddenAttr = startCollapsed ? ' hidden' : '';
+      var chev = startCollapsed ? '\u25B6' : '\u25BC';
+      var panelId = 'psp_' + id.replace(/[^a-z0-9_]/gi, '_');
+      return '<section class="profile-section js-profile-section' + (startCollapsed ? ' is-collapsed' : '') + '" data-section="' + escapeAttr(id) + '">' +
+        '<div class="profile-section-toolbar">' +
+        '<button type="button" class="profile-section-collapse-toggle" aria-expanded="' + exp + '" aria-controls="' + escapeAttr(panelId) + '" id="psh_' + escapeAttr(id) + '">' +
+        '<span class="profile-section-chevron-wrap" aria-hidden="true"><span class="profile-section-chevron">' + chev + '</span></span>' +
+        '<span class="profile-section-toolbar-label">' + escapeHtml(label) + '</span></button></div>' +
+        '<div class="profile-section-panel" id="' + escapeAttr(panelId) + '" role="region"' + hiddenAttr + '>' + innerHtml + '</div></section>';
+    }
+
+    function profileLayoutSettingsPanelHtml() {
+      return '<details class="profile-layout-settings-details stats-summary profile-layout-settings js-profile-layout-settings">' +
+        '<summary class="profile-layout-settings-summary">Profile layout</summary>' +
+        '<div class="profile-layout-settings-body">' +
+        '<p class="stats-summary-meta">Order and display options are stored in a cookie on this browser only. The player summary at the top cannot be moved or collapsed.</p>' +
+        '<p class="stats-summary-meta">Dimmed entries with “(not shown)” have no data for this player or filter. You can still reorder them: the order is saved and applies when that section appears (another player, class, or filters).</p>' +
+        '<label class="profile-layout-collapse-opt"><input type="checkbox" class="js-profile-layout-collapse-default" /> <span>Collapse all sections below the summary by default when opening a profile</span></label>' +
+        '<p class="stats-summary-meta">Drag to reorder sections (applies to profiles on this device):</p>' +
+        '<ul class="profile-layout-sort-list js-profile-layout-sort-list" role="list" aria-label="Section order"></ul>' +
+        '</div></details>';
+    }
+
+    function bindProfileSectionCollapsers(profileRoot) {
+      profileRoot.addEventListener('click', function(ev) {
+        var btn = ev.target.closest('.profile-section-collapse-toggle');
+        if (!btn || !profileRoot.contains(btn)) return;
+        var sec = btn.closest('.profile-section');
+        if (!sec) return;
+        var panel = sec.querySelector('.profile-section-panel');
+        var chev = btn.querySelector('.profile-section-chevron');
+        if (!panel) return;
+        var expanded = btn.getAttribute('aria-expanded') === 'true';
+        var next = !expanded;
+        btn.setAttribute('aria-expanded', next ? 'true' : 'false');
+        panel.hidden = !next;
+        sec.classList.toggle('is-collapsed', !next);
+        if (chev) chev.textContent = next ? '\u25BC' : '\u25B6';
+        if (next && sec.getAttribute('data-section') === 'trend' && typeof renderProfileTrendChart === 'function' &&
+            profileTrendRows && profileTrendRows.length >= 2 && profileTrendHost) {
+          try {
+            renderProfileTrendChart(profileTrendHost, profileTrendRows, profileTrendMetric || 'dpm');
+          } catch (e) {}
+        }
+      });
+    }
+
+    function applyProfileStackOrderFromList(ul, profileRoot) {
+      var order = [];
+      ul.querySelectorAll('li[data-section]').forEach(function(li) {
+        order.push(li.getAttribute('data-section'));
+      });
+      var full = sanitizeProfileLayoutOrder(order);
+      var cur = readProfileLayoutSettings();
+      writeProfileLayoutSettings({ order: full, collapseDefault: !!cur.collapseDefault });
+
+      var stack = profileRoot.querySelector('.js-profile-layout-stack');
+      if (!stack) return;
+      var overview = stack.querySelector('[data-section="overview"]');
+      var byId = Object.create(null);
+      stack.querySelectorAll('[data-section]').forEach(function(node) {
+        var id = node.getAttribute('data-section');
+        if (id && id !== 'overview') byId[id] = node;
+      });
+      // Reorder collapsible sections only (overview is not in PROFILE_LAYOUT_SECTION_IDS / full).
+      // Do not appendChild(overview) here — that moved the summary to the end and left it there.
+      full.forEach(function(id) {
+        var n = byId[id];
+        if (n) stack.appendChild(n);
+      });
+      if (overview) stack.prepend(overview);
+    }
+
+    function bindProfileLayoutSortList(ul, profileRoot) {
+      var dragEl = null;
+      ul.addEventListener('dragstart', function(e) {
+        var li = e.target && e.target.closest ? e.target.closest('li') : null;
+        if (!li || !ul.contains(li)) return;
+        dragEl = li;
+        try {
+          e.dataTransfer.setData('text/plain', li.getAttribute('data-section') || '');
+          e.dataTransfer.effectAllowed = 'move';
+        } catch (err) {}
+        li.classList.add('dragging');
+      });
+      ul.addEventListener('dragend', function() {
+        if (dragEl) dragEl.classList.remove('dragging');
+        dragEl = null;
+      });
+      ul.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = 'move'; } catch (err) {}
+      });
+      ul.addEventListener('drop', function(e) {
+        e.preventDefault();
+        var target = e.target && e.target.closest ? e.target.closest('li') : null;
+        if (!target || !ul.contains(target) || !dragEl || dragEl === target) return;
+        var rect = target.getBoundingClientRect();
+        var before = e.clientY < rect.top + rect.height / 2;
+        if (before) {
+          ul.insertBefore(dragEl, target);
+        } else {
+          ul.insertBefore(dragEl, target.nextSibling);
+        }
+        applyProfileStackOrderFromList(ul, profileRoot);
+      });
+    }
+
+    function initProfileLayoutSettings(profileRoot, layoutSettings) {
+      var wrap = profileRoot.querySelector('.js-profile-layout-settings');
+      if (!wrap) return;
+      var cb = wrap.querySelector('.js-profile-layout-collapse-default');
+      if (cb) {
+        cb.checked = !!layoutSettings.collapseDefault;
+        cb.addEventListener('change', function() {
+          var s = readProfileLayoutSettings();
+          s.collapseDefault = cb.checked;
+          writeProfileLayoutSettings(s);
+        });
+      }
+      var ul = wrap.querySelector('.js-profile-layout-sort-list');
+      if (ul) {
+        ul.innerHTML = '';
+        layoutSettings.order.forEach(function(sid) {
+          if (PROFILE_LAYOUT_SECTION_IDS.indexOf(sid) < 0) return;
+          var li = document.createElement('li');
+          li.setAttribute('draggable', 'true');
+          li.setAttribute('data-section', sid);
+          li.className = 'profile-layout-sort-item';
+          var stack = profileRoot.querySelector('.js-profile-layout-stack');
+          var onPage = stack && stack.querySelector('[data-section="' + sid + '"]');
+          if (!onPage) li.classList.add('profile-layout-sort-item-missing');
+          li.appendChild(document.createTextNode(PROFILE_LAYOUT_LABELS[sid] || sid));
+          if (!onPage) {
+            li.setAttribute('title', 'No data for this profile with current filters. Order is still saved for when this section appears.');
+            var hint = document.createElement('span');
+            hint.className = 'profile-layout-sort-hint';
+            hint.appendChild(document.createTextNode(' (not shown)'));
+            li.appendChild(hint);
+          }
+          ul.appendChild(li);
+        });
+        bindProfileLayoutSortList(ul, profileRoot);
+      }
+    }
+
     function renderProfileResult(el, data, elapsedMs) {
       destroyStatsTrendChart();
       destroyProfileTrendChart();
@@ -4404,6 +5105,14 @@
         }
       }
 
+      var topCoplayersBlock = profileTopCoplayersBlock(data);
+
+      var mapRows = Array.isArray(data.top_maps) ? data.top_maps : [];
+      var topMapsBlock = '';
+      if (data.logs_count > 0 && mapRows.length) {
+        topMapsBlock = profileTopMapsBlock();
+      }
+
       var classes = data.classes || [];
       var classesOther = data.classes_other || [];
       var classesTable = '';
@@ -4477,14 +5186,35 @@
           healList('Healed to', ht) + healList('Healed by', hb) + '</div></div>';
       }
 
-      el.innerHTML = overviewCard + trendBlock + topLogsBlock + classesTable + weaponsTable + ckTable + roundsCard + healCard + requestTimingFooter(elapsedMs);
+      var layoutSettings = readProfileLayoutSettings();
+      var sectionChunks = {
+        trend: trendBlock,
+        top_logs: topLogsBlock,
+        coplayers: topCoplayersBlock,
+        top_maps: topMapsBlock,
+        classes: classesTable,
+        weapons: weaponsTable,
+        class_kills: ckTable,
+        rounds: roundsCard,
+        healspread: healCard
+      };
+      var stackParts = [wrapProfileOverview(overviewCard)];
+      layoutSettings.order.forEach(function(sid) {
+        var chunk = sectionChunks[sid];
+        if (chunk) stackParts.push(wrapProfileSection(sid, chunk, layoutSettings.collapseDefault));
+      });
+      el.innerHTML = '<div class="js-profile-layout-stack">' + stackParts.join('') + '</div>' +
+        requestTimingFooter(elapsedMs) + profileLayoutSettingsPanelHtml();
 
       profileTrendMetric = 'dpm';
       profileTrendHost = el.querySelector('.js-profile-trend');
       profileTrendRows = trendRows;
       if (profileTrendHost && profileTrendRows && profileTrendRows.length >= 2) {
         bindProfileTrendControls(el);
-        renderProfileTrendChart(profileTrendHost, profileTrendRows, profileTrendMetric);
+        var trendPanelInit = el.querySelector('[data-section="trend"] .profile-section-panel');
+        if (!trendPanelInit || !trendPanelInit.hidden) {
+          renderProfileTrendChart(profileTrendHost, profileTrendRows, profileTrendMetric);
+        }
       }
 
       var tm = el.querySelector('table.js-profile-classes-main');
@@ -4501,6 +5231,22 @@
         to._sortDir = profileClassDefaultSortDir;
         bindProfileClassTableSort(to);
       }
+
+      bindProfileCoplayersToggle(el);
+
+      var mapTable = el.querySelector('table.js-profile-maps');
+      if (mapTable && mapRows.length) {
+        mapTable._profileMapRows = mapRows;
+        mapTable._sortCol = 'logs_count';
+        mapTable._sortDir = -1;
+        mapTable._mapsExpanded = {};
+        bindProfileMapsTable(mapTable);
+      }
+
+      loadAvatarsInContainer(el);
+
+      bindProfileSectionCollapsers(el);
+      initProfileLayoutSettings(el, layoutSettings);
     }
 
     (function initResultsPage() {

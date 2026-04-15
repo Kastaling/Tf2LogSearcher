@@ -1,0 +1,18 @@
+# Smaller build context (faster builds; avoids baking local data into layers)
+.git
+.github
+**/__pycache__
+**/*.py[cod]
+*$py.class
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.env
+.env.*
+!.env.example
+logs
+downloader_state
+request_logs
+raw_logs
+*.md
+!README.md

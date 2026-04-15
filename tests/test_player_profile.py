@@ -2,7 +2,7 @@
 import pytest
 
 from app.stats_db import connect_stats_db, init_stats_db, replace_stats_for_log
-from app.search.search import player_profile
+from app.search.search import _map_canonical_key, player_profile
 
 PLAYER_A = "76561198000000001"
 PLAYER_B = "76561198000000002"
@@ -145,6 +145,93 @@ def test_profile_overview_counts(populated_db, monkeypatch):
     assert ov["first_log_id"] == 1001
     assert ov["last_log_id"] == 1002
     assert 1001 in log_ids and 1002 in log_ids
+
+
+@pytest.fixture()
+def maps_consolidation_db(stats_db):
+    conn = connect_stats_db(stats_db)
+    with conn:
+        replace_stats_for_log(conn, 3001, _make_logtext(PLAYER_A_3, PLAYER_B_3, map_name="pl_vigil_rc9"))
+        replace_stats_for_log(
+            conn,
+            3002,
+            _make_logtext(PLAYER_A_3, PLAYER_B_3, map_name="pl_vigil_rc10", date_ts=1_700_200_000),
+        )
+    conn.close()
+    return stats_db
+
+
+def test_profile_top_maps_consolidation(maps_consolidation_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", maps_consolidation_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    profile, _ = player_profile(PLAYER_A)
+    tm = profile.get("top_maps") or []
+    vig = next((x for x in tm if x.get("map_key") == "pl_vigil"), None)
+    assert vig is not None
+    assert vig["logs_count"] == 2
+    assert len(vig["versions"]) == 2
+    assert sum(v["logs_count"] for v in vig["versions"]) == 2
+
+
+def test_profile_top_maps_grouped_and_pct(populated_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", populated_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    profile, _ = player_profile(PLAYER_A)
+    tm = profile.get("top_maps") or []
+    assert len(tm) >= 1
+    proc = next((x for x in tm if x["map_key"] == "cp_process"), None)
+    assert proc is not None
+    assert proc["map_label"] == "cp_process"
+    assert proc["logs_count"] == 2
+    assert proc["pct_of_total"] == 1.0
+    assert len(proc["versions"]) == 1
+
+
+def test_map_canonical_key_competitive_suffixes():
+    assert _map_canonical_key("cp_process_f12") == "cp_process"
+    assert _map_canonical_key("cp_process_final") == "cp_process"
+    assert _map_canonical_key("cp_process_f9a") == "cp_process"
+    assert _map_canonical_key("cp_gullywash_final1") == "cp_gullywash"
+    assert _map_canonical_key("cp_gullywash_f9") == "cp_gullywash"
+    assert _map_canonical_key("cp_metalworks_f5") == "cp_metalworks"
+    assert _map_canonical_key("koth_product_rcx") == "koth_product"
+    assert _map_canonical_key("koth_product_final") == "koth_product"
+    assert _map_canonical_key("pl_vigil_rc9") == "pl_vigil"
+    assert _map_canonical_key("cp_sultry_b8a") == "cp_sultry"
+    assert _map_canonical_key("koth_clearcut_b15d") == "koth_clearcut"
+    assert _map_canonical_key("koth_clearcut_b15c") == "koth_clearcut"
+    assert _map_canonical_key("cp_villa_b17a") == "cp_villa"
+    assert _map_canonical_key("koth_cascade_rc1a") == "koth_cascade"
+    # Bare ``rc`` / ``r`` are not version tails (avoid ``cp_rc`` → ``cp``).
+    assert _map_canonical_key("cp_rc") == "cp_rc"
+
+
+def test_profile_top_coplayers(populated_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", populated_db)
+    monkeypatch.setattr(
+        "app.search.search._lookup_aliases_from_chat_db",
+        lambda sids: {PLAYER_A: "PlayerA", PLAYER_B: "PlayerB"},
+    )
+
+    profile, _ = player_profile(PLAYER_A)
+    tcp = profile.get("top_coplayers") or []
+    assert len(tcp) >= 1
+    b_row = next((x for x in tcp if x["steamid64"] == PLAYER_B), None)
+    assert b_row is not None
+    assert b_row["total_logs"] == 2
+    assert b_row["games_with"] == 0
+    assert b_row["games_against"] == 2
+    assert b_row["name"] == "PlayerB"
+
+    opp = profile.get("top_coplayers_opposing") or []
+    assert len(opp) >= 1
+    bo = next((x for x in opp if x["steamid64"] == PLAYER_B), None)
+    assert bo is not None
+    assert bo["games_against"] == 2
+    assert bo["total_logs"] == bo["games_with"] + bo["games_against"]
+    assert bo["total_logs"] == 2
 
 
 def test_profile_classes_section(populated_db, monkeypatch):
