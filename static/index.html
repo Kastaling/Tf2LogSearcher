@@ -1017,6 +1017,19 @@
       background: var(--input-bg);
     }
     .profile-overview-text { flex: 1 1 14rem; min-width: 0; }
+    .stats-summary.profile-overview {
+      position: relative;
+      padding-right: 2.25rem;
+      box-sizing: border-box;
+    }
+    /* Same look as chat result “copy link” (.chat-hit-link); button needs native resets */
+    button.profile-copy-link-btn.chat-hit-link {
+      z-index: 2;
+      border: none;
+      background: transparent;
+      font: inherit;
+      cursor: pointer;
+    }
     @media (max-width: 600px) { .theme-toggle { top: 0.25rem; right: 0.25rem; padding: 0.4rem 0.6rem; } }
     .back-button {
       display: inline-block;
@@ -5000,6 +5013,73 @@
       }
     }
 
+    /** Current /results URL with query string; fragment omitted so the link is the search itself. */
+    function profileResultsShareUrl() {
+      try {
+        var u = new URL(window.location.href);
+        u.hash = '';
+        return u.toString();
+      } catch (err) {
+        var href = window.location.href || '';
+        var hashIdx = href.indexOf('#');
+        return hashIdx >= 0 ? href.slice(0, hashIdx) : href;
+      }
+    }
+
+    function copyProfileShareUrlFallback(text, onOk, onFail) {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.setAttribute('aria-hidden', 'true');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) onOk(); else onFail();
+      } catch (e) {
+        onFail();
+      }
+    }
+
+    function bindProfileCopyLinkButton(profileRoot) {
+      var btn = profileRoot.querySelector('.js-profile-copy-link');
+      if (!btn) return;
+      btn.addEventListener('click', function() {
+        var url = profileResultsShareUrl();
+        var defaultLabel = 'Copy link to this profile search';
+        var defaultTitle = 'Copy link to this search';
+        function onOk() {
+          btn.setAttribute('aria-label', 'Copied to clipboard');
+          btn.setAttribute('title', 'Copied!');
+          setTimeout(function() {
+            btn.setAttribute('aria-label', defaultLabel);
+            btn.setAttribute('title', defaultTitle);
+          }, 1200);
+        }
+        function onFail() {
+          try {
+            btn.setAttribute('title', 'Could not copy — copy from the address bar or use HTTPS.');
+          } catch (e2) {}
+          setTimeout(function() {
+            try { btn.removeAttribute('title'); } catch (e3) {}
+          }, 4000);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(url).then(onOk).catch(function() {
+            copyProfileShareUrlFallback(url, onOk, onFail);
+          });
+        } else {
+          copyProfileShareUrlFallback(url, onOk, onFail);
+        }
+      });
+    }
+
     function renderProfileResult(el, data, elapsedMs) {
       destroyStatsTrendChart();
       destroyProfileTrendChart();
@@ -5051,6 +5131,7 @@
         : '';
       var overviewCard =
         '<div class="stats-summary profile-overview">' +
+        '<button type="button" class="chat-hit-link profile-copy-link-btn js-profile-copy-link" title="Copy link to this search" aria-label="Copy link to this profile search">\ud83d\udd17</button>' +
         '<div class="profile-overview-head">' + avatarHtml + '<div class="profile-overview-text">' +
         '<p class="stats-summary-title">' + name + logsTfLinkHtml + '</p>' +
         dateRange + mpcLine +
@@ -5247,6 +5328,7 @@
 
       bindProfileSectionCollapsers(el);
       initProfileLayoutSettings(el, layoutSettings);
+      bindProfileCopyLinkButton(el);
     }
 
     (function initResultsPage() {
