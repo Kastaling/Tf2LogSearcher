@@ -265,6 +265,32 @@
       0%, 70%, 100% { opacity: 0.2; transform: translateY(0); }
       35% { opacity: 1; transform: translateY(-0.08em); }
     }
+    /* Snake canvas fills only ``#resultsContent``; ``← Back to search`` stays above in the normal flow. */
+    .results-loading-stack {
+      position: relative;
+      width: 100%;
+      min-height: min(70vh, 40rem);
+      box-sizing: border-box;
+      touch-action: manipulation;
+      -webkit-touch-callout: none;
+    }
+    .results-loading-stack .loading-snake-canvas {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      vertical-align: top;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    .results-loading-stack .loading-state--snake-hud {
+      position: relative;
+      z-index: 1;
+      pointer-events: none;
+      margin: 0 0 0.35rem;
+    }
     .request-timing {
       margin: 0.75rem 0 0;
       padding-top: 0.5rem;
@@ -2018,8 +2044,353 @@
       return '<p class="request-timing">Loaded in <b>' + escapeHtml(String(Math.round(ms))) + '</b> ms</p>';
     }
 
+    /** Tab title animation while /results API fetch runs (address bar text cannot be changed by script). */
+    var _loadingTitleTimer = null;
+    var _loadingTitleRestore = 'TF2 Log Searcher';
+
+    function startLoadingTitleAnimation() {
+      if (_loadingTitleTimer != null) {
+        window.clearInterval(_loadingTitleTimer);
+        _loadingTitleTimer = null;
+      }
+      _loadingTitleRestore = document.title || _loadingTitleRestore;
+      var suffix = ' \u2014 TF2 Log Searcher';
+      var seq = ['Loading\u2026', 'Loading.', 'Loading..', 'Loading...'];
+      var i = 0;
+      document.title = seq[0] + suffix;
+      _loadingTitleTimer = window.setInterval(function() {
+        i = (i + 1) % seq.length;
+        document.title = seq[i] + suffix;
+      }, 450);
+    }
+
+    function stopLoadingTitleAnimation() {
+      if (_loadingTitleTimer != null) {
+        window.clearInterval(_loadingTitleTimer);
+        _loadingTitleTimer = null;
+      }
+      document.title = _loadingTitleRestore;
+      stopLoadingSnakeGame();
+    }
+
+    /** Optional mini-game in place of loading dots; torn down when loading finishes (see ``stopLoadingTitleAnimation``). */
+    var _loadingSnakeCtl = null;
+
+    function stopLoadingSnakeGame() {
+      if (_loadingSnakeCtl && typeof _loadingSnakeCtl.destroy === 'function') {
+        try {
+          _loadingSnakeCtl.destroy();
+        } catch (e) {}
+      }
+      _loadingSnakeCtl = null;
+    }
+
     function showResultsLoading(el) {
-      el.innerHTML = '<div class="loading-state" role="status" aria-live="polite"><span class="loading-label">Loading</span><span class="loading-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span></div>';
+      stopLoadingSnakeGame();
+      var reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reducedMotion) {
+        el.innerHTML = '<div class="loading-state" role="status" aria-live="polite"><span class="loading-label">Loading</span><span class="loading-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span></div>';
+      } else {
+        el.innerHTML = (
+          '<div class="results-loading-stack" role="status" aria-live="polite">' +
+          '<div class="loading-state loading-state--snake-hud">' +
+          '<span class="loading-label">Loading</span>' +
+          '<span class="loading-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>' +
+          '</div>' +
+          '<canvas class="loading-snake-canvas" aria-hidden="true"></canvas>' +
+          '</div>'
+        );
+        var wrap = el.querySelector('.results-loading-stack');
+        var cv = el.querySelector('.loading-snake-canvas');
+        if (wrap && cv) _loadingSnakeCtl = initLoadingSnakeMiniGame(wrap, cv);
+      }
+      startLoadingTitleAnimation();
+    }
+
+    /**
+     * Snake in the results panel (below ``Back to search``); torn down when ``destroy`` runs.
+     */
+    function initLoadingSnakeMiniGame(wrapEl, canvas) {
+      var STEP_MS = 52;
+      var doubleTapMs = 320;
+      var doubleTapDist = 28;
+
+      var ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })
+        || canvas.getContext('2d', { alpha: false });
+      if (!ctx) {
+        return {
+          destroy: function() {},
+        };
+      }
+      var dpr = typeof window.devicePixelRatio === 'number' && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+      var GRID_W = 12;
+      var GRID_H = 8;
+      var CELL = 10;
+      var cssW = 0;
+      var cssH = 0;
+      var ox = 0;
+      var oy = 0;
+      var swipeMin = 40;
+
+      var started = false;
+      var dir = 1;
+      var nextDir = 1;
+      var snake = [];
+      var food = { x: 0, y: 0 };
+      var raf = 0;
+      var acc = 0;
+      var lastTs = 0;
+      var touchActive = false;
+      var tx0 = 0;
+      var ty0 = 0;
+      var lastTap = 0;
+      var lastTapX = 0;
+      var lastTapY = 0;
+      var alive = true;
+
+      function updateLayout() {
+        cssW = wrapEl.clientWidth || window.innerWidth || 300;
+        cssH = wrapEl.clientHeight || window.innerHeight || 200;
+        var tc = 10;
+        GRID_W = Math.max(14, Math.floor(cssW / tc));
+        GRID_H = Math.max(12, Math.floor(cssH / tc));
+        CELL = Math.min(cssW / GRID_W, cssH / GRID_H);
+        ox = (cssW - GRID_W * CELL) * 0.5;
+        oy = (cssH - GRID_H * CELL) * 0.5;
+        swipeMin = Math.max(36, Math.min(cssW, cssH) * 0.045);
+        canvas.width = Math.max(1, Math.round(cssW * dpr));
+        canvas.height = Math.max(1, Math.round(cssH * dpr));
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+
+      function randFood() {
+        var taken = {};
+        var i;
+        for (i = 0; i < snake.length; i++) {
+          taken[snake[i].x + ',' + snake[i].y] = 1;
+        }
+        var opts = [];
+        for (var y = 0; y < GRID_H; y++) {
+          for (var x = 0; x < GRID_W; x++) {
+            if (!taken[x + ',' + y]) opts.push({ x: x, y: y });
+          }
+        }
+        if (!opts.length) return;
+        food = opts[Math.floor(Math.random() * opts.length)];
+      }
+
+      function resetGame() {
+        var mx = (GRID_W / 2) | 0;
+        var my = (GRID_H / 2) | 0;
+        snake = [{ x: mx + 1, y: my }, { x: mx, y: my }, { x: mx - 1, y: my }];
+        dir = 1;
+        nextDir = 1;
+        randFood();
+      }
+
+      function drawFrame() {
+        var bg = typeof getComputedStyle !== 'undefined'
+          ? (getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()
+            || '#1a1a1a')
+          : '#1a1a1a';
+        var fg = typeof getComputedStyle !== 'undefined'
+          ? (getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#eee')
+          : '#eee';
+        var fd = typeof getComputedStyle !== 'undefined'
+          ? (getComputedStyle(document.documentElement).getPropertyValue('--link').trim()
+            || getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim()
+            || '#888')
+          : '#888';
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, cssW, cssH);
+        if (!started) {
+          return;
+        }
+        var pad = 0.5;
+        var inner = CELL - 1;
+        var i;
+        ctx.fillStyle = fd;
+        ctx.globalAlpha = 1;
+        ctx.fillRect(ox + food.x * CELL + pad, oy + food.y * CELL + pad, inner, inner);
+        for (i = 0; i < snake.length; i++) {
+          ctx.fillStyle = fg;
+          ctx.globalAlpha = i === 0 ? 1 : 0.88;
+          ctx.fillRect(ox + snake[i].x * CELL + pad, oy + snake[i].y * CELL + pad, inner, inner);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      function step() {
+        dir = nextDir;
+        var head = snake[0];
+        var nx = head.x + (dir === 1 ? 1 : dir === 3 ? -1 : 0);
+        var ny = head.y + (dir === 0 ? -1 : dir === 2 ? 1 : 0);
+        if (nx < 0) nx = GRID_W - 1;
+        else if (nx >= GRID_W) nx = 0;
+        if (ny < 0) ny = GRID_H - 1;
+        else if (ny >= GRID_H) ny = 0;
+        var j;
+        for (j = 0; j < snake.length; j++) {
+          if (snake[j].x === nx && snake[j].y === ny) {
+            resetGame();
+            return;
+          }
+        }
+        snake.unshift({ x: nx, y: ny });
+        if (nx === food.x && ny === food.y) {
+          randFood();
+        } else {
+          snake.pop();
+        }
+      }
+
+      function loop(ts) {
+        if (!alive) return;
+        if (!lastTs) lastTs = ts;
+        if (started) {
+          acc += ts - lastTs;
+          lastTs = ts;
+          while (acc >= STEP_MS) {
+            acc -= STEP_MS;
+            step();
+          }
+        } else {
+          lastTs = ts;
+        }
+        drawFrame();
+        if (alive) raf = window.requestAnimationFrame(loop);
+      }
+
+      function setDirFromDelta(dx, dy) {
+        if (!started) return;
+        var adx = Math.abs(dx);
+        var ady = Math.abs(dy);
+        if (adx < swipeMin && ady < swipeMin) return;
+        if (adx > ady) {
+          if (dx > 0 && dir !== 3) nextDir = 1;
+          else if (dx < 0 && dir !== 1) nextDir = 3;
+        } else {
+          if (dy > 0 && dir !== 0) nextDir = 2;
+          else if (dy < 0 && dir !== 2) nextDir = 0;
+        }
+      }
+
+      function onKeyDown(ev) {
+        if (!started) return;
+        var t = ev.target;
+        if (t && (t.closest && (t.closest('input, textarea, select, [contenteditable="true"]')))) return;
+        var k = ev.key;
+        var nd = nextDir;
+        if (k === 'ArrowUp' || k === 'w' || k === 'W') nd = 0;
+        else if (k === 'ArrowRight' || k === 'd' || k === 'D') nd = 1;
+        else if (k === 'ArrowDown' || k === 's' || k === 'S') nd = 2;
+        else if (k === 'ArrowLeft' || k === 'a' || k === 'A') nd = 3;
+        else return;
+        if (nd === 0 && dir === 2) return;
+        if (nd === 2 && dir === 0) return;
+        if (nd === 1 && dir === 3) return;
+        if (nd === 3 && dir === 1) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        nextDir = nd;
+      }
+
+      function startGame() {
+        if (started) return;
+        started = true;
+        acc = 0;
+        lastTs = 0;
+        resetGame();
+      }
+
+      function onKeyDownBeforeStart(ev) {
+        if (started) return;
+        var t = ev.target;
+        if (t && (t.closest && (t.closest('input, textarea, select, [contenteditable="true"]')))) return;
+        var k = ev.key;
+        if (k === 'ArrowUp' || k === 'ArrowDown' || k === 'ArrowLeft' || k === 'ArrowRight'
+          || k === 'w' || k === 'W' || k === 'a' || k === 'A' || k === 's' || k === 'S' || k === 'd' || k === 'D') {
+          ev.preventDefault();
+          startGame();
+        }
+      }
+
+      function onTouchStart(ev) {
+        if (ev.touches.length !== 1) return;
+        touchActive = true;
+        tx0 = ev.touches[0].clientX;
+        ty0 = ev.touches[0].clientY;
+      }
+
+      function onTouchEnd(ev) {
+        if (!touchActive) return;
+        touchActive = false;
+        var ch = ev.changedTouches && ev.changedTouches[0];
+        if (!ch) return;
+        var x = ch.clientX;
+        var y = ch.clientY;
+        if (started) {
+          setDirFromDelta(x - tx0, y - ty0);
+          return;
+        }
+        var now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        var dt = lastTap > 0 ? now - lastTap : doubleTapMs + 1;
+        var dx = x - lastTapX;
+        var dy = y - lastTapY;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        if (lastTap > 0 && dt < doubleTapMs && dt > 20 && dist < doubleTapDist) {
+          if (ev.cancelable) ev.preventDefault();
+          startGame();
+        }
+        lastTap = now;
+        lastTapX = x;
+        lastTapY = y;
+      }
+
+      function onTouchMove(ev) {
+        if (!started) return;
+        if (ev.cancelable) ev.preventDefault();
+      }
+
+      function onTouchCancel() {
+        touchActive = false;
+      }
+
+      function onResize() {
+        if (!alive) return;
+        updateLayout();
+        if (started) resetGame();
+      }
+
+      var touchOptPassive = { passive: true };
+      var touchOptActive = { passive: false };
+
+      updateLayout();
+      window.addEventListener('resize', onResize, false);
+      window.addEventListener('keydown', onKeyDownBeforeStart, false);
+      window.addEventListener('keydown', onKeyDown, false);
+      wrapEl.addEventListener('touchstart', onTouchStart, touchOptPassive);
+      wrapEl.addEventListener('touchend', onTouchEnd, touchOptActive);
+      wrapEl.addEventListener('touchcancel', onTouchCancel, touchOptPassive);
+      wrapEl.addEventListener('touchmove', onTouchMove, touchOptActive);
+
+      raf = window.requestAnimationFrame(loop);
+
+      return {
+        destroy: function() {
+          alive = false;
+          window.removeEventListener('resize', onResize, false);
+          window.removeEventListener('keydown', onKeyDownBeforeStart, false);
+          window.removeEventListener('keydown', onKeyDown, false);
+          wrapEl.removeEventListener('touchstart', onTouchStart, touchOptPassive);
+          wrapEl.removeEventListener('touchend', onTouchEnd, touchOptActive);
+          wrapEl.removeEventListener('touchcancel', onTouchCancel, touchOptPassive);
+          wrapEl.removeEventListener('touchmove', onTouchMove, touchOptActive);
+          if (raf) cancelAnimationFrame(raf);
+          raf = 0;
+          started = false;
+        },
+      };
     }
 
     function chatTeamClass(teamVal) {
@@ -5180,7 +5551,7 @@
               : '\u2014';
             return '<tr><td>' + escapeHtml(String(r.label || '')) + '</td><td><strong>' + escapeHtml(best) + '</strong>' + teamStr + '<br><span class="stats-summary-meta">' + metaLine + '</span>' + rowTitle + '</td><td>' + escapeHtml(mapStr) + '</td><td>' + profileFormatUnixDate(r.date_ts) + '</td><td>' + linkCell + '</td></tr>';
           }).join('');
-          topLogsBlock = '<div class="stats-summary profile-top-logs"><p class="stats-summary-title">Top logs</p><p class="stats-summary-meta">Best single-game lines on Red or Blue in this filter (indexed per-game stats).</p><div class="stats-table-wrap"><table class="stats-table"><thead>' + tlHead + '</thead><tbody>' + tlBody + '</tbody></table></div></div>';
+          topLogsBlock = '<div class="stats-summary profile-top-logs"><p class="stats-summary-title">Top logs</p><p class="stats-summary-meta">Best single-game lines on Red or Blue in this filter. Merged (&ldquo;combined&rdquo;) uploads are excluded: empty map, multi-map map field, single-word maps without an underscore (e.g. placeholders), series-style titles, combined-style phrases, and (when chat is indexed) combiner chat lines.</p><div class="stats-table-wrap"><table class="stats-table"><thead>' + tlHead + '</thead><tbody>' + tlBody + '</tbody></table></div></div>';
         } else {
           topLogsBlock = '<div class="stats-summary profile-top-logs"><p class="stats-summary-title">Top logs</p><p class="stats-summary-meta">No Red or Blue team rows in this filter; widen filters or backfill stats to see bests.</p></div>';
         }
@@ -5404,11 +5775,13 @@
         if (pnQ.length > MAX_PLAYER_NAME_QUERY_LEN) pnQ = pnQ.slice(0, MAX_PLAYER_NAME_QUERY_LEN);
         if (pnQ.length < MIN_PLAYER_NAME_QUERY_LEN) {
           resultsContent.innerHTML = '<span class="error">Enter a name query of at least ' + MIN_PLAYER_NAME_QUERY_LEN + ' characters.</span>';
+          stopLoadingTitleAnimation();
           return;
         }
         apiUrl = '/api/search/player-name?' + new URLSearchParams({ q: pnQ }).toString();
       } else {
         resultsContent.innerHTML = '<span class="error">Unknown search mode.</span>';
+        stopLoadingTitleAnimation();
         return;
       }
       fetch(apiUrl)
@@ -5504,6 +5877,9 @@
           var ms = performance.now() - t0;
           var msg = err && err.message ? String(err.message) : 'Request failed.';
           resultsContent.innerHTML = '<span class="error">' + escapeHtml(msg) + '</span>' + requestTimingFooter(ms);
+        })
+        .finally(function() {
+          stopLoadingTitleAnimation();
         });
     })();
   </script>

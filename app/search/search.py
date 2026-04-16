@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app import combined_logs
 from app.chat_db import CHAT_ALIAS_FTS_READY_META_KEY
 from app.config import CHAT_DB_PATH, STATS_DB_PATH
 from app.log_utils import winner_team_from_log as _winner_team_from_log
@@ -1490,18 +1491,39 @@ _PROFILE_TOP_LOG_POSITIVE_METRICS: frozenset[str] = frozenset({
 })
 
 
+def _profile_combined_exclusion_sql(conn: sqlite3.Connection) -> tuple[str, bool]:
+    """
+    Return ``(sql_and_fragment, chat_attached)`` for excluding merged logs in profile queries.
+
+    Uses ``combined_logs.stats_log_exclusion_sql`` on alias ``l``; when the chat DB file exists it
+    is ATTACHed read-only and chat-line heuristics are appended. Callers must
+    ``combined_logs.detach_chat_db(conn)`` in ``finally`` when ``chat_attached`` is true.
+    """
+    chat_attached = combined_logs.try_attach_chat_db(conn, CHAT_DB_PATH)
+    frag = combined_logs.stats_log_exclusion_sql("l")
+    if chat_attached:
+        frag += combined_logs.chat_log_exclusion_exists_sql("chat", "l")
+    return frag, chat_attached
+
+
 def _profile_fetch_top_logs(
     conn: sqlite3.Connection,
     steamid64: str,
     filter_sql: str,
     filter_params: list[Any],
 ) -> list[dict[str, Any]]:
-    """Best individual log rows per metric from ``log_players`` + ``logs``, Red/Blue only."""
+    """Best individual log rows per metric from ``log_players`` + ``logs``, Red/Blue only.
+
+    Excludes combined logs (merged games): see ``app.combined_logs`` for map/title/chat heuristics.
+    When the chat DB file exists it is ATTACHed read-only to filter on chat lines as well.
+    """
     sid = (steamid64 or "").strip()
     if not sid:
         return []
 
-    base_sql = f"""
+    combined_excl, chat_attached = _profile_combined_exclusion_sql(conn)
+    try:
+        base_sql = f"""
         SELECT
           l.log_id,
           l.map,
@@ -1525,93 +1547,97 @@ def _profile_fetch_top_logs(
         JOIN logs l ON l.log_id = lp.log_id
         WHERE lp.steamid64 = ?
           AND lp.team IN ('Red', 'Blue')
+          {combined_excl}
           {filter_sql}
     """
 
-    out: list[dict[str, Any]] = []
-    for metric, label, extra_where, order_clause in _PROFILE_TOP_LOG_SPECS:
-        sql = base_sql + extra_where + f" ORDER BY {order_clause} LIMIT 1"
-        row = conn.execute(sql, (sid, *filter_params)).fetchone()
-        if not row:
-            continue
-        (
-            log_id,
-            map_name,
-            title,
-            date_ts,
-            team,
-            kills,
-            deaths,
-            assists,
-            damage,
-            dapm,
-            kdr,
-            kadr,
-            headshots_hit,
-            backstabs,
-            ubers,
-            healing_taken,
-            captures,
-            longest_killstreak,
-        ) = row
+        out: list[dict[str, Any]] = []
+        for metric, label, extra_where, order_clause in _PROFILE_TOP_LOG_SPECS:
+            sql = base_sql + extra_where + f" ORDER BY {order_clause} LIMIT 1"
+            row = conn.execute(sql, (sid, *filter_params)).fetchone()
+            if not row:
+                continue
+            (
+                log_id,
+                map_name,
+                title,
+                date_ts,
+                team,
+                kills,
+                deaths,
+                assists,
+                damage,
+                dapm,
+                kdr,
+                kadr,
+                headshots_hit,
+                backstabs,
+                ubers,
+                healing_taken,
+                captures,
+                longest_killstreak,
+            ) = row
 
-        val: float | int | None
-        if metric == "dpm":
-            val = _round2(dapm)
-        elif metric == "kills":
-            val = int(kills or 0)
-        elif metric == "assists":
-            val = int(assists or 0)
-        elif metric == "damage":
-            val = int(damage or 0)
-        elif metric == "kdr":
-            val = _round2(kdr)
-        elif metric == "kadr":
-            val = _round2(kadr)
-        elif metric == "headshots":
-            val = int(headshots_hit or 0)
-        elif metric == "backstabs":
-            val = int(backstabs or 0)
-        elif metric == "ubers":
-            val = int(ubers or 0)
-        elif metric == "healing_taken":
-            val = int(healing_taken or 0)
-        elif metric == "captures":
-            val = int(captures or 0)
-        elif metric == "killstreak":
-            val = int(longest_killstreak or 0)
-        else:
-            continue
-
-        if val is None and metric in ("dpm", "kdr", "kadr"):
-            continue
-        if metric == "dpm" and val is not None and val <= 0:
-            continue
-        if metric in _PROFILE_TOP_LOG_POSITIVE_METRICS:
-            if val is None or (isinstance(val, (int, float)) and val <= 0):
+            val: float | int | None
+            if metric == "dpm":
+                val = _round2(dapm)
+            elif metric == "kills":
+                val = int(kills or 0)
+            elif metric == "assists":
+                val = int(assists or 0)
+            elif metric == "damage":
+                val = int(damage or 0)
+            elif metric == "kdr":
+                val = _round2(kdr)
+            elif metric == "kadr":
+                val = _round2(kadr)
+            elif metric == "headshots":
+                val = int(headshots_hit or 0)
+            elif metric == "backstabs":
+                val = int(backstabs or 0)
+            elif metric == "ubers":
+                val = int(ubers or 0)
+            elif metric == "healing_taken":
+                val = int(healing_taken or 0)
+            elif metric == "captures":
+                val = int(captures or 0)
+            elif metric == "killstreak":
+                val = int(longest_killstreak or 0)
+            else:
                 continue
 
-        out.append(
-            {
-                "metric": metric,
-                "label": label,
-                "value": val,
-                "log_id": int(log_id),
-                "map": str(map_name or ""),
-                "title": str(title or ""),
-                "date_ts": int(date_ts) if date_ts is not None else None,
-                "team": str(team) if team else None,
-                "kills": int(kills or 0),
-                "deaths": int(deaths or 0),
-                "assists": int(assists or 0),
-                "damage": int(damage or 0),
-                "dapm": _round2(dapm),
-                "kdr": _round2(kdr),
-                "kadr": _round2(kadr),
-            }
-        )
+            if val is None and metric in ("dpm", "kdr", "kadr"):
+                continue
+            if metric == "dpm" and val is not None and val <= 0:
+                continue
+            if metric in _PROFILE_TOP_LOG_POSITIVE_METRICS:
+                if val is None or (isinstance(val, (int, float)) and val <= 0):
+                    continue
 
-    return out
+            out.append(
+                {
+                    "metric": metric,
+                    "label": label,
+                    "value": val,
+                    "log_id": int(log_id),
+                    "map": str(map_name or ""),
+                    "title": str(title or ""),
+                    "date_ts": int(date_ts) if date_ts is not None else None,
+                    "team": str(team) if team else None,
+                    "kills": int(kills or 0),
+                    "deaths": int(deaths or 0),
+                    "assists": int(assists or 0),
+                    "damage": int(damage or 0),
+                    "dapm": _round2(dapm),
+                    "kdr": _round2(kdr),
+                    "kadr": _round2(kadr),
+                }
+            )
+
+        return out
+    finally:
+        if chat_attached:
+            combined_logs.detach_chat_db(conn)
 
 
 # --- Profile: most-played maps (consolidated map versions) ---
@@ -1635,8 +1661,8 @@ _MAP_VER_TAIL_RE = re.compile(
 )
 # ``rcx`` / ``rcb`` (letters only after ``rc``) — not ``rc1a`` (handled below).
 _MAP_RC_LETTER_SUFFIX_RE = re.compile(r"^rc[a-z][a-z0-9]*$")
-# ``rc1a``, ``rc12ab`` — numeric ``rc``/``r`` tails use ``r(?:c)?\d+``; bare ``rc`` is not stripped.
-_MAP_RC_BUILD_RE = re.compile(r"^rc\d+[a-z]*$")
+# ``rc1a``, ``rc17a3``, ``rc12ab`` — numeric RC builds; suffix may mix letters and digits; bare ``rc`` is not stripped.
+_MAP_RC_BUILD_RE = re.compile(r"^rc\d+[a-z0-9]*$")
 # Beta: ``b15``, ``b8a``, ``b15d``, ``b15cd`` — a bare ``b\d+`` tail regex misses letter suffixes.
 _MAP_B_BETA_RE = re.compile(r"^b\d+[a-z]*$")
 # Alpha-style ``a7``, ``a3b`` (same idea as beta).
@@ -1694,12 +1720,16 @@ def _profile_fetch_top_maps(
     Per-map stats match the overview win/loss semantics on ``log_players`` + ``logs``. Percentages use
     ``logs_total`` (profile overview log count). Each row includes per-version breakdown for expansion
     in the UI.
+
+    Excludes combined logs like ``_profile_fetch_top_logs`` (see ``app.combined_logs``).
     """
     sid = (steamid64 or "").strip()
     if not sid or logs_total <= 0:
         return []
 
-    sql = f"""
+    combined_excl, chat_attached = _profile_combined_exclusion_sql(conn)
+    try:
+        sql = f"""
         SELECT
           COALESCE(NULLIF(trim(l.map), ''), '') AS map_raw,
           COUNT(*) AS n,
@@ -1708,80 +1738,84 @@ def _profile_fetch_top_maps(
         FROM log_players lp
         INNER JOIN logs l ON l.log_id = lp.log_id
         WHERE lp.steamid64 = ?
+          {combined_excl}
           {filter_sql}
         GROUP BY COALESCE(NULLIF(trim(l.map), ''), '')
     """
-    raw_rows = conn.execute(sql, (sid, *filter_params)).fetchall()
-    if not raw_rows:
-        return []
+        raw_rows = conn.execute(sql, (sid, *filter_params)).fetchall()
+        if not raw_rows:
+            return []
 
-    buckets: dict[str, dict[str, Any]] = {}
-    for tup in raw_rows:
-        raw = str(tup[0]).strip() if tup[0] is not None else ""
-        raw_disp = raw if raw else "(unknown)"
-        n = int(tup[1] or 0)
-        wins = int(tup[2] or 0)
-        losses = int(tup[3] or 0)
-        key = _map_canonical_key(raw_disp)
-        rec = buckets.setdefault(
-            key,
-            {"logs_count": 0, "wins": 0, "losses": 0, "raw_counts": {}},
-        )
-        rec["logs_count"] += n
-        rec["wins"] += wins
-        rec["losses"] += losses
-        rc: dict[str, Any] = rec["raw_counts"].setdefault(
-            raw_disp,
-            {"logs_count": 0, "wins": 0, "losses": 0},
-        )
-        rc["logs_count"] += n
-        rc["wins"] += wins
-        rc["losses"] += losses
+        buckets: dict[str, dict[str, Any]] = {}
+        for tup in raw_rows:
+            raw = str(tup[0]).strip() if tup[0] is not None else ""
+            raw_disp = raw if raw else "(unknown)"
+            n = int(tup[1] or 0)
+            wins = int(tup[2] or 0)
+            losses = int(tup[3] or 0)
+            key = _map_canonical_key(raw_disp)
+            rec = buckets.setdefault(
+                key,
+                {"logs_count": 0, "wins": 0, "losses": 0, "raw_counts": {}},
+            )
+            rec["logs_count"] += n
+            rec["wins"] += wins
+            rec["losses"] += losses
+            rc: dict[str, Any] = rec["raw_counts"].setdefault(
+                raw_disp,
+                {"logs_count": 0, "wins": 0, "losses": 0},
+            )
+            rc["logs_count"] += n
+            rc["wins"] += wins
+            rc["losses"] += losses
 
-    groups: list[dict[str, Any]] = []
-    lt = float(logs_total)
-    for key, rec in buckets.items():
-        total = int(rec["logs_count"])
-        wins = int(rec["wins"])
-        losses = int(rec["losses"])
-        decided = wins + losses
-        undecided = total - wins - losses
-        win_rate = round(wins / decided, 6) if decided > 0 else None
-        raw_counts: dict[str, dict[str, Any]] = rec["raw_counts"]
-        versions: list[dict[str, Any]] = []
-        for raw_name in sorted(
-            raw_counts.keys(),
-            key=lambda r: (-raw_counts[r]["logs_count"], r),
-        ):
-            st = raw_counts[raw_name]
-            vn = int(st["logs_count"])
-            vw = int(st["wins"])
-            vl = int(st["losses"])
-            vdec = vw + vl
-            versions.append({
-                "map": raw_name,
-                "logs_count": vn,
-                "pct_of_total": round(vn / lt, 6) if lt > 0 else None,
-                "win_rate": round(vw / vdec, 6) if vdec > 0 else None,
-                "wins": vw,
-                "losses": vl,
-                "undecided_logs": vn - vw - vl,
+        groups: list[dict[str, Any]] = []
+        lt = float(logs_total)
+        for key, rec in buckets.items():
+            total = int(rec["logs_count"])
+            wins = int(rec["wins"])
+            losses = int(rec["losses"])
+            decided = wins + losses
+            undecided = total - wins - losses
+            win_rate = round(wins / decided, 6) if decided > 0 else None
+            raw_counts: dict[str, dict[str, Any]] = rec["raw_counts"]
+            versions: list[dict[str, Any]] = []
+            for raw_name in sorted(
+                raw_counts.keys(),
+                key=lambda r: (-raw_counts[r]["logs_count"], r),
+            ):
+                st = raw_counts[raw_name]
+                vn = int(st["logs_count"])
+                vw = int(st["wins"])
+                vl = int(st["losses"])
+                vdec = vw + vl
+                versions.append({
+                    "map": raw_name,
+                    "logs_count": vn,
+                    "pct_of_total": round(vn / lt, 6) if lt > 0 else None,
+                    "win_rate": round(vw / vdec, 6) if vdec > 0 else None,
+                    "wins": vw,
+                    "losses": vl,
+                    "undecided_logs": vn - vw - vl,
+                })
+            groups.append({
+                "map_key": key,
+                "map_label": key,
+                "logs_count": total,
+                "pct_of_total": round(total / lt, 6) if lt > 0 else None,
+                "win_rate": win_rate,
+                "wins": wins,
+                "losses": losses,
+                "undecided_logs": undecided,
+                "versions": versions,
             })
-        groups.append({
-            "map_key": key,
-            "map_label": key,
-            "logs_count": total,
-            "pct_of_total": round(total / lt, 6) if lt > 0 else None,
-            "win_rate": win_rate,
-            "wins": wins,
-            "losses": losses,
-            "undecided_logs": undecided,
-            "versions": versions,
-        })
 
-    groups.sort(key=lambda g: (-g["logs_count"], g["map_key"]))
-    lim = int(_PROFILE_TOP_MAPS_LIMIT)
-    return groups[:lim]
+        groups.sort(key=lambda g: (-g["logs_count"], g["map_key"]))
+        lim = int(_PROFILE_TOP_MAPS_LIMIT)
+        return groups[:lim]
+    finally:
+        if chat_attached:
+            combined_logs.detach_chat_db(conn)
 
 
 # Top co-players on the profile card (same scope as other profile sections).
@@ -1802,12 +1836,24 @@ def _profile_fetch_top_coplayers(
 
     Includes teammate-only win rate, teammate-only combined playtime (from ``log_player_classes``),
     and the opponent's most-played class in games where you were teammates.
+
+    ``filter_sql`` / ``filter_params`` are appended to **three** queries (aggregation, playtime,
+    class breakdown). The same placeholder sequence is bound three times as
+    ``[sid, *filter_params, …]``, ``[sid, *opp_ids, *filter_params]``, and
+    ``[sid, *opp_ids, *filter_params]``. That is only correct if ``filter_sql`` uses **pure**
+    value binds (no ``random()``, no subqueries with side effects, no volatile functions). The
+    profile pipeline only passes static date/gamemode/map fragments from
+    ``_profile_scope_sql`` — safe today; keep this contract if ``filter_sql`` ever grows.
+
+    Combined-log exclusion matches ``_profile_fetch_top_logs`` (see ``app.combined_logs``).
     """
     sid = (steamid64 or "").strip()
     if not sid:
         return []
 
-    agg_sql = f"""
+    combined_excl, chat_attached = _profile_combined_exclusion_sql(conn)
+    try:
+        agg_sql = f"""
         SELECT * FROM (
             SELECT
               o.steamid64 AS opp_id,
@@ -1823,6 +1869,7 @@ def _profile_fetch_top_coplayers(
             WHERE s.steamid64 = ?
               AND s.team IN ('Red', 'Blue')
               AND o.team IN ('Red', 'Blue')
+              {combined_excl}
               {filter_sql}
             GROUP BY o.steamid64
         ) AS agg
@@ -1830,56 +1877,56 @@ def _profile_fetch_top_coplayers(
         ORDER BY agg.games_with + agg.games_against DESC
         LIMIT ?
     """
-    lim = int(_PROFILE_TOP_COPLAYERS_LIMIT)
-    params: list[Any] = [sid, *filter_params, _PROFILE_TOP_COPLAYERS_MIN_TOTAL_LOGS, lim]
-    raw = conn.execute(agg_sql, params).fetchall()
-    if not raw:
-        return []
+        lim = int(_PROFILE_TOP_COPLAYERS_LIMIT)
+        params: list[Any] = [sid, *filter_params, _PROFILE_TOP_COPLAYERS_MIN_TOTAL_LOGS, lim]
+        raw = conn.execute(agg_sql, params).fetchall()
+        if not raw:
+            return []
 
-    rows_out: list[dict[str, Any]] = []
-    opp_ids: list[str] = []
-    for tup in raw:
-        (
-            opp_id,
-            gw,
-            wiw,
-            low,
-            ga,
-            wia,
-            loa,
-        ) = tup
-        oid = str(opp_id or "").strip()
-        if not oid:
-            continue
-        gw_i, ga_i = int(gw or 0), int(ga or 0)
-        wiw_i, low_i = int(wiw or 0), int(low or 0)
-        wia_i, loa_i = int(wia or 0), int(loa or 0)
-        total_logs = gw_i + ga_i
-        decided_with = wiw_i + low_i
-        win_rate_with = round(wiw_i / decided_with, 4) if decided_with > 0 else None
-        decided_against = wia_i + loa_i
-        win_rate_against = round(wia_i / decided_against, 4) if decided_against > 0 else None
-        rows_out.append({
-            "steamid64": oid,
-            "games_with": gw_i,
-            "games_against": ga_i,
-            "total_logs": total_logs,
-            "wins_with": wiw_i,
-            "losses_with": low_i,
-            "wins_against": wia_i,
-            "losses_against": loa_i,
-            "win_rate_with": win_rate_with,
-            "win_rate_against": win_rate_against,
-            "total_playtime_together_secs": 0,
-            "most_common_class_with": None,
-        })
-        opp_ids.append(oid)
+        rows_out: list[dict[str, Any]] = []
+        opp_ids: list[str] = []
+        for tup in raw:
+            (
+                opp_id,
+                gw,
+                wiw,
+                low,
+                ga,
+                wia,
+                loa,
+            ) = tup
+            oid = str(opp_id or "").strip()
+            if not oid:
+                continue
+            gw_i, ga_i = int(gw or 0), int(ga or 0)
+            wiw_i, low_i = int(wiw or 0), int(low or 0)
+            wia_i, loa_i = int(wia or 0), int(loa or 0)
+            total_logs = gw_i + ga_i
+            decided_with = wiw_i + low_i
+            win_rate_with = round(wiw_i / decided_with, 4) if decided_with > 0 else None
+            decided_against = wia_i + loa_i
+            win_rate_against = round(wia_i / decided_against, 4) if decided_against > 0 else None
+            rows_out.append({
+                "steamid64": oid,
+                "games_with": gw_i,
+                "games_against": ga_i,
+                "total_logs": total_logs,
+                "wins_with": wiw_i,
+                "losses_with": low_i,
+                "wins_against": wia_i,
+                "losses_against": loa_i,
+                "win_rate_with": win_rate_with,
+                "win_rate_against": win_rate_against,
+                "total_playtime_together_secs": 0,
+                "most_common_class_with": None,
+            })
+            opp_ids.append(oid)
 
-    if not opp_ids:
-        return []
+        if not opp_ids:
+            return []
 
-    ph = ",".join("?" * len(opp_ids))
-    pt_sql = f"""
+        ph = ",".join("?" * len(opp_ids))
+        pt_sql = f"""
         SELECT o.steamid64, SUM(lpc.playtime) AS pt
         FROM log_players AS s
         INNER JOIN logs AS l ON l.log_id = s.log_id
@@ -1892,17 +1939,18 @@ def _profile_fetch_top_coplayers(
           AND o.steamid64 IN ({ph})
           AND trim(lpc.class) != ''
           AND lower(trim(lpc.class)) NOT IN ('undefined', 'none')
+          {combined_excl}
           {filter_sql}
         GROUP BY o.steamid64
     """
-    pt_params: list[Any] = [sid, *opp_ids, *filter_params]
-    playtime_by: dict[str, int] = {}
-    for oid, pt in conn.execute(pt_sql, pt_params).fetchall():
-        o = str(oid or "").strip()
-        if o:
-            playtime_by[o] = int(pt or 0)
+        pt_params: list[Any] = [sid, *opp_ids, *filter_params]
+        playtime_by: dict[str, int] = {}
+        for oid, pt in conn.execute(pt_sql, pt_params).fetchall():
+            o = str(oid or "").strip()
+            if o:
+                playtime_by[o] = int(pt or 0)
 
-    cls_sql = f"""
+        cls_sql = f"""
         SELECT o.steamid64, lpc.class, SUM(lpc.playtime) AS pt
         FROM log_players AS s
         INNER JOIN logs AS l ON l.log_id = s.log_id
@@ -1915,35 +1963,39 @@ def _profile_fetch_top_coplayers(
           AND o.steamid64 IN ({ph})
           AND trim(lpc.class) != ''
           AND lower(trim(lpc.class)) NOT IN ('undefined', 'none')
+          {combined_excl}
           {filter_sql}
         GROUP BY o.steamid64, lpc.class
     """
-    cls_params: list[Any] = [sid, *opp_ids, *filter_params]
-    best_cls: dict[str, tuple[str, int]] = {}
-    for oid, cname, pt in conn.execute(cls_sql, cls_params).fetchall():
-        o = str(oid or "").strip()
-        if not o:
-            continue
-        pt_i = int(pt or 0)
-        cn = _class_label_norm(cname)
-        if not cn:
-            continue
-        prev = best_cls.get(o)
-        if prev is None or pt_i > prev[1]:
-            best_cls[o] = (cn, pt_i)
+        cls_params: list[Any] = [sid, *opp_ids, *filter_params]
+        best_cls: dict[str, tuple[str, int]] = {}
+        for oid, cname, pt in conn.execute(cls_sql, cls_params).fetchall():
+            o = str(oid or "").strip()
+            if not o:
+                continue
+            pt_i = int(pt or 0)
+            cn = _class_label_norm(cname)
+            if not cn:
+                continue
+            prev = best_cls.get(o)
+            if prev is None or pt_i > prev[1]:
+                best_cls[o] = (cn, pt_i)
 
-    for row in rows_out:
-        o = row["steamid64"]
-        row["total_playtime_together_secs"] = playtime_by.get(o, 0)
-        bc = best_cls.get(o)
-        row["most_common_class_with"] = bc[0] if bc else None
+        for row in rows_out:
+            o = row["steamid64"]
+            row["total_playtime_together_secs"] = playtime_by.get(o, 0)
+            bc = best_cls.get(o)
+            row["most_common_class_with"] = bc[0] if bc else None
 
-    name_map = _lookup_aliases_from_chat_db([sid] + opp_ids)
-    for row in rows_out:
-        o = row["steamid64"]
-        row["name"] = (name_map.get(o) or "").strip()
+        name_map = _lookup_aliases_from_chat_db([sid] + opp_ids)
+        for row in rows_out:
+            o = row["steamid64"]
+            row["name"] = (name_map.get(o) or "").strip()
 
-    return rows_out
+        return rows_out
+    finally:
+        if chat_attached:
+            combined_logs.detach_chat_db(conn)
 
 
 def _profile_fetch_top_coplayers_opposing(
@@ -1961,12 +2013,19 @@ def _profile_fetch_top_coplayers_opposing(
     Each row's ``total_logs`` is ``games_with + games_against`` (same semantics as the teammate table).
 
     Win rate, class, and playtime use only those opposing-team games.
+
+    Same ``filter_sql`` / ``filter_params`` triple-append contract as
+    ``_profile_fetch_top_coplayers`` (see that docstring).
+
+    Combined-log exclusion matches ``_profile_fetch_top_logs`` (see ``app.combined_logs``).
     """
     sid = (steamid64 or "").strip()
     if not sid:
         return []
 
-    agg_sql = f"""
+    combined_excl, chat_attached = _profile_combined_exclusion_sql(conn)
+    try:
+        agg_sql = f"""
         SELECT * FROM (
             SELECT
               o.steamid64 AS opp_id,
@@ -1982,6 +2041,7 @@ def _profile_fetch_top_coplayers_opposing(
             WHERE s.steamid64 = ?
               AND s.team IN ('Red', 'Blue')
               AND o.team IN ('Red', 'Blue')
+              {combined_excl}
               {filter_sql}
             GROUP BY o.steamid64
         ) AS agg
@@ -1989,51 +2049,51 @@ def _profile_fetch_top_coplayers_opposing(
         ORDER BY agg.games_against DESC
         LIMIT ?
     """
-    lim = int(_PROFILE_TOP_COPLAYERS_LIMIT)
-    params: list[Any] = [sid, *filter_params, _PROFILE_TOP_COPLAYERS_MIN_TOTAL_LOGS, lim]
-    raw = conn.execute(agg_sql, params).fetchall()
-    if not raw:
-        return []
+        lim = int(_PROFILE_TOP_COPLAYERS_LIMIT)
+        params: list[Any] = [sid, *filter_params, _PROFILE_TOP_COPLAYERS_MIN_TOTAL_LOGS, lim]
+        raw = conn.execute(agg_sql, params).fetchall()
+        if not raw:
+            return []
 
-    rows_out: list[dict[str, Any]] = []
-    opp_ids: list[str] = []
-    for tup in raw:
-        (
-            opp_id,
-            gw,
-            wiw,
-            low,
-            ga,
-            wia,
-            loa,
-        ) = tup
-        oid = str(opp_id or "").strip()
-        if not oid:
-            continue
-        gw_i, ga_i = int(gw or 0), int(ga or 0)
-        wiw_i, low_i = int(wiw or 0), int(low or 0)
-        wia_i, loa_i = int(wia or 0), int(loa or 0)
-        total_logs = gw_i + ga_i
-        decided_against = wia_i + loa_i
-        win_rate_against = round(wia_i / decided_against, 4) if decided_against > 0 else None
-        rows_out.append({
-            "steamid64": oid,
-            "games_with": gw_i,
-            "games_against": ga_i,
-            "total_logs": total_logs,
-            "wins_against": wia_i,
-            "losses_against": loa_i,
-            "win_rate_against": win_rate_against,
-            "total_playtime_opposing_secs": 0,
-            "most_common_class_against": None,
-        })
-        opp_ids.append(oid)
+        rows_out: list[dict[str, Any]] = []
+        opp_ids: list[str] = []
+        for tup in raw:
+            (
+                opp_id,
+                gw,
+                wiw,
+                low,
+                ga,
+                wia,
+                loa,
+            ) = tup
+            oid = str(opp_id or "").strip()
+            if not oid:
+                continue
+            gw_i, ga_i = int(gw or 0), int(ga or 0)
+            wiw_i, low_i = int(wiw or 0), int(low or 0)
+            wia_i, loa_i = int(wia or 0), int(loa or 0)
+            total_logs = gw_i + ga_i
+            decided_against = wia_i + loa_i
+            win_rate_against = round(wia_i / decided_against, 4) if decided_against > 0 else None
+            rows_out.append({
+                "steamid64": oid,
+                "games_with": gw_i,
+                "games_against": ga_i,
+                "total_logs": total_logs,
+                "wins_against": wia_i,
+                "losses_against": loa_i,
+                "win_rate_against": win_rate_against,
+                "total_playtime_opposing_secs": 0,
+                "most_common_class_against": None,
+            })
+            opp_ids.append(oid)
 
-    if not opp_ids:
-        return []
+        if not opp_ids:
+            return []
 
-    ph = ",".join("?" * len(opp_ids))
-    pt_sql = f"""
+        ph = ",".join("?" * len(opp_ids))
+        pt_sql = f"""
         SELECT o.steamid64, SUM(lpc.playtime) AS pt
         FROM log_players AS s
         INNER JOIN logs AS l ON l.log_id = s.log_id
@@ -2046,17 +2106,18 @@ def _profile_fetch_top_coplayers_opposing(
           AND o.steamid64 IN ({ph})
           AND trim(lpc.class) != ''
           AND lower(trim(lpc.class)) NOT IN ('undefined', 'none')
+          {combined_excl}
           {filter_sql}
         GROUP BY o.steamid64
     """
-    pt_params: list[Any] = [sid, *opp_ids, *filter_params]
-    playtime_by: dict[str, int] = {}
-    for oid, pt in conn.execute(pt_sql, pt_params).fetchall():
-        o = str(oid or "").strip()
-        if o:
-            playtime_by[o] = int(pt or 0)
+        pt_params: list[Any] = [sid, *opp_ids, *filter_params]
+        playtime_by: dict[str, int] = {}
+        for oid, pt in conn.execute(pt_sql, pt_params).fetchall():
+            o = str(oid or "").strip()
+            if o:
+                playtime_by[o] = int(pt or 0)
 
-    cls_sql = f"""
+        cls_sql = f"""
         SELECT o.steamid64, lpc.class, SUM(lpc.playtime) AS pt
         FROM log_players AS s
         INNER JOIN logs AS l ON l.log_id = s.log_id
@@ -2069,35 +2130,39 @@ def _profile_fetch_top_coplayers_opposing(
           AND o.steamid64 IN ({ph})
           AND trim(lpc.class) != ''
           AND lower(trim(lpc.class)) NOT IN ('undefined', 'none')
+          {combined_excl}
           {filter_sql}
         GROUP BY o.steamid64, lpc.class
     """
-    cls_params: list[Any] = [sid, *opp_ids, *filter_params]
-    best_cls: dict[str, tuple[str, int]] = {}
-    for oid, cname, pt in conn.execute(cls_sql, cls_params).fetchall():
-        o = str(oid or "").strip()
-        if not o:
-            continue
-        pt_i = int(pt or 0)
-        cn = _class_label_norm(cname)
-        if not cn:
-            continue
-        prev = best_cls.get(o)
-        if prev is None or pt_i > prev[1]:
-            best_cls[o] = (cn, pt_i)
+        cls_params: list[Any] = [sid, *opp_ids, *filter_params]
+        best_cls: dict[str, tuple[str, int]] = {}
+        for oid, cname, pt in conn.execute(cls_sql, cls_params).fetchall():
+            o = str(oid or "").strip()
+            if not o:
+                continue
+            pt_i = int(pt or 0)
+            cn = _class_label_norm(cname)
+            if not cn:
+                continue
+            prev = best_cls.get(o)
+            if prev is None or pt_i > prev[1]:
+                best_cls[o] = (cn, pt_i)
 
-    for row in rows_out:
-        o = row["steamid64"]
-        row["total_playtime_opposing_secs"] = playtime_by.get(o, 0)
-        bc = best_cls.get(o)
-        row["most_common_class_against"] = bc[0] if bc else None
+        for row in rows_out:
+            o = row["steamid64"]
+            row["total_playtime_opposing_secs"] = playtime_by.get(o, 0)
+            bc = best_cls.get(o)
+            row["most_common_class_against"] = bc[0] if bc else None
 
-    name_map = _lookup_aliases_from_chat_db([sid] + opp_ids)
-    for row in rows_out:
-        o = row["steamid64"]
-        row["name"] = (name_map.get(o) or "").strip()
+        name_map = _lookup_aliases_from_chat_db([sid] + opp_ids)
+        for row in rows_out:
+            o = row["steamid64"]
+            row["name"] = (name_map.get(o) or "").strip()
 
-    return rows_out
+        return rows_out
+    finally:
+        if chat_attached:
+            combined_logs.detach_chat_db(conn)
 
 
 def _leaderboard_scope_sql(

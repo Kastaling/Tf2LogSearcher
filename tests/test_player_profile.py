@@ -1,8 +1,9 @@
 """Tests for the player_profile aggregation function."""
 import pytest
 
+from app.chat_db import connect_chat_db, init_chat_db, replace_chat_for_log
 from app.stats_db import connect_stats_db, init_stats_db, replace_stats_for_log
-from app.search.search import _map_canonical_key, player_profile
+from app.search.search import player_profile
 
 PLAYER_A = "76561198000000001"
 PLAYER_B = "76561198000000002"
@@ -24,13 +25,14 @@ def _make_logtext(
     a_deaths: int = 6,
     a_dmg: int = 3600,
     a_ubers: int = 0,
+    log_title: str = "Test log",
 ) -> dict:
     return {
         "info": {
             "map": map_name,
             "date": date_ts,
             "total_length": 300,
-            "title": "Test log",
+            "title": log_title,
             "winner": None,
         },
         "teams": {
@@ -189,23 +191,297 @@ def test_profile_top_maps_grouped_and_pct(populated_db, monkeypatch):
     assert len(proc["versions"]) == 1
 
 
-def test_map_canonical_key_competitive_suffixes():
-    assert _map_canonical_key("cp_process_f12") == "cp_process"
-    assert _map_canonical_key("cp_process_final") == "cp_process"
-    assert _map_canonical_key("cp_process_f9a") == "cp_process"
-    assert _map_canonical_key("cp_gullywash_final1") == "cp_gullywash"
-    assert _map_canonical_key("cp_gullywash_f9") == "cp_gullywash"
-    assert _map_canonical_key("cp_metalworks_f5") == "cp_metalworks"
-    assert _map_canonical_key("koth_product_rcx") == "koth_product"
-    assert _map_canonical_key("koth_product_final") == "koth_product"
-    assert _map_canonical_key("pl_vigil_rc9") == "pl_vigil"
-    assert _map_canonical_key("cp_sultry_b8a") == "cp_sultry"
-    assert _map_canonical_key("koth_clearcut_b15d") == "koth_clearcut"
-    assert _map_canonical_key("koth_clearcut_b15c") == "koth_clearcut"
-    assert _map_canonical_key("cp_villa_b17a") == "cp_villa"
-    assert _map_canonical_key("koth_cascade_rc1a") == "koth_cascade"
-    # Bare ``rc`` / ``r`` are not version tails (avoid ``cp_rc`` → ``cp``).
-    assert _map_canonical_key("cp_rc") == "cp_rc"
+@pytest.fixture()
+def top_logs_combined_excluded_db(stats_db):
+    """One combined-map log with inflated stats, one single-map log with lower stats."""
+    conn = connect_stats_db(stats_db)
+    with conn:
+        replace_stats_for_log(
+            conn,
+            7001,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="pl_vigil + cp_process",
+                a_dmg=999_999,
+                a_kills=500,
+            ),
+        )
+        replace_stats_for_log(
+            conn,
+            7002,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="cp_process_final",
+                date_ts=1_701_000_000,
+                a_dmg=4000,
+                a_kills=20,
+            ),
+        )
+    conn.close()
+    return stats_db
+
+
+def test_profile_top_logs_excludes_combined_map_uploads(top_logs_combined_excluded_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", top_logs_combined_excluded_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    profile, _ = player_profile(PLAYER_A)
+    tl = profile.get("top_logs") or []
+    dmg = next((x for x in tl if x.get("metric") == "damage"), None)
+    assert dmg is not None
+    assert dmg["log_id"] == 7002
+    assert dmg["value"] == 4000
+    kills = next((x for x in tl if x.get("metric") == "kills"), None)
+    assert kills is not None
+    assert kills["log_id"] == 7002
+    assert kills["value"] == 20
+
+
+@pytest.fixture()
+def top_logs_space_separated_maps_excluded_db(stats_db):
+    """Space-separated map tokens (no comma/+) vs a normal single-map log."""
+    conn = connect_stats_db(stats_db)
+    with conn:
+        replace_stats_for_log(
+            conn,
+            7051,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="upwd steel cascade",
+                a_dmg=999_999,
+                a_kills=500,
+            ),
+        )
+        replace_stats_for_log(
+            conn,
+            7052,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="koth_bagel_rc2",
+                date_ts=1_701_500_000,
+                a_dmg=4500,
+                a_kills=21,
+            ),
+        )
+    conn.close()
+    return stats_db
+
+
+def test_profile_top_logs_excludes_space_separated_maps(
+    top_logs_space_separated_maps_excluded_db,
+    monkeypatch,
+):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", top_logs_space_separated_maps_excluded_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    profile, _ = player_profile(PLAYER_A)
+    dmg = next((x for x in (profile.get("top_logs") or []) if x.get("metric") == "damage"), None)
+    assert dmg is not None
+    assert dmg["log_id"] == 7052
+    assert dmg["value"] == 4500
+
+
+@pytest.fixture()
+def top_logs_placeholder_map_gg_excluded_db(stats_db):
+    """Placeholder single-token map (no underscore) vs real ``snake_case`` map."""
+    conn = connect_stats_db(stats_db)
+    with conn:
+        replace_stats_for_log(
+            conn,
+            7061,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="GG",
+                log_title="PLAT GRAND FINALS (DK VS HOOD) (2-1)",
+                a_dmg=999_999,
+                a_kills=200,
+            ),
+        )
+        replace_stats_for_log(
+            conn,
+            7062,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="koth_bagel",
+                date_ts=1_701_600_000,
+                a_dmg=8000,
+                a_kills=30,
+            ),
+        )
+    conn.close()
+    return stats_db
+
+
+def test_profile_top_logs_excludes_placeholder_map_and_series_title(
+    top_logs_placeholder_map_gg_excluded_db,
+    monkeypatch,
+):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", top_logs_placeholder_map_gg_excluded_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    profile, _ = player_profile(PLAYER_A)
+    dmg = next((x for x in (profile.get("top_logs") or []) if x.get("metric") == "damage"), None)
+    assert dmg is not None
+    assert dmg["log_id"] == 7062
+    assert dmg["value"] == 8000
+
+
+@pytest.fixture()
+def top_logs_empty_map_excluded_db(stats_db):
+    """Inflated stats on empty map vs lower stats with a real map name."""
+    conn = connect_stats_db(stats_db)
+    with conn:
+        replace_stats_for_log(
+            conn,
+            7101,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="",
+                a_dmg=888_888,
+                a_kills=400,
+            ),
+        )
+        replace_stats_for_log(
+            conn,
+            7102,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="cp_process_final",
+                date_ts=1_702_000_000,
+                a_dmg=5000,
+                a_kills=25,
+            ),
+        )
+    conn.close()
+    return stats_db
+
+
+def test_profile_top_logs_excludes_empty_map(top_logs_empty_map_excluded_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", top_logs_empty_map_excluded_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    profile, _ = player_profile(PLAYER_A)
+    dmg = next((x for x in (profile.get("top_logs") or []) if x.get("metric") == "damage"), None)
+    assert dmg is not None
+    assert dmg["log_id"] == 7102
+    assert dmg["value"] == 5000
+
+
+@pytest.fixture()
+def top_logs_combined_title_excluded_db(stats_db):
+    conn = connect_stats_db(stats_db)
+    with conn:
+        replace_stats_for_log(
+            conn,
+            7201,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="koth_product_rc1",
+                log_title="Combined Log",
+                a_dmg=777_777,
+                a_kills=300,
+            ),
+        )
+        replace_stats_for_log(
+            conn,
+            7202,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="cp_snakewater_final1",
+                date_ts=1_703_000_000,
+                a_dmg=6000,
+                a_kills=18,
+            ),
+        )
+    conn.close()
+    return stats_db
+
+
+def test_profile_top_logs_excludes_combined_title(top_logs_combined_title_excluded_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", top_logs_combined_title_excluded_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    profile, _ = player_profile(PLAYER_A)
+    k = next((x for x in (profile.get("top_logs") or []) if x.get("metric") == "kills"), None)
+    assert k is not None
+    assert k["log_id"] == 7202
+    assert k["value"] == 18
+
+
+@pytest.fixture()
+def top_logs_chat_combined_excluded_db(tmp_path):
+    stats_path = tmp_path / "stats.db"
+    chat_path = tmp_path / "chat.db"
+    sconn = connect_stats_db(stats_path)
+    init_stats_db(sconn)
+    cconn = connect_chat_db(chat_path)
+    init_chat_db(cconn)
+    with sconn:
+        replace_stats_for_log(
+            sconn,
+            7301,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="cp_process_final",
+                a_dmg=600_000,
+                a_kills=200,
+            ),
+        )
+        replace_stats_for_log(
+            sconn,
+            7302,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="cp_metalworks_f5",
+                date_ts=1_704_000_000,
+                a_dmg=7000,
+                a_kills=22,
+            ),
+        )
+    chat_logtext = {
+        "info": {"map": "cp_process_final", "date": 1_700_000_000},
+        "chat": [
+            {
+                "msg": (
+                    "The following logs were combined: https://logs.tf/3921375 & "
+                    "https://logs.tf/3921388"
+                ),
+                "name": "Jack's Log Combiner",
+                "steamid": "[U:1:500]",
+            },
+        ],
+        "players": {},
+    }
+    with cconn:
+        replace_chat_for_log(cconn, 7301, chat_logtext)
+    sconn.close()
+    cconn.close()
+    return stats_path, chat_path
+
+
+def test_profile_top_logs_excludes_chat_combined_signature(top_logs_chat_combined_excluded_db, monkeypatch):
+    stats_path, chat_path = top_logs_chat_combined_excluded_db
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", stats_path)
+    monkeypatch.setattr("app.search.search.CHAT_DB_PATH", chat_path)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    profile, _ = player_profile(PLAYER_A)
+    dmg = next((x for x in (profile.get("top_logs") or []) if x.get("metric") == "damage"), None)
+    assert dmg is not None
+    assert dmg["log_id"] == 7302
+    assert dmg["value"] == 7000
 
 
 def test_profile_top_coplayers(populated_db, monkeypatch):
