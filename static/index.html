@@ -618,6 +618,57 @@
       gap: 0.35rem;
       margin-bottom: 0.75rem;
     }
+    /* Only lay out when visible; plain ``[hidden]`` is otherwise overridden by ``display: flex``. */
+    .lb-stat-scope-strip:not([hidden]) {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem;
+      margin-bottom: 0.75rem;
+    }
+    .lb-stat-scope-strip .lb-stat-scope-label {
+      font-size: 0.92em;
+      color: var(--muted, #666);
+      margin-right: 0.15rem;
+    }
+    .home-layout-sort-item .home-layout-sort-label {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      cursor: grab;
+      flex: 1;
+      min-width: 0;
+      margin: 0;
+      font-weight: inherit;
+    }
+    .home-layout-sort-item .home-layout-sort-label input[type="checkbox"] {
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .js-home-endpoint[hidden] {
+      display: none !important;
+    }
+    /* Deep-link scroll targets: keep section title below browser chrome / fixed controls */
+    #homePage .js-home-endpoints-stack > .js-home-endpoint {
+      scroll-margin-top: 0.75rem;
+    }
+    /* Soft pulse on URL-prefilled fields after deep link */
+    @keyframes deepLinkFieldFlash {
+      0%, 100% {
+        outline: 2px solid transparent;
+        outline-offset: 0;
+        box-shadow: none;
+      }
+      35% {
+        outline: 2px solid var(--link);
+        outline-offset: 2px;
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--link) 45%, transparent), 0 4px 20px color-mix(in srgb, var(--link) 25%, transparent);
+      }
+    }
+    .deep-link-field-flash {
+      animation: deepLinkFieldFlash 2.1s ease-out 1;
+      border-radius: 4px;
+    }
     .playername-results-table td.playername-actions {
       display: flex;
       flex-wrap: wrap;
@@ -1094,7 +1145,9 @@
   <button type="button" class="theme-toggle" id="themeToggle" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
   <div id="homePage">
   <h1>TF2 Logs.tf Advanced Searcher</h1>
+  <div class="js-home-endpoints-stack">
 
+  <div class="js-home-endpoint" data-home-endpoint="chat">
   <h2>Chat Searcher</h2>
   <p>Search for a word or phrase in a player's chat, or leave Steam ID empty to see a global word leaderboard. Steam ID accepts SteamID64, profile URL, vanity URL, or vanity name.</p>
   <form id="frmChat">
@@ -1106,7 +1159,47 @@
     <button type="submit">Submit</button>
   </form>
   <div id="chatResults" class="results"></div>
+  </div>
 
+  <div class="js-home-endpoint" data-home-endpoint="profile">
+  <h2>Player profile</h2>
+  <p>Aggregated stats from the indexed stats database for one player. Filters apply across all sections. Top logs lists best single-game lines (DPM, kills, damage, etc.) from indexed games.</p>
+  <form id="frmProfile">
+    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label>
+    <label>Gamemode: <select name="gamemode">
+      <option value="">All gamemodes</option>
+      <option value="hl">Highlander</option>
+      <option value="7s">Prolander</option>
+      <option value="6s">6s</option>
+      <option value="ud">Ultiduo</option>
+    </select></label>
+    <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
+    <label>Date from (optional): <input type="date" name="date_from"></label>
+    <label>Date to (optional): <input type="date" name="date_to"></label>
+    <button type="submit">Load profile</button>
+  </form>
+  <div id="profileResults" class="results"></div>
+  </div>
+
+  <div class="js-home-endpoint" data-home-endpoint="coplayers">
+  <h2>Frequent Co-players</h2>
+  <p>See who you play with and against most often across logs we have. Enter Steam ID (profile URL, vanity name, or SteamID64). Optionally filter by gamemode and map name substring.</p>
+  <form id="frmCoplayers">
+    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label>
+    <label>Gamemode: <select name="gamemode">
+      <option value="">All gamemodes</option>
+      <option value="hl">Highlander</option>
+      <option value="7s">Prolander</option>
+      <option value="6s">6s</option>
+      <option value="ud">Ultiduo</option>
+    </select></label>
+    <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
+    <button type="submit">Submit</button>
+  </form>
+  <div id="coplayers-results" class="results"></div>
+  </div>
+
+  <div class="js-home-endpoint" data-home-endpoint="logmatch">
   <h2>Multi-party Log Searcher</h2>
   <p>Enter Steam ID(s) in any format (profile URL, vanity name, or SteamID64), one per line or separated by space/comma.</p>
   <form id="frmLogmatch">
@@ -1115,7 +1208,9 @@
     <button type="submit">Submit</button>
   </form>
   <div id="logmatchResults" class="results"></div>
+  </div>
 
+  <div class="js-home-endpoint" data-home-endpoint="stats">
   <h2>Stats Sorter</h2>
   <p>Enter Steam ID (profile URL, vanity name, or SteamID64), gamemode, and select classes to see stats.</p>
   <form id="frmStats">
@@ -1142,41 +1237,9 @@
     <button type="submit">Submit</button>
   </form>
   <div id="statsResults" class="results"></div>
+  </div>
 
-  <h2>Frequent Co-players</h2>
-  <p>See who you play with and against most often across logs we have. Enter Steam ID (profile URL, vanity name, or SteamID64). Optionally filter by gamemode and map name substring.</p>
-  <form id="frmCoplayers">
-    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label>
-    <label>Gamemode: <select name="gamemode">
-      <option value="">All gamemodes</option>
-      <option value="hl">Highlander</option>
-      <option value="7s">Prolander</option>
-      <option value="6s">6s</option>
-      <option value="ud">Ultiduo</option>
-    </select></label>
-    <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
-    <button type="submit">Submit</button>
-  </form>
-  <div id="coplayers-results" class="results"></div>
-
-  <h2>Player profile</h2>
-  <p>Aggregated stats from the indexed stats database for one player. Filters apply across all sections. Top logs lists best single-game lines (DPM, kills, damage, etc.) from indexed games. If no stats are stored yet, run the stats backfill.</p>
-  <form id="frmProfile">
-    <label>Steam ID: <input type="text" name="steamid" placeholder="Profile URL, vanity name, or 17-digit SteamID64" required></label>
-    <label>Gamemode: <select name="gamemode">
-      <option value="">All gamemodes</option>
-      <option value="hl">Highlander</option>
-      <option value="7s">Prolander</option>
-      <option value="6s">6s</option>
-      <option value="ud">Ultiduo</option>
-    </select></label>
-    <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
-    <label>Date from (optional): <input type="date" name="date_from"></label>
-    <label>Date to (optional): <input type="date" name="date_to"></label>
-    <button type="submit">Load profile</button>
-  </form>
-  <div id="profileResults" class="results"></div>
-
+  <div class="js-home-endpoint" data-home-endpoint="leaderboard">
   <h2>Stats Leaderboards</h2>
   <p>Global rankings from the indexed stats database. Filters apply to which logs count toward each player&rsquo;s aggregates. Higher minimum log counts reduce noise from low-sample accounts.</p>
   <form id="frmLeaderboard">
@@ -1185,8 +1248,18 @@
       <button type="button" class="stats-trend-btn js-lb-type-btn" data-lb-type="kdr" role="tab" aria-selected="false">Avg KDR</button>
       <button type="button" class="stats-trend-btn js-lb-type-btn" data-lb-type="winrate" role="tab" aria-selected="false">Win Rate</button>
       <button type="button" class="stats-trend-btn js-lb-type-btn" data-lb-type="logs" role="tab" aria-selected="false">Most Logs</button>
+      <button type="button" class="stats-trend-btn js-lb-type-btn" data-lb-type="ubers" role="tab" aria-selected="false">Ubers</button>
+      <button type="button" class="stats-trend-btn js-lb-type-btn" data-lb-type="drops" role="tab" aria-selected="false">Drops</button>
+      <button type="button" class="stats-trend-btn js-lb-type-btn" data-lb-type="damage_taken" role="tab" aria-selected="false">Damage taken</button>
+      <button type="button" class="stats-trend-btn js-lb-type-btn" data-lb-type="avg_deaths" role="tab" aria-selected="false">Deaths / log</button>
     </div>
     <input type="hidden" name="lb_type" value="dpm">
+    <input type="hidden" name="stat_scope" value="total">
+    <div class="lb-stat-scope-strip js-lb-stat-scope-strip" role="tablist" aria-label="Ubers, drops, damage taken: total vs per log" hidden>
+      <span class="lb-stat-scope-label">Show:</span>
+      <button type="button" class="stats-trend-btn js-lb-stat-scope-btn active" data-stat-scope="total" role="tab" aria-selected="true">Total</button>
+      <button type="button" class="stats-trend-btn js-lb-stat-scope-btn" data-stat-scope="per_log" role="tab" aria-selected="false">Per log</button>
+    </div>
     <label>Gamemode: <select name="gamemode">
       <option value="">All gamemodes</option>
       <option value="hl">Highlander</option>
@@ -1213,18 +1286,34 @@
     <button type="submit">Load leaderboard</button>
   </form>
   <div id="leaderboardResults" class="results"></div>
+  </div>
 
+  <div class="js-home-endpoint" data-home-endpoint="playername">
   <h2>Player search by name</h2>
-  <p>Find Steam accounts by a substring of the in-game name used in chat we have indexed. Names link to Steam profiles; rows are sorted by how many different logs include that name. Use at least three characters for fast search.</p>
+  <p>Find Steam accounts by a substring of the in-game name used in chat we have indexed. Names link to Steam profiles; rows are sorted by how many different logs include that name.</p>
   <form id="frmPlayerName">
     <label>Name contains: <input type="search" name="q" minlength="3" maxlength="64" required placeholder="e.g. frag" autocomplete="off"></label>
     <button type="submit">Search</button>
   </form>
   <div id="playerNameResults" class="results"></div>
+  </div>
 
+  <div class="js-home-endpoint" data-home-endpoint="log_library">
   <h2>Log library</h2>
   <p>Progress is updated periodically.</p>
   <div id="downloadProgress" class="download-progress" aria-live="polite">Loading…</div>
+  </div>
+
+  </div>
+
+  <details class="profile-layout-settings-details stats-summary home-layout-settings js-home-layout-settings">
+    <summary class="profile-layout-settings-summary">Home page layout</summary>
+    <div class="profile-layout-settings-body">
+      <p class="stats-summary-meta">Reorder search tools and hide ones you don&rsquo;t use. Stored in a cookie on this browser only.</p>
+      <p class="stats-summary-meta">Drag a row to reorder. Uncheck a box to hide that section from the list above.</p>
+      <ul class="profile-layout-sort-list home-layout-sort-list js-home-layout-sort-list" role="list" aria-label="Home search section order"></ul>
+    </div>
+  </details>
 
   <p><small>
     We do not have all logs from logs.tf; coverage is continuously updated.
@@ -1315,15 +1404,79 @@
       return s;
     }
 
-    var VALID_LB_TYPES = { dpm: 1, kdr: 1, winrate: 1, logs: 1 };
+    var VALID_LB_TYPES = {
+      dpm: 1,
+      kdr: 1,
+      winrate: 1,
+      logs: 1,
+      ubers: 1,
+      drops: 1,
+      damage_taken: 1,
+      avg_deaths: 1,
+    };
     function sanitizeLbTypeInput(v) {
       var s = (v == null ? '' : String(v)).trim().toLowerCase();
       return VALID_LB_TYPES[s] ? s : 'dpm';
     }
-    function sanitizeLeaderboardClassFilter(v) {
+    function sanitizeLeaderboardClassFilter(v, lbType) {
       var s = (v == null ? '' : String(v)).trim().toLowerCase();
       if (!s) return '';
-      return VALID_STATS_CLASSES[s] ? s : '';
+      if (!VALID_STATS_CLASSES[s]) return '';
+      var t = arguments.length >= 2 ? sanitizeLbTypeInput(lbType) : 'dpm';
+      if ((t === 'ubers' || t === 'drops') && s !== 'medic') return '';
+      return s;
+    }
+
+    /** Disable non-Medic class options when Most Ubers / Most Drops is selected; reset invalid selection. */
+    function syncLeaderboardClassSelectForMedicLeaderboards(form) {
+      if (!form || !form.elements.class_filter) return;
+      var lb = sanitizeLbTypeInput(form.elements.lb_type && form.elements.lb_type.value ? form.elements.lb_type.value : 'dpm');
+      var medicOnly = (lb === 'ubers' || lb === 'drops');
+      var sel = form.elements.class_filter;
+      var opts = sel.querySelectorAll('option');
+      for (var i = 0; i < opts.length; i++) {
+        var o = opts[i];
+        var val = (o.value || '').trim().toLowerCase();
+        if (!val) {
+          o.disabled = false;
+          continue;
+        }
+        o.disabled = medicOnly && val !== 'medic';
+      }
+      if (medicOnly) {
+        var cur = (sel.value || '').trim().toLowerCase();
+        if (cur && cur !== 'medic') sel.value = '';
+      }
+    }
+
+    function sanitizeLeaderboardStatScopeInput(raw, lbType) {
+      var s = (raw == null ? '' : String(raw)).trim().toLowerCase();
+      var t = sanitizeLbTypeInput(lbType || 'dpm');
+      if ((t === 'ubers' || t === 'drops' || t === 'damage_taken') && (s === 'total' || s === 'per_log')) return s;
+      return 'total';
+    }
+
+    function syncLeaderboardStatScopeStrip(form) {
+      if (!form) return;
+      var strip = form.querySelector('.js-lb-stat-scope-strip');
+      var hidden = form.elements.stat_scope;
+      var lb = sanitizeLbTypeInput(form.elements.lb_type && form.elements.lb_type.value ? form.elements.lb_type.value : 'dpm');
+      var show = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken');
+      if (strip) {
+        if (show) strip.removeAttribute('hidden');
+        else strip.setAttribute('hidden', '');
+      }
+      if (!show && hidden) hidden.value = 'total';
+      var cur = hidden ? sanitizeLeaderboardStatScopeInput(hidden.value, lb) : 'total';
+      if (hidden) hidden.value = cur;
+      if (strip) {
+        strip.querySelectorAll('.js-lb-stat-scope-btn').forEach(function(b) {
+          var sc = b.getAttribute('data-stat-scope');
+          var on = sc === cur;
+          b.classList.toggle('active', on);
+          b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+      }
     }
     function sanitizeLeaderboardMinLogs(v) {
       var n = parseInt(String(v == null ? '' : v).trim(), 10);
@@ -1398,11 +1551,13 @@
         };
       }
       if (mode === 'leaderboard') {
+        var lbSt = sanitizeLbTypeInput(params.get('lb_type'));
         return {
           mode: 'leaderboard',
-          lb_type: sanitizeLbTypeInput(params.get('lb_type')),
+          lb_type: lbSt,
+          stat_scope: sanitizeLeaderboardStatScopeInput(params.get('stat_scope'), lbSt),
           gamemode: sanitizeCoplayersGamemodeInput(params.get('gamemode')),
-          class_filter: sanitizeLeaderboardClassFilter(params.get('class_filter')),
+          class_filter: sanitizeLeaderboardClassFilter(params.get('class_filter'), lbSt),
           map_query: sanitizeMapQueryInput(params.get('map_query')),
           date_from: sanitizeDateInput(params.get('date_from')),
           date_to: sanitizeDateInput(params.get('date_to')),
@@ -1493,7 +1648,14 @@
           b.setAttribute('aria-selected', on ? 'true' : 'false');
         });
         if (flb.gamemode) flb.gamemode.value = sanitizeCoplayersGamemodeInput(state.gamemode);
-        if (flb.elements.class_filter) flb.elements.class_filter.value = sanitizeLeaderboardClassFilter(state.class_filter);
+        if (flb.elements.stat_scope) {
+          flb.elements.stat_scope.value = sanitizeLeaderboardStatScopeInput(state.stat_scope, state.lb_type);
+        }
+        syncLeaderboardStatScopeStrip(flb);
+        if (flb.elements.class_filter) {
+          flb.elements.class_filter.value = sanitizeLeaderboardClassFilter(state.class_filter, state.lb_type);
+        }
+        syncLeaderboardClassSelectForMedicLeaderboards(flb);
         if (flb.elements.map_query) flb.elements.map_query.value = state.map_query || '';
         if (flb.elements.date_from) flb.elements.date_from.value = state.date_from || '';
         if (flb.elements.date_to) flb.elements.date_to.value = state.date_to || '';
@@ -1512,23 +1674,126 @@
       return p === '/' || p === '/index.html';
     }
 
-    /** Scroll the relevant search form into view after deep-link prefills (e.g. from player name results). */
-    function scrollHomeFormIntoView(mode) {
-      mode = (mode || '').trim();
-      var id = null;
-      if (mode === 'chat') id = 'frmChat';
-      else if (mode === 'stats') id = 'frmStats';
-      else if (mode === 'logmatch') id = 'frmLogmatch';
-      else if (mode === 'coplayers') id = 'frmCoplayers';
-      else if (mode === 'profile') id = 'frmProfile';
-      else if (mode === 'leaderboard') id = 'frmLeaderboard';
-      else if (mode === 'playername') id = 'frmPlayerName';
-      if (!id) return;
-      var el = document.getElementById(id);
-      if (!el) return;
+    /** Scroll the home endpoint section (h2 + form) into view — must run after home layout reorders DOM. */
+    function scrollHomeEndpointIntoView(mode) {
+      var m = (mode || '').trim();
+      var allow = { chat: 1, stats: 1, logmatch: 1, coplayers: 1, profile: 1, leaderboard: 1, playername: 1 };
+      if (!allow[m]) return;
+      var ep = document.querySelector(
+        '#homePage .js-home-endpoints-stack .js-home-endpoint[data-home-endpoint="' + m + '"]'
+      );
+      if (!ep || ep.hasAttribute('hidden')) return;
       requestAnimationFrame(function() {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        requestAnimationFrame(function() {
+          ep.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
       });
+    }
+
+    function pulseDeepLinkEl(el) {
+      if (!el) return;
+      function fin() {
+        el.classList.remove('deep-link-field-flash');
+        el.removeEventListener('animationend', fin);
+      }
+      el.addEventListener('animationend', fin, { once: true });
+      el.classList.add('deep-link-field-flash');
+    }
+
+    function flashDeepLinkFilledFields(state) {
+      if (!state || !state.mode) return;
+      var epRoot = document.querySelector(
+        '#homePage .js-home-endpoints-stack .js-home-endpoint[data-home-endpoint="' + state.mode + '"]'
+      );
+      if (!epRoot || epRoot.hasAttribute('hidden')) return;
+      function ne(v) {
+        return v != null && String(v).trim() !== '';
+      }
+      if (state.mode === 'chat') {
+        var fc = document.getElementById('frmChat');
+        if (!fc) return;
+        if (ne(state.steamid) && fc.steamid) pulseDeepLinkEl(fc.steamid);
+        if (ne(state.word) && fc.word) pulseDeepLinkEl(fc.word);
+        if (ne(state.map_query) && fc.elements.map_query) pulseDeepLinkEl(fc.elements.map_query);
+        if (ne(state.date_from) && fc.elements.date_from) pulseDeepLinkEl(fc.elements.date_from);
+        if (ne(state.date_to) && fc.elements.date_to) pulseDeepLinkEl(fc.elements.date_to);
+        return;
+      }
+      if (state.mode === 'stats') {
+        var fs = document.getElementById('frmStats');
+        if (!fs) return;
+        if (ne(state.steamid) && fs.steamid) pulseDeepLinkEl(fs.steamid);
+        if (ne(state.gamemode) && fs.gamemode) pulseDeepLinkEl(fs.gamemode);
+        if (ne(state.map_query) && fs.elements.map_query) pulseDeepLinkEl(fs.elements.map_query);
+        if (ne(state.date_from) && fs.elements.date_from) pulseDeepLinkEl(fs.elements.date_from);
+        if (ne(state.date_to) && fs.elements.date_to) pulseDeepLinkEl(fs.elements.date_to);
+        if (ne(state.classes)) {
+          fs.querySelectorAll('input[name="classes"]:checked').forEach(function(inp) {
+            var lab = inp.closest('label');
+            if (lab) pulseDeepLinkEl(lab);
+          });
+        }
+        return;
+      }
+      if (state.mode === 'logmatch') {
+        var fl = document.getElementById('frmLogmatch');
+        if (!fl) return;
+        if (ne(state.steamids) && fl.steamids) pulseDeepLinkEl(fl.steamids);
+        if (ne(state.map_query) && fl.elements.map_query) pulseDeepLinkEl(fl.elements.map_query);
+        return;
+      }
+      if (state.mode === 'coplayers') {
+        var fcp = document.getElementById('frmCoplayers');
+        if (!fcp) return;
+        if (ne(state.steamid) && fcp.steamid) pulseDeepLinkEl(fcp.steamid);
+        if (ne(state.gamemode) && fcp.gamemode) pulseDeepLinkEl(fcp.gamemode);
+        if (ne(state.map_query) && fcp.elements.map_query) pulseDeepLinkEl(fcp.elements.map_query);
+        return;
+      }
+      if (state.mode === 'profile') {
+        var fp = document.getElementById('frmProfile');
+        if (!fp) return;
+        if (ne(state.steamid) && fp.steamid) pulseDeepLinkEl(fp.steamid);
+        if (ne(state.gamemode) && fp.gamemode) pulseDeepLinkEl(fp.gamemode);
+        if (ne(state.map_query) && fp.elements.map_query) pulseDeepLinkEl(fp.elements.map_query);
+        if (ne(state.date_from) && fp.elements.date_from) pulseDeepLinkEl(fp.elements.date_from);
+        if (ne(state.date_to) && fp.elements.date_to) pulseDeepLinkEl(fp.elements.date_to);
+        return;
+      }
+      if (state.mode === 'leaderboard') {
+        var flb = document.getElementById('frmLeaderboard');
+        if (!flb) return;
+        var activeLb = flb.querySelector('.js-lb-type-btn.active');
+        if (activeLb) pulseDeepLinkEl(activeLb);
+        var scopeStrip = flb.querySelector('.js-lb-stat-scope-strip');
+        if (scopeStrip && !scopeStrip.hasAttribute('hidden')) pulseDeepLinkEl(scopeStrip);
+        if (ne(state.gamemode) && flb.gamemode) pulseDeepLinkEl(flb.gamemode);
+        if (ne(state.class_filter) && flb.elements.class_filter) pulseDeepLinkEl(flb.elements.class_filter);
+        if (ne(state.map_query) && flb.elements.map_query) pulseDeepLinkEl(flb.elements.map_query);
+        if (ne(state.date_from) && flb.elements.date_from) pulseDeepLinkEl(flb.elements.date_from);
+        if (ne(state.date_to) && flb.elements.date_to) pulseDeepLinkEl(flb.elements.date_to);
+        if (ne(state.min_logs) && flb.elements.min_logs && String(state.min_logs).trim() !== '10') {
+          pulseDeepLinkEl(flb.elements.min_logs);
+        }
+        return;
+      }
+      if (state.mode === 'playername') {
+        var fpn = document.getElementById('frmPlayerName');
+        if (!fpn || !fpn.q) return;
+        if (ne(state.q)) pulseDeepLinkEl(fpn.q);
+      }
+    }
+
+    /** Run after home layout has applied cookie order (and on bfcache restore). */
+    function runDeepLinkScrollAndFlashFromUrl() {
+      if (!isHomePathname()) return;
+      var params = new URLSearchParams(window.location.search);
+      var mode = (params.get('mode') || '').trim();
+      if (!mode) return;
+      var st = buildSanitizedSearchState(mode, params);
+      if (!st) return;
+      scrollHomeEndpointIntoView(mode);
+      flashDeepLinkFilledFields(st);
     }
 
     /** Restore chat / stats / logmatch forms from ?query or sessionStorage. */
@@ -1541,7 +1806,6 @@
         if (fromUrl) {
           applySearchStateToForms(fromUrl);
           persistSearchState(fromUrl);
-          scrollHomeFormIntoView(mode);
         }
         return;
       }
@@ -1588,6 +1852,7 @@
         p2.set('map_query', parsed.map_query != null ? String(parsed.map_query) : '');
       } else if (parsed.mode === 'leaderboard') {
         p2.set('lb_type', parsed.lb_type != null ? String(parsed.lb_type) : '');
+        p2.set('stat_scope', parsed.stat_scope != null ? String(parsed.stat_scope) : '');
         p2.set('gamemode', parsed.gamemode != null ? String(parsed.gamemode) : '');
         p2.set('class_filter', parsed.class_filter != null ? String(parsed.class_filter) : '');
         p2.set('map_query', parsed.map_query != null ? String(parsed.map_query) : '');
@@ -1606,7 +1871,207 @@
     (function initHomeFormRestore() {
       restoreHomeForms();
       window.addEventListener('pageshow', function(ev) {
-        if (ev.persisted && isHomePathname()) restoreHomeForms();
+        if (ev.persisted && isHomePathname()) {
+          restoreHomeForms();
+          runDeepLinkScrollAndFlashFromUrl();
+        }
+      });
+    })();
+
+    /** Cookie-backed order + visibility for home page search sections (same-origin, SameSite=Lax). */
+    (function initHomePageLayout() {
+      var HOME_LAYOUT_COOKIE = 'tf2ls_home_layout_v1';
+      var HOME_LAYOUT_COOKIE_MAX_AGE = 31536000;
+      var HOME_ENDPOINT_IDS = ['chat', 'profile', 'coplayers', 'logmatch', 'stats', 'leaderboard', 'playername', 'log_library'];
+      var HOME_ENDPOINT_LABELS = {
+        chat: 'Chat Searcher',
+        logmatch: 'Multi-party Log Searcher',
+        stats: 'Stats Sorter',
+        coplayers: 'Frequent Co-players',
+        profile: 'Player profile',
+        leaderboard: 'Stats Leaderboards',
+        playername: 'Player search by name',
+        log_library: 'Log library'
+      };
+
+      function sanitizeHomeLayoutOrder(raw) {
+        var seen = Object.create(null);
+        var out = [];
+        if (Array.isArray(raw)) {
+          raw.forEach(function(id) {
+            if (HOME_ENDPOINT_IDS.indexOf(id) >= 0 && !seen[id]) {
+              seen[id] = true;
+              out.push(id);
+            }
+          });
+        }
+        HOME_ENDPOINT_IDS.forEach(function(id) {
+          if (!seen[id]) out.push(id);
+        });
+        return out;
+      }
+
+      function sanitizeHomeHidden(raw) {
+        var h = Object.create(null);
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          HOME_ENDPOINT_IDS.forEach(function(id) {
+            if (raw[id] === true) h[id] = true;
+          });
+        } else if (Array.isArray(raw)) {
+          raw.forEach(function(id) {
+            if (HOME_ENDPOINT_IDS.indexOf(id) >= 0) h[id] = true;
+          });
+        }
+        return h;
+      }
+
+      function readHomeLayoutSettings() {
+        var d = { order: HOME_ENDPOINT_IDS.slice(), hidden: {} };
+        try {
+          var all = typeof document !== 'undefined' && document.cookie ? document.cookie : '';
+          if (!all) return d;
+          var prefix = HOME_LAYOUT_COOKIE + '=';
+          var idx = all.indexOf(prefix);
+          if (idx < 0) return d;
+          var start = idx + prefix.length;
+          var end = all.indexOf(';', start);
+          var raw = decodeURIComponent(end < 0 ? all.slice(start) : all.slice(start, end));
+          var o = JSON.parse(raw);
+          if (o && typeof o === 'object') {
+            if (Array.isArray(o.order)) d.order = sanitizeHomeLayoutOrder(o.order);
+            d.hidden = sanitizeHomeHidden(o.hidden);
+          }
+        } catch (e) {}
+        return d;
+      }
+
+      function writeHomeLayoutSettings(settings) {
+        try {
+          var order = sanitizeHomeLayoutOrder(settings.order || []);
+          var hidden = sanitizeHomeHidden(settings.hidden);
+          var payload = encodeURIComponent(JSON.stringify({ order: order, hidden: hidden }));
+          if (payload.length > 3800) return;
+          document.cookie = HOME_LAYOUT_COOKIE + '=' + payload + ';path=/;max-age=' + HOME_LAYOUT_COOKIE_MAX_AGE + ';SameSite=Lax';
+        } catch (e) {}
+      }
+
+      function applyHomeEndpointVisibility(stack, hiddenMap) {
+        if (!stack) return;
+        stack.querySelectorAll('.js-home-endpoint').forEach(function(el) {
+          var id = el.getAttribute('data-home-endpoint');
+          if (!id) return;
+          if (hiddenMap[id]) el.setAttribute('hidden', '');
+          else el.removeAttribute('hidden');
+        });
+      }
+
+      function applyHomeEndpointOrder(stack, order) {
+        var full = sanitizeHomeLayoutOrder(order);
+        var byId = Object.create(null);
+        stack.querySelectorAll('.js-home-endpoint').forEach(function(el) {
+          var id = el.getAttribute('data-home-endpoint');
+          if (id) byId[id] = el;
+        });
+        full.forEach(function(id) {
+          var n = byId[id];
+          if (n) stack.appendChild(n);
+        });
+      }
+
+      function rebuildHomeLayoutSortList(ul, settings) {
+        ul.innerHTML = '';
+        settings.order.forEach(function(id) {
+          if (HOME_ENDPOINT_IDS.indexOf(id) < 0) return;
+          var li = document.createElement('li');
+          li.setAttribute('draggable', 'true');
+          li.setAttribute('data-home-endpoint', id);
+          li.className = 'profile-layout-sort-item home-layout-sort-item';
+          var cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.className = 'js-home-endpoint-visible';
+          cb.setAttribute('draggable', 'false');
+          cb.checked = !settings.hidden[id];
+          cb.title = 'Show this section on the home page';
+          var lab = document.createElement('label');
+          lab.className = 'home-layout-sort-label';
+          lab.appendChild(cb);
+          lab.appendChild(document.createTextNode(' ' + (HOME_ENDPOINT_LABELS[id] || id)));
+          li.appendChild(lab);
+          ul.appendChild(li);
+        });
+      }
+
+      var home = document.getElementById('homePage');
+      var stack = home && home.querySelector('.js-home-endpoints-stack');
+      var ul = home && home.querySelector('.js-home-layout-sort-list');
+      if (!home || !stack || !ul) return;
+
+      var s = readHomeLayoutSettings();
+      applyHomeEndpointOrder(stack, s.order);
+      applyHomeEndpointVisibility(stack, s.hidden);
+      rebuildHomeLayoutSortList(ul, s);
+
+      if (typeof runDeepLinkScrollAndFlashFromUrl === 'function') {
+        runDeepLinkScrollAndFlashFromUrl();
+      }
+
+      ul.addEventListener('change', function(ev) {
+        var t = ev.target;
+        if (!t || !t.classList.contains('js-home-endpoint-visible')) return;
+        var li = t.closest('li[data-home-endpoint]');
+        if (!li || !ul.contains(li)) return;
+        var id = li.getAttribute('data-home-endpoint');
+        if (HOME_ENDPOINT_IDS.indexOf(id) < 0) return;
+        var cur = readHomeLayoutSettings();
+        if (t.checked) delete cur.hidden[id];
+        else cur.hidden[id] = true;
+        writeHomeLayoutSettings(cur);
+        applyHomeEndpointVisibility(stack, cur.hidden);
+      });
+
+      var dragEl = null;
+      ul.addEventListener('dragstart', function(e) {
+        var t = e.target;
+        if (t && (t.tagName || '').toLowerCase() === 'input') {
+          e.preventDefault();
+          return;
+        }
+        var li = t && t.closest ? t.closest('li') : null;
+        if (!li || !ul.contains(li)) return;
+        dragEl = li;
+        try {
+          e.dataTransfer.setData('text/plain', li.getAttribute('data-home-endpoint') || '');
+          e.dataTransfer.effectAllowed = 'move';
+        } catch (err) {}
+        li.classList.add('dragging');
+      });
+      ul.addEventListener('dragend', function() {
+        if (dragEl) dragEl.classList.remove('dragging');
+        dragEl = null;
+      });
+      ul.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = 'move'; } catch (err) {}
+      });
+      ul.addEventListener('drop', function(e) {
+        e.preventDefault();
+        var target = e.target && e.target.closest ? e.target.closest('li') : null;
+        if (!target || !ul.contains(target) || !dragEl || dragEl === target) return;
+        var rect = target.getBoundingClientRect();
+        var before = e.clientY < rect.top + rect.height / 2;
+        if (before) {
+          ul.insertBefore(dragEl, target);
+        } else {
+          ul.insertBefore(dragEl, target.nextSibling);
+        }
+        var order = [];
+        ul.querySelectorAll('li[data-home-endpoint]').forEach(function(row) {
+          order.push(row.getAttribute('data-home-endpoint'));
+        });
+        var cur = readHomeLayoutSettings();
+        cur.order = sanitizeHomeLayoutOrder(order);
+        writeHomeLayoutSettings(cur);
+        applyHomeEndpointOrder(stack, cur.order);
       });
     })();
 
@@ -3024,6 +3489,29 @@
             b.classList.toggle('active', on);
             b.setAttribute('aria-selected', on ? 'true' : 'false');
           });
+          syncLeaderboardClassSelectForMedicLeaderboards(form);
+          syncLeaderboardStatScopeStrip(form);
+        });
+      });
+      syncLeaderboardClassSelectForMedicLeaderboards(form);
+      syncLeaderboardStatScopeStrip(form);
+    })();
+
+    (function initLeaderboardStatScopeStrip() {
+      var form = document.getElementById('frmLeaderboard');
+      if (!form) return;
+      form.querySelectorAll('.js-lb-stat-scope-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var sc = btn.getAttribute('data-stat-scope');
+          if (!sc) return;
+          var lb = sanitizeLbTypeInput(form.elements.lb_type && form.elements.lb_type.value ? form.elements.lb_type.value : 'dpm');
+          sc = sanitizeLeaderboardStatScopeInput(sc, lb);
+          if (form.elements.stat_scope) form.elements.stat_scope.value = sc;
+          form.querySelectorAll('.js-lb-stat-scope-btn').forEach(function(b) {
+            var on = b.getAttribute('data-stat-scope') === sc;
+            b.classList.toggle('active', on);
+            b.setAttribute('aria-selected', on ? 'true' : 'false');
+          });
         });
       });
     })();
@@ -3040,10 +3528,20 @@
           document.getElementById('leaderboardResults').innerHTML = '<span class="error">Date from must be before or equal to date to.</span>';
           return;
         }
+        var lbForClass = sanitizeLbTypeInput(frmLb.elements.lb_type && frmLb.elements.lb_type.value ? frmLb.elements.lb_type.value : 'dpm');
+        var statScopeVal = sanitizeLeaderboardStatScopeInput(
+          frmLb.elements.stat_scope && frmLb.elements.stat_scope.value ? frmLb.elements.stat_scope.value : 'total',
+          lbForClass
+        );
+        var classFilterVal = sanitizeLeaderboardClassFilter(
+          frmLb.elements.class_filter && frmLb.elements.class_filter.value ? frmLb.elements.class_filter.value : '',
+          lbForClass
+        );
         var lbParams = new URLSearchParams({
-          lb_type: sanitizeLbTypeInput(frmLb.elements.lb_type && frmLb.elements.lb_type.value ? frmLb.elements.lb_type.value : 'dpm'),
+          lb_type: lbForClass,
+          stat_scope: statScopeVal,
           gamemode: gamemode,
-          class_filter: sanitizeLeaderboardClassFilter(frmLb.elements.class_filter && frmLb.elements.class_filter.value ? frmLb.elements.class_filter.value : ''),
+          class_filter: classFilterVal,
           map_query: mapQuery,
           date_from: dateFrom,
           date_to: dateTo,
@@ -3053,9 +3551,10 @@
         if (lbState) persistSearchState(lbState);
         var params = new URLSearchParams({
           mode: 'leaderboard',
-          lb_type: sanitizeLbTypeInput(frmLb.elements.lb_type && frmLb.elements.lb_type.value ? frmLb.elements.lb_type.value : 'dpm'),
+          lb_type: lbForClass,
+          stat_scope: statScopeVal,
           gamemode: gamemode,
-          class_filter: sanitizeLeaderboardClassFilter(frmLb.elements.class_filter && frmLb.elements.class_filter.value ? frmLb.elements.class_filter.value : ''),
+          class_filter: classFilterVal,
           map_query: mapQuery,
           date_from: dateFrom,
           date_to: dateTo,
@@ -3631,29 +4130,68 @@
       if (t === 'kdr') return 'avg_kdr';
       if (t === 'winrate') return 'win_rate';
       if (t === 'logs') return 'log_count';
+      if (t === 'ubers' || t === 'drops' || t === 'damage_taken' || t === 'avg_deaths') return 'primary_value';
       return 'avg_dpm';
     }
 
-    var LEADERBOARD_COLUMNS = [
+    var LEADERBOARD_COLUMNS_PREFIX = [
       { key: 'rank', label: 'Rank', type: 'rank' },
-      { key: 'name', label: 'Name', type: 'text' },
+      { key: 'name', label: 'Name', type: 'name' },
       { key: 'log_count', label: 'Logs', type: 'number' },
+    ];
+    var LEADERBOARD_COLUMNS_SUFFIX = [
       { key: 'avg_dpm', label: 'Avg DPM', type: 'number' },
       { key: 'avg_kdr', label: 'Avg KDR', type: 'number' },
       { key: 'avg_kadr', label: 'Avg KADR', type: 'number' },
-      { key: 'win_rate', label: 'Win Rate', type: 'number' },
+      { key: 'win_rate', label: 'Win Rate', type: 'winrate' },
     ];
 
-    var LEADERBOARD_CSV_COLUMNS = [
-      { key: 'rank', label: 'Rank' },
-      { key: 'name', label: 'Name' },
-      { key: 'steamid64', label: 'SteamID64' },
-      { key: 'log_count', label: 'Logs' },
+    function getLeaderboardPrimaryColumn(lbType, statScope) {
+      var t = sanitizeLbTypeInput(lbType);
+      var ss = sanitizeLeaderboardStatScopeInput(statScope, t);
+      if (t === 'ubers') {
+        if (ss === 'per_log') return { key: 'primary_value', label: 'Ubers / log', type: 'decimal2' };
+        return { key: 'primary_value', label: 'Ubers (total)', type: 'number' };
+      }
+      if (t === 'drops') {
+        if (ss === 'per_log') return { key: 'primary_value', label: 'Drops / log', type: 'decimal2' };
+        return { key: 'primary_value', label: 'Drops (total)', type: 'number' };
+      }
+      if (t === 'damage_taken') {
+        if (ss === 'per_log') return { key: 'primary_value', label: 'Damage taken / log', type: 'decimal2' };
+        return { key: 'primary_value', label: 'Damage taken (total)', type: 'number' };
+      }
+      if (t === 'avg_deaths') return { key: 'primary_value', label: 'Deaths/log', type: 'decimal2' };
+      return null;
+    }
+
+    function getLeaderboardColumns(lbType, statScope) {
+      var t = sanitizeLbTypeInput(lbType);
+      var cols = LEADERBOARD_COLUMNS_PREFIX.slice();
+      var prim = getLeaderboardPrimaryColumn(t, statScope);
+      if (prim) cols.push(prim);
+      return cols.concat(LEADERBOARD_COLUMNS_SUFFIX);
+    }
+
+    var LEADERBOARD_CSV_SUFFIX = [
       { key: 'avg_dpm', label: 'Avg DPM' },
       { key: 'avg_kdr', label: 'Avg KDR' },
       { key: 'avg_kadr', label: 'Avg KADR' },
       { key: 'win_rate_csv', label: 'Win Rate' },
     ];
+
+    function getLeaderboardCsvColumns(lbType, statScope) {
+      var t = sanitizeLbTypeInput(lbType);
+      var out = [
+        { key: 'rank', label: 'Rank' },
+        { key: 'name', label: 'Name' },
+        { key: 'steamid64', label: 'SteamID64' },
+        { key: 'log_count', label: 'Logs' },
+      ];
+      var prim = getLeaderboardPrimaryColumn(t, statScope);
+      if (prim) out.push({ key: 'primary_value', label: prim.label });
+      return out.concat(LEADERBOARD_CSV_SUFFIX);
+    }
 
     var CHAT_LB_CSV_COLUMNS = [
       { key: 'rank', label: 'Rank' },
@@ -3678,19 +4216,27 @@
         var wr = Number(row.win_rate);
         return Number.isFinite(wr) ? wr : -Infinity;
       }
+      if (type === 'decimal2' || type === 'number') {
+        return getSortValue(row, key, 'number');
+      }
+      if (type === 'name') {
+        return getSortValue(row, 'name', 'text');
+      }
       return getSortValue(row, key, type);
     }
 
-    function getSortedLeaderboardRows(originalRows) {
+    function getSortedLeaderboardRows(originalRows, lbType, statScope) {
+      var t = sanitizeLbTypeInput(lbType || 'dpm');
+      var ss = sanitizeLeaderboardStatScopeInput(statScope, t);
       var sortedRows = originalRows.slice();
       var sortCol = leaderboardSortCol;
       var sortDir = leaderboardSortDir;
-      var colDef = LEADERBOARD_COLUMNS.find(function(c) { return c.key === sortCol; });
+      var colDef = getLeaderboardColumns(t, ss).find(function(c) { return c.key === sortCol; });
       if (colDef && colDef.type !== 'rank') {
         sortedRows.sort(function(a, b) {
           var va = getLeaderboardSortValue(a, sortCol, colDef.type);
           var vb = getLeaderboardSortValue(b, sortCol, colDef.type);
-          if (colDef.type === 'text') {
+          if (colDef.type === 'text' || colDef.type === 'name') {
             if (va < vb) return -sortDir;
             if (va > vb) return sortDir;
             return 0;
@@ -3703,8 +4249,11 @@
       return sortedRows;
     }
 
-    function buildLeaderboardCsvContent(sortedRows) {
-      var header = LEADERBOARD_CSV_COLUMNS.map(function(c) {
+    function buildLeaderboardCsvContent(sortedRows, lbType, statScope) {
+      var t = sanitizeLbTypeInput(lbType || 'dpm');
+      var ss = sanitizeLeaderboardStatScopeInput(statScope, t);
+      var cols = getLeaderboardCsvColumns(t, ss);
+      var header = cols.map(function(c) {
         return escapeCsvField(c.label);
       }).join(',');
       var lines = [header];
@@ -3712,8 +4261,8 @@
         var row = sortedRows[i];
         var rank = i + 1;
         var parts = [];
-        for (var j = 0; j < LEADERBOARD_CSV_COLUMNS.length; j++) {
-          var ck = LEADERBOARD_CSV_COLUMNS[j].key;
+        for (var j = 0; j < cols.length; j++) {
+          var ck = cols[j].key;
           var raw;
           if (ck === 'rank') raw = rank;
           else if (ck === 'win_rate_csv') {
@@ -3727,6 +4276,22 @@
       return '\uFEFF' + lines.join('\r\n');
     }
 
+    function leaderboardLeaderCellHtml(row, colDef) {
+      var key = colDef.key;
+      var type = colDef.type;
+      if (type === 'name') return coplayersNameCellHtml(row);
+      if (key === 'win_rate' || type === 'winrate') return escapeHtml(leaderboardWinRateCell(row));
+      if (key === 'primary_value') {
+        var v = row.primary_value;
+        if (v == null || !Number.isFinite(Number(v))) return '\u2014';
+        if (type === 'decimal2') return escapeHtml(String(Math.round(Number(v) * 100) / 100));
+        return escapeHtml(String(Math.round(Number(v))));
+      }
+      var raw = row[key];
+      if (raw == null || raw === '') return '\u2014';
+      return escapeHtml(String(raw));
+    }
+
     function bindLeaderboardCsvDownload(container) {
       var btn = container.querySelector('.js-leaderboard-csv-download');
       if (!btn || btn.getAttribute('data-csv-bound')) return;
@@ -3734,11 +4299,13 @@
       btn.addEventListener('click', function() {
         var rows = container._leaderboardRows;
         if (!rows || !rows.length) return;
-        var sorted = getSortedLeaderboardRows(rows);
-        var csv = buildLeaderboardCsvContent(sorted);
-        var d = new Date();
         var lb = container._leaderboardLbType || 'dpm';
-        var fn = 'tf2-stats-leaderboard-' + lb + '-' + d.getFullYear() + '-' + (d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate() + '.csv';
+        var sc = container._leaderboardStatScope != null ? container._leaderboardStatScope : 'total';
+        var sorted = getSortedLeaderboardRows(rows, lb, sc);
+        var csv = buildLeaderboardCsvContent(sorted, lb, sc);
+        var d = new Date();
+        var scopePart = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken') ? '-' + String(sc).replace(/[^a-z0-9_-]/gi, '_') : '';
+        var fn = 'tf2-stats-leaderboard-' + lb + scopePart + '-' + d.getFullYear() + '-' + (d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate() + '.csv';
         triggerCsvDownload(fn, csv);
       });
     }
@@ -3798,9 +4365,11 @@
       var rows = data && data.rows ? data.rows : [];
       var totalLogs = data && data.total_logs != null ? data.total_logs : null;
       var lbType = data && data.lb_type ? sanitizeLbTypeInput(data.lb_type) : 'dpm';
-      if (rows !== container._leaderboardRows || lbType !== container._leaderboardLbType) {
+      var statScope = sanitizeLeaderboardStatScopeInput(data && data.stat_scope != null ? data.stat_scope : 'total', lbType);
+      if (rows !== container._leaderboardRows || lbType !== container._leaderboardLbType || statScope !== container._leaderboardStatScope) {
         container._leaderboardRows = rows;
         container._leaderboardLbType = lbType;
+        container._leaderboardStatScope = statScope;
         leaderboardSortCol = leaderboardDefaultSortKey(lbType);
         leaderboardSortDir = -1;
       }
@@ -3819,9 +4388,10 @@
         return;
       }
 
-      var sortedRows = getSortedLeaderboardRows(originalRows);
+      var sortedRows = getSortedLeaderboardRows(originalRows, lbType, statScope);
       var sortCol = leaderboardSortCol;
       var sortDir = leaderboardSortDir;
+      var lbCols = getLeaderboardColumns(lbType, statScope);
 
       var totalLine = '<p class="stats-summary-meta">Top ' + escapeHtml(String(originalRows.length)) + ' players';
       if (totalLogs != null && Number.isFinite(Number(totalLogs))) {
@@ -3830,7 +4400,7 @@
       totalLine += '.</p>';
 
       var thead = '<tr>';
-      LEADERBOARD_COLUMNS.forEach(function(c) {
+      lbCols.forEach(function(c) {
         if (c.type === 'rank') {
           thead += '<th scope="col">' + escapeHtml(c.label) + '</th>';
           return;
@@ -3845,13 +4415,13 @@
       sortedRows.forEach(function(x, idx) {
         var rank = idx + 1;
         tbody += '<tr>';
-        tbody += '<td>' + escapeHtml(String(rank)) + '</td>';
-        tbody += '<td>' + coplayersNameCellHtml(x) + '</td>';
-        tbody += '<td>' + escapeHtml(x.log_count != null ? String(x.log_count) : '') + '</td>';
-        tbody += '<td>' + escapeHtml(x.avg_dpm != null ? String(x.avg_dpm) : '\u2014') + '</td>';
-        tbody += '<td>' + escapeHtml(x.avg_kdr != null ? String(x.avg_kdr) : '\u2014') + '</td>';
-        tbody += '<td>' + escapeHtml(x.avg_kadr != null ? String(x.avg_kadr) : '\u2014') + '</td>';
-        tbody += '<td>' + escapeHtml(leaderboardWinRateCell(x)) + '</td>';
+        lbCols.forEach(function(c) {
+          if (c.key === 'rank') {
+            tbody += '<td>' + escapeHtml(String(rank)) + '</td>';
+            return;
+          }
+          tbody += '<td>' + leaderboardLeaderCellHtml(x, c) + '</td>';
+        });
         tbody += '</tr>';
       });
 
@@ -3875,7 +4445,12 @@
             leaderboardSortCol = col;
             leaderboardSortDir = 1;
           }
-          renderLeaderboard(container, { rows: container._leaderboardRows, total_logs: container._leaderboardTotalLogs, lb_type: container._leaderboardLbType }, container._leaderboardRequestMs);
+          renderLeaderboard(container, {
+            rows: container._leaderboardRows,
+            total_logs: container._leaderboardTotalLogs,
+            lb_type: container._leaderboardLbType,
+            stat_scope: container._leaderboardStatScope,
+          }, container._leaderboardRequestMs);
         });
       });
     }
@@ -5761,10 +6336,13 @@
           map_query: sanitizeMapQueryInput(params.get('map_query') || ''),
         }).toString();
       } else if (mode === 'leaderboard') {
+        var lbApi = sanitizeLbTypeInput(params.get('lb_type'));
+        var ssApi = sanitizeLeaderboardStatScopeInput(params.get('stat_scope'), lbApi);
         apiUrl = '/api/leaderboard?' + new URLSearchParams({
-          lb_type: sanitizeLbTypeInput(params.get('lb_type')),
+          lb_type: lbApi,
+          stat_scope: ssApi,
           gamemode: sanitizeCoplayersGamemodeInput(params.get('gamemode')),
-          class_filter: sanitizeLeaderboardClassFilter(params.get('class_filter')),
+          class_filter: sanitizeLeaderboardClassFilter(params.get('class_filter'), lbApi),
           map_query: sanitizeMapQueryInput(params.get('map_query') || ''),
           date_from: params.get('date_from') || '',
           date_to: params.get('date_to') || '',

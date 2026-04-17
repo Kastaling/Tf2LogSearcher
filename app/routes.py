@@ -39,6 +39,7 @@ from app.request_log import append_request_log
 from app.search.search import (
     LEADERBOARD_MIN_LOGS_DEFAULT,
     LEADERBOARD_MIN_LOGS_MAX,
+    LEADERBOARD_STAT_SCOPE_KEYS,
     LEADERBOARD_TYPE_KEYS,
     PlayerNameIndexNotReadyError,
     _LOGMATCH_CLASS_TYPES,
@@ -1516,6 +1517,7 @@ def _api_leaderboard_impl(
     lb_type: str,
     gamemode: str,
     class_filter: str,
+    stat_scope_raw: str,
     date_from_raw: str,
     date_to_raw: str,
     map_query_raw: str,
@@ -1542,6 +1544,18 @@ def _api_leaderboard_impl(
     cf = (class_filter or "").strip().lower()
     if cf and cf not in _LOGMATCH_CLASS_TYPES:
         return JSONResponse({"error": "Invalid class filter."}, status_code=400)
+    if lt in ("ubers", "drops") and cf not in ("", "medic"):
+        return JSONResponse(
+            {
+                "error": "Ubers and drops leaderboards only support all classes or Medic as the class filter.",
+            },
+            status_code=400,
+        )
+    ss = (stat_scope_raw or "").strip().lower()
+    if ss not in LEADERBOARD_STAT_SCOPE_KEYS:
+        ss = "total"
+    if lt not in ("ubers", "drops", "damage_taken"):
+        ss = "total"
     try:
         ml = int((min_logs_raw or "").strip() or str(LEADERBOARD_MIN_LOGS_DEFAULT))
     except ValueError:
@@ -1560,6 +1574,7 @@ def _api_leaderboard_impl(
         lt,
         gm,
         cf,
+        ss,
         date_from.isoformat() if date_from else "",
         date_to.isoformat() if date_to else "",
         map_query.lower(),
@@ -1591,6 +1606,7 @@ def _api_leaderboard_impl(
     try:
         rows, total_logs = stats_leaderboard(
             lt,
+            stat_scope=ss,
             gamemode=gm,
             class_filter=cf,
             date_from=date_from,
@@ -1598,7 +1614,7 @@ def _api_leaderboard_impl(
             map_query=map_query,
             min_logs=ml,
         )
-        payload = {"rows": rows, "total_logs": total_logs, "lb_type": lt}
+        payload = {"rows": rows, "total_logs": total_logs, "lb_type": lt, "stat_scope": ss}
         cache_set("leaderboard", cache_key, payload, stats_db_fingerprint(STATS_DB_PATH))
         _lb_sids = [r["steamid64"] for r in rows if r.get("steamid64")]
         if _lb_sids:
@@ -1636,6 +1652,7 @@ async def api_leaderboard_get(
     lb_type: str = Query("dpm"),
     gamemode: str = Query(""),
     class_filter: str = Query(""),
+    stat_scope: str = Query("total"),
     date_from: str = Query(""),
     date_to: str = Query(""),
     map_query: str = Query(""),
@@ -1647,6 +1664,7 @@ async def api_leaderboard_get(
         lb_type or "",
         gamemode or "",
         class_filter or "",
+        stat_scope or "",
         date_from or "",
         date_to or "",
         map_query or "",
@@ -1886,10 +1904,16 @@ def _build_results_embed_meta(request: Request) -> str:
             except ValueError:
                 ml_e = LEADERBOARD_MIN_LOGS_DEFAULT
             ml_e = max(1, min(ml_e, LEADERBOARD_MIN_LOGS_MAX))
+            ss_e = (qp.get("stat_scope") or "total").strip().lower()
+            if ss_e not in LEADERBOARD_STAT_SCOPE_KEYS:
+                ss_e = "total"
+            if lb_t not in ("ubers", "drops", "damage_taken"):
+                ss_e = "total"
             ck = (
                 lb_t,
                 gamemode_e,
                 class_filter_e,
+                ss_e,
                 (qp.get("date_from") or "").strip(),
                 (qp.get("date_to") or "").strip(),
                 (qp.get("map_query") or "").strip().lower(),

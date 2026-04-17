@@ -78,12 +78,108 @@ _LEADERBOARD_TYPES: dict[str, dict[str, Any]] = {
         "value_key": "log_count",
         "format": "int",
     },
+    "ubers": {
+        "label": "Ubers",
+        "scopes": {
+            "total": {
+                "order_expr": "SUM(lp.ubers) DESC",
+                "select_expr": "SUM(lp.ubers) AS primary_value",
+                "value_key": "total_ubers",
+                "format": "int",
+            },
+            "per_log": {
+                "order_expr": "AVG(CAST(lp.ubers AS REAL)) DESC",
+                "select_expr": "AVG(CAST(lp.ubers AS REAL)) AS primary_value",
+                "value_key": "avg_ubers_per_log",
+                "format": "float2",
+            },
+        },
+    },
+    "drops": {
+        "label": "Drops",
+        "scopes": {
+            "total": {
+                "order_expr": "SUM(lp.drops) DESC",
+                "select_expr": "SUM(lp.drops) AS primary_value",
+                "value_key": "total_drops",
+                "format": "int",
+            },
+            "per_log": {
+                "order_expr": "AVG(CAST(lp.drops AS REAL)) DESC",
+                "select_expr": "AVG(CAST(lp.drops AS REAL)) AS primary_value",
+                "value_key": "avg_drops_per_log",
+                "format": "float2",
+            },
+        },
+    },
+    "damage_taken": {
+        "label": "Damage taken",
+        "scopes": {
+            "total": {
+                "order_expr": "SUM(lp.damage_taken) DESC",
+                "select_expr": "SUM(lp.damage_taken) AS primary_value",
+                "value_key": "total_damage_taken",
+                "format": "int",
+            },
+            "per_log": {
+                "order_expr": "AVG(CAST(lp.damage_taken AS REAL)) DESC",
+                "select_expr": "AVG(CAST(lp.damage_taken AS REAL)) AS primary_value",
+                "value_key": "avg_damage_taken_per_log",
+                "format": "float2",
+            },
+        },
+    },
+    "avg_deaths": {
+        "label": "Deaths per Log",
+        "order_expr": "AVG(CAST(lp.deaths AS REAL)) DESC",
+        "select_expr": "AVG(CAST(lp.deaths AS REAL)) AS primary_value",
+        "value_key": "avg_deaths",
+        "format": "float2",
+    },
 }
 
 LEADERBOARD_TYPE_KEYS: tuple[str, ...] = tuple(_LEADERBOARD_TYPES.keys())
+# Ubers/drops/damage_taken: ``total`` = sum across logs; ``per_log`` = average per game (per log row).
+LEADERBOARD_STAT_SCOPE_KEYS: frozenset[str] = frozenset({"total", "per_log"})
 LEADERBOARD_MAX_ROWS = 100
 LEADERBOARD_MIN_LOGS_DEFAULT = 10
 LEADERBOARD_MIN_LOGS_MAX = 5000
+
+
+def _leaderboard_resolve_spec(lb_type: str, stat_scope: str) -> dict[str, Any]:
+    """Flatten ``scopes`` for ubers/drops/damage_taken into order/select/format fields."""
+    base = _LEADERBOARD_TYPES[lb_type]
+    scopes = base.get("scopes")
+    if not scopes:
+        return {k: v for k, v in base.items() if k != "scopes"}
+    ss = stat_scope if stat_scope in scopes else "total"
+    out = {k: v for k, v in base.items() if k != "scopes"}
+    out.update(scopes[ss])
+    return out
+
+
+def _leaderboard_agg_order_clause(lb_key: str, stat_scope: str) -> str | None:
+    """ORDER BY for ``player_stats_agg`` (global unfiltered fast path)."""
+    if lb_key == "ubers":
+        if stat_scope == "per_log":
+            return "(CAST(total_ubers AS REAL) / NULLIF(log_count, 0)) DESC NULLS LAST"
+        return "total_ubers DESC NULLS LAST"
+    if lb_key == "drops":
+        if stat_scope == "per_log":
+            return "(CAST(total_drops AS REAL) / NULLIF(log_count, 0)) DESC NULLS LAST"
+        return "total_drops DESC NULLS LAST"
+    if lb_key == "damage_taken":
+        if stat_scope == "per_log":
+            return "(CAST(total_damage_taken AS REAL) / NULLIF(log_count, 0)) DESC NULLS LAST"
+        return "total_damage_taken DESC NULLS LAST"
+    static: dict[str, str] = {
+        "dpm": "avg_dpm DESC NULLS LAST",
+        "kdr": "avg_kdr DESC NULLS LAST",
+        "winrate": "(CAST(wins AS REAL) / NULLIF(decided_logs, 0)) DESC NULLS LAST",
+        "logs": "log_count DESC",
+        "avg_deaths": "avg_deaths DESC NULLS LAST",
+    }
+    return static.get(lb_key)
 
 
 def _class_playtime_for_logmatch(stats: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1506,22 +1602,67 @@ def _profile_combined_exclusion_sql(conn: sqlite3.Connection) -> tuple[str, bool
     return frag, chat_attached
 
 
+def _profile_fetch_all_supplemental(
+    conn: sqlite3.Connection,
+    sid: str,
+    filter_sql: str,
+    filter_params: list[Any],
+    logs_count: int,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    """
+    Run all four supplemental profile fetches on one connection with a single
+    shared chat DB attach/detach lifecycle.
+    """
+    shared_chat = combined_logs.try_attach_chat_db(conn, CHAT_DB_PATH)
+    try:
+        top_logs = _profile_fetch_top_logs(
+            conn, sid, filter_sql, filter_params, chat_attached=shared_chat
+        )
+        top_maps = _profile_fetch_top_maps(
+            conn, sid, filter_sql, filter_params, logs_count, chat_attached=shared_chat
+        )
+        top_coplayers = _profile_fetch_top_coplayers(
+            conn, sid, filter_sql, filter_params, chat_attached=shared_chat
+        )
+        top_coplayers_opposing = _profile_fetch_top_coplayers_opposing(
+            conn, sid, filter_sql, filter_params, chat_attached=shared_chat
+        )
+    finally:
+        if shared_chat:
+            combined_logs.detach_chat_db(conn)
+    return top_logs, top_maps, top_coplayers, top_coplayers_opposing
+
+
 def _profile_fetch_top_logs(
     conn: sqlite3.Connection,
     steamid64: str,
     filter_sql: str,
     filter_params: list[Any],
+    *,
+    chat_attached: bool = False,
 ) -> list[dict[str, Any]]:
     """Best individual log rows per metric from ``log_players`` + ``logs``, Red/Blue only.
 
     Excludes combined logs (merged games): see ``app.combined_logs`` for map/title/chat heuristics.
     When the chat DB file exists it is ATTACHed read-only to filter on chat lines as well.
+
+    Pass ``chat_attached=True`` when the caller has already attached the chat DB (shared lifecycle).
     """
     sid = (steamid64 or "").strip()
     if not sid:
         return []
 
-    combined_excl, chat_attached = _profile_combined_exclusion_sql(conn)
+    if chat_attached:
+        combined_excl = combined_logs.stats_log_exclusion_sql("l")
+        combined_excl += combined_logs.chat_log_exclusion_exists_sql("chat", "l")
+        own_chat_attached = False
+    else:
+        combined_excl, own_chat_attached = _profile_combined_exclusion_sql(conn)
     try:
         base_sql = f"""
         SELECT
@@ -1636,7 +1777,7 @@ def _profile_fetch_top_logs(
 
         return out
     finally:
-        if chat_attached:
+        if own_chat_attached:
             combined_logs.detach_chat_db(conn)
 
 
@@ -1713,6 +1854,8 @@ def _profile_fetch_top_maps(
     filter_sql: str,
     filter_params: list[Any],
     logs_total: int,
+    *,
+    chat_attached: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Most-played maps in the profile filter scope, grouped by canonical map key (version suffixes removed).
@@ -1727,7 +1870,12 @@ def _profile_fetch_top_maps(
     if not sid or logs_total <= 0:
         return []
 
-    combined_excl, chat_attached = _profile_combined_exclusion_sql(conn)
+    if chat_attached:
+        combined_excl = combined_logs.stats_log_exclusion_sql("l")
+        combined_excl += combined_logs.chat_log_exclusion_exists_sql("chat", "l")
+        own_chat_attached = False
+    else:
+        combined_excl, own_chat_attached = _profile_combined_exclusion_sql(conn)
     try:
         sql = f"""
         SELECT
@@ -1814,7 +1962,7 @@ def _profile_fetch_top_maps(
         lim = int(_PROFILE_TOP_MAPS_LIMIT)
         return groups[:lim]
     finally:
-        if chat_attached:
+        if own_chat_attached:
             combined_logs.detach_chat_db(conn)
 
 
@@ -1829,6 +1977,8 @@ def _profile_fetch_top_coplayers(
     steamid64: str,
     filter_sql: str,
     filter_params: list[Any],
+    *,
+    chat_attached: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Most frequent co-players in the profile filter scope: same aggregation as ``coplayers_search``
@@ -1851,7 +2001,12 @@ def _profile_fetch_top_coplayers(
     if not sid:
         return []
 
-    combined_excl, chat_attached = _profile_combined_exclusion_sql(conn)
+    if chat_attached:
+        combined_excl = combined_logs.stats_log_exclusion_sql("l")
+        combined_excl += combined_logs.chat_log_exclusion_exists_sql("chat", "l")
+        own_chat_attached = False
+    else:
+        combined_excl, own_chat_attached = _profile_combined_exclusion_sql(conn)
     try:
         agg_sql = f"""
         SELECT * FROM (
@@ -1994,7 +2149,7 @@ def _profile_fetch_top_coplayers(
 
         return rows_out
     finally:
-        if chat_attached:
+        if own_chat_attached:
             combined_logs.detach_chat_db(conn)
 
 
@@ -2003,6 +2158,8 @@ def _profile_fetch_top_coplayers_opposing(
     steamid64: str,
     filter_sql: str,
     filter_params: list[Any],
+    *,
+    chat_attached: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Top opponents in the profile scope: ranked by ``games_against`` (shared logs on opposite teams).
@@ -2023,7 +2180,12 @@ def _profile_fetch_top_coplayers_opposing(
     if not sid:
         return []
 
-    combined_excl, chat_attached = _profile_combined_exclusion_sql(conn)
+    if chat_attached:
+        combined_excl = combined_logs.stats_log_exclusion_sql("l")
+        combined_excl += combined_logs.chat_log_exclusion_exists_sql("chat", "l")
+        own_chat_attached = False
+    else:
+        combined_excl, own_chat_attached = _profile_combined_exclusion_sql(conn)
     try:
         agg_sql = f"""
         SELECT * FROM (
@@ -2161,7 +2323,7 @@ def _profile_fetch_top_coplayers_opposing(
 
         return rows_out
     finally:
-        if chat_attached:
+        if own_chat_attached:
             combined_logs.detach_chat_db(conn)
 
 
@@ -2174,6 +2336,9 @@ def _leaderboard_scope_sql(
 ) -> tuple[str, list[Any]]:
     """Shared AND clauses for leaderboard queries (log + player rows in scope)."""
     base_sql, base_params = _profile_filter_sql(gamemode, date_from, date_to, map_query)
+    # Exclude merged/combined logs (map + title heuristics only; chat ATTACH not available
+    # on the read-only leaderboard connection).
+    base_sql = base_sql + combined_logs.stats_log_exclusion_sql("l")
     cf = (class_filter or "").strip().lower()
     if cf and cf in _LOGMATCH_CLASS_TYPES:
         extra = (
@@ -2204,16 +2369,9 @@ def _leaderboard_is_global_unfiltered(
     return True
 
 
-_LB_AGG_ORDER_SQL: dict[str, str] = {
-    "dpm": "avg_dpm DESC NULLS LAST",
-    "kdr": "avg_kdr DESC NULLS LAST",
-    "winrate": "(CAST(wins AS REAL) / NULLIF(decided_logs, 0)) DESC NULLS LAST",
-    "logs": "log_count DESC",
-}
-
-
 def _stats_leaderboard_from_agg(
     lb_key: str,
+    stat_scope: str,
     ml: int,
     spec: dict[str, Any],
     path: Path,
@@ -2221,12 +2379,24 @@ def _stats_leaderboard_from_agg(
     profile_params: list[Any],
 ) -> tuple[list[dict[str, Any]], int]:
     """Serve global leaderboard from ``player_stats_agg`` (instant vs full scan of ``log_players``)."""
-    ord_clause = _LB_AGG_ORDER_SQL.get(lb_key)
+    ss_eff = stat_scope if lb_key in ("ubers", "drops", "damage_taken") else "total"
+    ord_clause = _leaderboard_agg_order_clause(lb_key, ss_eff)
     if ord_clause is None:
         raise RuntimeError("Unknown leaderboard type.")
     fmt = spec["format"]
     main_sql = f"""
-        SELECT steamid64, log_count, wins, decided_logs, avg_dpm, avg_kdr, avg_kadr
+        SELECT
+          steamid64,
+          log_count,
+          wins,
+          decided_logs,
+          avg_dpm,
+          avg_kdr,
+          avg_kadr,
+          total_ubers,
+          total_drops,
+          total_damage_taken,
+          avg_deaths
         FROM player_stats_agg
         WHERE log_count >= ?
         ORDER BY {ord_clause}
@@ -2268,6 +2438,29 @@ def _stats_leaderboard_from_agg(
             pv_raw = (float(wins) / float(decided)) if decided > 0 else None
         elif lb_key == "logs":
             pv_raw = log_count
+        elif lb_key == "ubers":
+            if ss_eff == "per_log":
+                lc_i = int(r["log_count"] or 0)
+                tu_i = int(r["total_ubers"] or 0)
+                pv_raw = (float(tu_i) / float(lc_i)) if lc_i > 0 else None
+            else:
+                pv_raw = r["total_ubers"]
+        elif lb_key == "drops":
+            if ss_eff == "per_log":
+                lc_i = int(r["log_count"] or 0)
+                td_i = int(r["total_drops"] or 0)
+                pv_raw = (float(td_i) / float(lc_i)) if lc_i > 0 else None
+            else:
+                pv_raw = r["total_drops"]
+        elif lb_key == "damage_taken":
+            if ss_eff == "per_log":
+                lc_i = int(r["log_count"] or 0)
+                dt_i = int(r["total_damage_taken"] or 0)
+                pv_raw = (float(dt_i) / float(lc_i)) if lc_i > 0 else None
+            else:
+                pv_raw = r["total_damage_taken"]
+        elif lb_key == "avg_deaths":
+            pv_raw = r["avg_deaths"]
         else:
             pv_raw = None
         primary_value: float | int | None
@@ -2291,6 +2484,10 @@ def _stats_leaderboard_from_agg(
                 "win_rate": win_rate,
                 "wins": wins,
                 "decided_logs": decided,
+                "total_ubers": int(r["total_ubers"] or 0),
+                "total_drops": int(r["total_drops"] or 0),
+                "total_damage_taken": int(r["total_damage_taken"] or 0),
+                "avg_deaths": _round2(r["avg_deaths"]),
                 "primary_value": primary_value,
             }
         )
@@ -2315,6 +2512,7 @@ def _round2(v: Any) -> float | None:
 def stats_leaderboard(
     lb_type: str,
     *,
+    stat_scope: str = "total",
     gamemode: str = "",
     class_filter: str = "",
     date_from: date | None = None,
@@ -2328,11 +2526,18 @@ def stats_leaderboard(
 
     ``total_logs`` is a fast count of rows in ``logs`` matching gamemode/date/map filters only
     (not class filter). Player rows and aggregates still respect the class filter when set.
+    For ``ubers``, ``drops``, and ``damage_taken``, ``stat_scope`` is ``total`` (sum) or ``per_log`` (average per game).
     Raises RuntimeError if stats DB is unavailable or lb_type is unknown.
     """
-    spec = _LEADERBOARD_TYPES.get((lb_type or "").strip().lower())
-    if spec is None:
+    lb_key = (lb_type or "").strip().lower()
+    if lb_key not in _LEADERBOARD_TYPES:
         raise RuntimeError("Unknown leaderboard type.")
+    ss = (stat_scope or "total").strip().lower()
+    if ss not in LEADERBOARD_STAT_SCOPE_KEYS:
+        ss = "total"
+    if lb_key not in ("ubers", "drops", "damage_taken"):
+        ss = "total"
+    spec = _leaderboard_resolve_spec(lb_key, ss)
 
     path = Path(STATS_DB_PATH)
     if not path.is_file():
@@ -2346,11 +2551,10 @@ def stats_leaderboard(
     scope_sql, scope_params = _leaderboard_scope_sql(gamemode, date_from, date_to, map_query, class_filter)
     profile_sql, profile_params = _profile_filter_sql(gamemode, date_from, date_to, map_query)
 
-    lb_key = (lb_type or "").strip().lower()
     if _leaderboard_is_global_unfiltered(
         gamemode, class_filter, date_from, date_to, map_query
     ) and player_stats_agg_nonempty(path):
-        return _stats_leaderboard_from_agg(lb_key, ml, spec, path, profile_sql, profile_params)
+        return _stats_leaderboard_from_agg(lb_key, ss, ml, spec, path, profile_sql, profile_params)
 
     select_expr = " ".join(spec["select_expr"].split())
     order_expr = " ".join(spec["order_expr"].split())
@@ -2366,6 +2570,10 @@ def stats_leaderboard(
           AVG(CASE WHEN lp.kadr IS NOT NULL THEN lp.kadr END) AS avg_kadr,
           SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS wins,
           SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END) AS decided_logs,
+          SUM(lp.ubers) AS total_ubers,
+          SUM(lp.drops) AS total_drops,
+          SUM(lp.damage_taken) AS total_damage_taken,
+          AVG(CAST(lp.deaths AS REAL)) AS avg_deaths,
           {select_expr}
         FROM logs l
         INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
@@ -2432,6 +2640,10 @@ def stats_leaderboard(
                 "win_rate": win_rate,
                 "wins": wins,
                 "decided_logs": decided,
+                "total_ubers": int(r["total_ubers"] or 0),
+                "total_drops": int(r["total_drops"] or 0),
+                "total_damage_taken": int(r["total_damage_taken"] or 0),
+                "avg_deaths": _round2(r["avg_deaths"]),
                 "primary_value": primary_value,
             }
         )
@@ -2845,10 +3057,9 @@ def player_profile(
             })
 
         if logs_count > 0:
-            top_logs = _profile_fetch_top_logs(conn, sid, filter_sql, filter_params)
-            top_maps = _profile_fetch_top_maps(conn, sid, filter_sql, filter_params, logs_count)
-            top_coplayers = _profile_fetch_top_coplayers(conn, sid, filter_sql, filter_params)
-            top_coplayers_opposing = _profile_fetch_top_coplayers_opposing(conn, sid, filter_sql, filter_params)
+            top_logs, top_maps, top_coplayers, top_coplayers_opposing = (
+                _profile_fetch_all_supplemental(conn, sid, filter_sql, filter_params, logs_count)
+            )
     finally:
         conn.close()
 
