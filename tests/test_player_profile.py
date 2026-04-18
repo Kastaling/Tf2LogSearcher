@@ -139,7 +139,18 @@ def test_profile_overview_counts(populated_db, monkeypatch):
     profile, log_ids = player_profile(PLAYER_A)
     assert profile["logs_count"] == 2
     assert profile["steamid64"] == PLAYER_A
-    assert len(profile.get("trend_rows") or []) == 2
+    trend = profile.get("trend_rows") or []
+    assert len(trend) == 2
+    assert all("deaths" in row and row["deaths"] == 6 for row in trend)
+    dtt = next((x for x in (profile.get("top_logs") or []) if x.get("metric") == "damage_taken"), None)
+    assert dtt is not None
+    assert dtt.get("value") == 2800
+    assert dtt.get("damage_taken") == 2800
+    dtm = next((x for x in (profile.get("top_logs") or []) if x.get("metric") == "dtm"), None)
+    assert dtm is not None
+    # total_length 300s, damage_taken 2800 -> 2800 * 60 / 300 = 560 DTM
+    assert dtm.get("value") == 560.0
+    assert dtm.get("duration_secs") == 300
     ov = profile["overview"]
     assert ov["total_kills"] == 24   # 12 + 12
     assert ov["logs_count"] == 2
@@ -147,6 +158,24 @@ def test_profile_overview_counts(populated_db, monkeypatch):
     assert ov["first_log_id"] == 1001
     assert ov["last_log_id"] == 1002
     assert 1001 in log_ids and 1002 in log_ids
+
+
+def test_profile_top_logs_damage_taken_prefers_logs_tf_dt(stats_db, monkeypatch):
+    """logs.tf uses compact ``dt`` for damage taken; it must populate ``log_players.damage_taken``."""
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", stats_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+    lt = _make_logtext(PLAYER_A_3, PLAYER_B_3)
+    pa = lt["players"][PLAYER_A_3]
+    del pa["damage_taken"]
+    pa["dt"] = 9999
+    conn = connect_stats_db(stats_db)
+    with conn:
+        replace_stats_for_log(conn, 91001, lt)
+    conn.close()
+    profile, _ = player_profile(PLAYER_A)
+    dtt = next((x for x in (profile.get("top_logs") or []) if x.get("metric") == "damage_taken"), None)
+    assert dtt is not None
+    assert dtt.get("value") == 9999
 
 
 @pytest.fixture()

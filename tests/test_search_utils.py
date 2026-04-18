@@ -6,11 +6,31 @@ import pytest
 from app.search.search import (
     _date_range_to_unix_bounds,
     _fts_phrase_query,
+    _leaderboard_agg_order_clause,
+    _leaderboard_resolve_spec,
     _log_in_date_range,
     _map_matches_query,
     _player_count_filter,
     _winner_team_from_log,
 )
+
+
+# --- leaderboard win rate scopes ---
+
+
+def test_leaderboard_resolve_spec_winrate_highest_lowest():
+    hi = _leaderboard_resolve_spec("winrate", "highest")
+    lo = _leaderboard_resolve_spec("winrate", "lowest")
+    assert "DESC" in hi["order_expr"].upper()
+    assert "ASC" in lo["order_expr"].upper()
+    assert hi["value_key"] == "win_rate"
+    legacy = _leaderboard_resolve_spec("winrate", "total")
+    assert "DESC" in legacy["order_expr"].upper()
+
+
+def test_leaderboard_agg_order_clause_winrate():
+    assert "DESC" in (_leaderboard_agg_order_clause("winrate", "highest") or "").upper()
+    assert "ASC" in (_leaderboard_agg_order_clause("winrate", "lowest") or "").upper()
 
 
 # --- _log_in_date_range ---

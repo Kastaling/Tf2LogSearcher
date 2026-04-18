@@ -189,6 +189,22 @@ docker-compose up -d downloader
 
 The downloader writes stats for every newly fetched log into `STATS_DB_PATH`. Re-running the backfill is safe: each log is replaced atomically.
 
+### Re-ingest stats (e.g. fix damage taken after an importer change)
+
+If you **already have** `{id}.json` files under `./logs` but need to **re-parse** them into `stats.db` (for example after a fix to how damage taken is read from logs.tf payloads), use the same backfill as above. The run ends with a full `player_stats_agg` rebuild.
+
+Convenience script (stops `downloader`, runs `app.stats_backfill`, starts `downloader` again):
+
+```bash
+./scripts/reingest_stats_damage_taken.sh
+```
+
+From an interactive terminal it **starts a new tmux session** by default (detach with **Ctrl-b** then **d**, reattach with `tmux attach -t <session>`). **Ctrl+C** in that pane forwards to `docker compose` and stops the backfill; SQLite keeps work committed through the last completed `--batch-size` batch. If the backfill is interrupted or fails, the downloader is **left stopped** — bring it back with `docker compose up -d downloader` (the script prints the exact compose command it resolved).
+
+Flags: `--no-tmux` / `--foreground` (skip tmux; use for CI/cron or when stdin/stdout is not a TTY). Optional: `--batch-size 1000` or `BATCH_SIZE=750 ./scripts/reingest_stats_damage_taken.sh`. Uses `docker compose` when available, otherwise `docker-compose`. Override the binary with `DOCKER_COMPOSE_CMD="docker compose -f compose.yml"`.
+
+**Security / ops:** same as other backfills — stop the downloader first so only one process writes `stats.db`; the script does not expose API keys (Compose loads `.env` for the `downloader` service if your `docker-compose.yml` references it). **Performance:** larger `--batch-size` reduces commit overhead; lower values limit rollback cost if the process is interrupted.
+
 ## Raw events DB backfill (re-parse zips)
 
 If you already have `log_*.log.zip` files under `RAW_LOGS_DIR` (e.g. after a parser upgrade), rebuild `raw_events.db` without re-downloading:

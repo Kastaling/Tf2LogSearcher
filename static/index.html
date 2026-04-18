@@ -1260,6 +1260,11 @@
       <button type="button" class="stats-trend-btn js-lb-stat-scope-btn active" data-stat-scope="total" role="tab" aria-selected="true">Total</button>
       <button type="button" class="stats-trend-btn js-lb-stat-scope-btn" data-stat-scope="per_log" role="tab" aria-selected="false">Per log</button>
     </div>
+    <div class="lb-stat-scope-strip js-lb-winrate-scope-strip" role="tablist" aria-label="Win rate: highest first vs lowest first" hidden>
+      <span class="lb-stat-scope-label">Order:</span>
+      <button type="button" class="stats-trend-btn js-lb-winrate-scope-btn active" data-stat-scope="highest" role="tab" aria-selected="true">Highest</button>
+      <button type="button" class="stats-trend-btn js-lb-winrate-scope-btn" data-stat-scope="lowest" role="tab" aria-selected="false">Lowest</button>
+    </div>
     <label>Gamemode: <select name="gamemode">
       <option value="">All gamemodes</option>
       <option value="hl">Highlander</option>
@@ -1452,27 +1457,47 @@
     function sanitizeLeaderboardStatScopeInput(raw, lbType) {
       var s = (raw == null ? '' : String(raw)).trim().toLowerCase();
       var t = sanitizeLbTypeInput(lbType || 'dpm');
-      if ((t === 'ubers' || t === 'drops' || t === 'damage_taken') && (s === 'total' || s === 'per_log')) return s;
+      if (t === 'ubers' || t === 'drops' || t === 'damage_taken') {
+        if (s === 'total' || s === 'per_log') return s;
+        return 'total';
+      }
+      if (t === 'winrate') {
+        if (s === 'highest' || s === 'lowest') return s;
+        return 'highest';
+      }
       return 'total';
     }
 
     function syncLeaderboardStatScopeStrip(form) {
       if (!form) return;
-      var strip = form.querySelector('.js-lb-stat-scope-strip');
+      var stripTp = form.querySelector('.js-lb-stat-scope-strip');
+      var stripWr = form.querySelector('.js-lb-winrate-scope-strip');
       var hidden = form.elements.stat_scope;
       var lb = sanitizeLbTypeInput(form.elements.lb_type && form.elements.lb_type.value ? form.elements.lb_type.value : 'dpm');
-      var show = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken');
-      if (strip) {
-        if (show) strip.removeAttribute('hidden');
-        else strip.setAttribute('hidden', '');
+      var showTp = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken');
+      var showWr = (lb === 'winrate');
+      if (stripTp) {
+        if (showTp) stripTp.removeAttribute('hidden');
+        else stripTp.setAttribute('hidden', '');
       }
-      if (!show && hidden) hidden.value = 'total';
+      if (stripWr) {
+        if (showWr) stripWr.removeAttribute('hidden');
+        else stripWr.setAttribute('hidden', '');
+      }
       var cur = hidden ? sanitizeLeaderboardStatScopeInput(hidden.value, lb) : 'total';
       if (hidden) hidden.value = cur;
-      if (strip) {
-        strip.querySelectorAll('.js-lb-stat-scope-btn').forEach(function(b) {
+      if (stripTp) {
+        stripTp.querySelectorAll('.js-lb-stat-scope-btn').forEach(function(b) {
           var sc = b.getAttribute('data-stat-scope');
-          var on = sc === cur;
+          var on = showTp && sc === cur;
+          b.classList.toggle('active', on);
+          b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+      }
+      if (stripWr) {
+        stripWr.querySelectorAll('.js-lb-winrate-scope-btn').forEach(function(b) {
+          var sc = b.getAttribute('data-stat-scope');
+          var on = showWr && sc === cur;
           b.classList.toggle('active', on);
           b.setAttribute('aria-selected', on ? 'true' : 'false');
         });
@@ -1767,6 +1792,8 @@
         if (activeLb) pulseDeepLinkEl(activeLb);
         var scopeStrip = flb.querySelector('.js-lb-stat-scope-strip');
         if (scopeStrip && !scopeStrip.hasAttribute('hidden')) pulseDeepLinkEl(scopeStrip);
+        var wrStrip = flb.querySelector('.js-lb-winrate-scope-strip');
+        if (wrStrip && !wrStrip.hasAttribute('hidden')) pulseDeepLinkEl(wrStrip);
         if (ne(state.gamemode) && flb.gamemode) pulseDeepLinkEl(flb.gamemode);
         if (ne(state.class_filter) && flb.elements.class_filter) pulseDeepLinkEl(flb.elements.class_filter);
         if (ne(state.map_query) && flb.elements.map_query) pulseDeepLinkEl(flb.elements.map_query);
@@ -3497,23 +3524,30 @@
       syncLeaderboardStatScopeStrip(form);
     })();
 
-    (function initLeaderboardStatScopeStrip() {
+    (function initLeaderboardStatScopeStrips() {
       var form = document.getElementById('frmLeaderboard');
       if (!form) return;
-      form.querySelectorAll('.js-lb-stat-scope-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var sc = btn.getAttribute('data-stat-scope');
-          if (!sc) return;
-          var lb = sanitizeLbTypeInput(form.elements.lb_type && form.elements.lb_type.value ? form.elements.lb_type.value : 'dpm');
-          sc = sanitizeLeaderboardStatScopeInput(sc, lb);
-          if (form.elements.stat_scope) form.elements.stat_scope.value = sc;
-          form.querySelectorAll('.js-lb-stat-scope-btn').forEach(function(b) {
-            var on = b.getAttribute('data-stat-scope') === sc;
-            b.classList.toggle('active', on);
-            b.setAttribute('aria-selected', on ? 'true' : 'false');
+      function bindScopeButtons(btnSelector, stripSelector) {
+        form.querySelectorAll(btnSelector).forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            var sc = btn.getAttribute('data-stat-scope');
+            if (!sc) return;
+            var lb = sanitizeLbTypeInput(form.elements.lb_type && form.elements.lb_type.value ? form.elements.lb_type.value : 'dpm');
+            sc = sanitizeLeaderboardStatScopeInput(sc, lb);
+            if (form.elements.stat_scope) form.elements.stat_scope.value = sc;
+            var strip = form.querySelector(stripSelector);
+            if (strip) {
+              strip.querySelectorAll(btnSelector).forEach(function(b) {
+                var on = b.getAttribute('data-stat-scope') === sc;
+                b.classList.toggle('active', on);
+                b.setAttribute('aria-selected', on ? 'true' : 'false');
+              });
+            }
           });
         });
-      });
+      }
+      bindScopeButtons('.js-lb-stat-scope-btn', '.js-lb-stat-scope-strip');
+      bindScopeButtons('.js-lb-winrate-scope-btn', '.js-lb-winrate-scope-strip');
     })();
 
     var frmLb = document.getElementById('frmLeaderboard');
@@ -3530,7 +3564,7 @@
         }
         var lbForClass = sanitizeLbTypeInput(frmLb.elements.lb_type && frmLb.elements.lb_type.value ? frmLb.elements.lb_type.value : 'dpm');
         var statScopeVal = sanitizeLeaderboardStatScopeInput(
-          frmLb.elements.stat_scope && frmLb.elements.stat_scope.value ? frmLb.elements.stat_scope.value : 'total',
+          frmLb.elements.stat_scope && frmLb.elements.stat_scope.value ? frmLb.elements.stat_scope.value : (lbForClass === 'winrate' ? 'highest' : 'total'),
           lbForClass
         );
         var classFilterVal = sanitizeLeaderboardClassFilter(
@@ -4304,7 +4338,7 @@
         var sorted = getSortedLeaderboardRows(rows, lb, sc);
         var csv = buildLeaderboardCsvContent(sorted, lb, sc);
         var d = new Date();
-        var scopePart = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken') ? '-' + String(sc).replace(/[^a-z0-9_-]/gi, '_') : '';
+        var scopePart = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken' || lb === 'winrate') ? '-' + String(sc).replace(/[^a-z0-9_-]/gi, '_') : '';
         var fn = 'tf2-stats-leaderboard-' + lb + scopePart + '-' + d.getFullYear() + '-' + (d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate() + '.csv';
         triggerCsvDownload(fn, csv);
       });
@@ -4365,7 +4399,10 @@
       var rows = data && data.rows ? data.rows : [];
       var totalLogs = data && data.total_logs != null ? data.total_logs : null;
       var lbType = data && data.lb_type ? sanitizeLbTypeInput(data.lb_type) : 'dpm';
-      var statScope = sanitizeLeaderboardStatScopeInput(data && data.stat_scope != null ? data.stat_scope : 'total', lbType);
+      var statScope = sanitizeLeaderboardStatScopeInput(
+        data && data.stat_scope != null ? data.stat_scope : (sanitizeLbTypeInput(lbType) === 'winrate' ? 'highest' : 'total'),
+        lbType
+      );
       if (rows !== container._leaderboardRows || lbType !== container._leaderboardLbType || statScope !== container._leaderboardStatScope) {
         container._leaderboardRows = rows;
         container._leaderboardLbType = lbType;
@@ -4699,6 +4736,11 @@
           var v = Number(rowsSorted[i] && rowsSorted[i].dpm);
           if (Number.isFinite(v)) vals.push(v);
         }
+      } else if (metric === 'deaths') {
+        for (var id = 0; id < rowsSorted.length; id++) {
+          var vd = Number(rowsSorted[id] && rowsSorted[id].deaths);
+          if (Number.isFinite(vd)) vals.push(vd);
+        }
       } else {
         for (var j = 0; j < rowsSorted.length; j++) {
           var r = rowsSorted[j];
@@ -4723,7 +4765,7 @@
       var pad = span * 0.08;
       lo = lo - pad;
       hi = hi + pad;
-      if (metric === 'dpm') {
+      if (metric === 'dpm' || metric === 'deaths') {
         lo = Math.max(0, lo);
       }
       if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return null;
@@ -4821,6 +4863,8 @@
       }
       if (metric === 'dpm') {
         addMetric('DPM', 'dpm', link);
+      } else if (metric === 'deaths') {
+        addMetric('Deaths', 'deaths', '#a86d5c');
       } else {
         addMetric('KDR', 'kdr', kdrBlue);
         addMetric('KADR', 'kadr', kadrRed);
@@ -4848,9 +4892,9 @@
       if (!canvas) return;
       var sorted = statsTrendSortRows(rows);
       var labels = sorted.map(function(r) { return (r && r.date) ? String(r.date) : ''; });
-      var yBounds = computeTrendYBounds(sorted, metric === 'kpair' ? 'kpair' : 'dpm');
+      var yBounds = computeTrendYBounds(sorted, metric);
       var datasets = buildTrendDatasets(sorted, metric, yBounds);
-      var showLegend = metric !== 'dpm';
+      var showLegend = metric === 'kpair';
       destroyTrendState(state);
       loadChartJsIfNeeded().then(function() {
         if (shouldAbort()) return;
@@ -4939,7 +4983,7 @@
       btns.forEach(function(btn) {
         btn.addEventListener('click', function() {
           var metric = btn.getAttribute('data-metric');
-          if (metric !== 'dpm' && metric !== 'kpair') return;
+          if (metric !== 'dpm' && metric !== 'kpair' && metric !== 'deaths') return;
           profileTrendMetric = metric;
           btns.forEach(function(b) {
             var active = b.getAttribute('data-metric') === metric;
@@ -5363,7 +5407,7 @@
       var m = r.metric != null ? String(r.metric) : '';
       var v = r.value;
       if (v == null || (typeof v === 'number' && !Number.isFinite(v))) return '\u2014';
-      if (m === 'dpm' || m === 'kdr' || m === 'kadr') {
+      if (m === 'dpm' || m === 'kdr' || m === 'kadr' || m === 'dtm') {
         return (Math.round(Number(v) * 100) / 100).toString();
       }
       return String(Math.round(Number(v)));
@@ -6089,14 +6133,15 @@
       if (trendRows.length >= 2) {
         trendBlock =
           '<div class="stats-summary profile-trend-summary">' +
-            '<p class="stats-summary-title">DPM / KDR over time</p>' +
-            '<p class="stats-summary-meta">Up to 10,000 most recent logs matching filters.</p>' +
+            '<p class="stats-summary-title">DPM, KDR, deaths over time</p>' +
+            '<p class="stats-summary-meta">Up to 10,000 most recent logs matching filters. Deaths are per game (one row per log).</p>' +
             '<div class="stats-trend js-profile-trend">' +
               '<div class="stats-trend-toggle" role="tablist" aria-label="Profile trend metric">' +
                 '<button type="button" class="stats-trend-btn js-profile-trend-btn active" data-metric="dpm" role="tab" aria-selected="true">DPM</button>' +
                 '<button type="button" class="stats-trend-btn js-profile-trend-btn" data-metric="kpair" role="tab" aria-selected="false">KDR / KADR</button>' +
+                '<button type="button" class="stats-trend-btn js-profile-trend-btn" data-metric="deaths" role="tab" aria-selected="false">Deaths / game</button>' +
               '</div>' +
-              '<div class="stats-trend-canvas-wrap"><canvas class="js-trend-chart-canvas" aria-label="Profile DPM and KDR trends"></canvas></div>' +
+              '<div class="stats-trend-canvas-wrap"><canvas class="js-trend-chart-canvas" aria-label="Profile per-game trends"></canvas></div>' +
               '<p class="stats-trend-note">20-game rolling average with per-game points. Y-axis trimmed to the middle ~96% of values so bad logs do not flatten the curve; tooltips show exact stats.</p>' +
             '</div>' +
           '</div>';

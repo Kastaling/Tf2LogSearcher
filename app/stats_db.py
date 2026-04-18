@@ -112,6 +112,63 @@ def _float_safe(x: Any) -> float | None:
         return None
 
 
+def _damage_taken_from_player_stats(stats: dict[str, Any]) -> int:
+    """
+    Damage taken from a logs.tf ``players`` entry.
+
+    The public API uses compact keys ``dt`` / ``dt_real``; some payloads use ``damage_taken`` or
+    ``dmg_taken``. A key may be present with JSON ``null`` (Python ``None``); we must skip those and
+    try the next candidate — otherwise ``dt: null`` would force 0 and hide a valid ``dt_real``.
+
+    When both ``dt`` and ``dt_real`` are set, prefer ``dt_real`` first (weapon / ``real`` damage
+    tallies; ``dt`` can differ by log format).
+
+    If the aggregate block has no usable values, sum per-class ``class_stats`` entries that expose
+    damage taken (some older or edge logs only attach it per class).
+    """
+    if not isinstance(stats, dict):
+        return 0
+
+    def _coerce_dt(val: Any) -> int | None:
+        if val is None:
+            return None
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return None
+
+    for key in ("damage_taken", "dmg_taken", "dt_real", "dt"):
+        if key not in stats:
+            continue
+        if stats[key] is None:
+            continue
+        n = _coerce_dt(stats[key])
+        if n is not None:
+            return n
+
+    class_stats = stats.get("class_stats")
+    if isinstance(class_stats, list):
+        total = 0
+        saw_any = False
+        for cs in class_stats:
+            if not isinstance(cs, dict):
+                continue
+            for key in ("damage_taken", "dmg_taken", "dt_real", "dt"):
+                if key not in cs:
+                    continue
+                if cs[key] is None:
+                    continue
+                n = _coerce_dt(cs[key])
+                if n is not None:
+                    total += n
+                    saw_any = True
+                    break
+        if saw_any:
+            return total
+
+    return 0
+
+
 def init_stats_db(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(
@@ -493,7 +550,7 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
         assists = _int_safe(stats.get("assists"), 0)
         deaths = _int_safe(stats.get("deaths"), 0)
         dmg = _int_safe(stats.get("dmg"), 0)
-        dmg_taken = _int_safe(stats.get("damage_taken") or stats.get("dmg_taken"), 0)
+        dmg_taken = _damage_taken_from_player_stats(stats)
         # Healing received: long name ``healing_taken`` (some exports) or compact ``hr`` (logs.tf /json).
         # ``heal`` / ``healing`` is healing output (e.g. medic) — do not use for received.
         if "healing_taken" in stats:

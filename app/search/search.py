@@ -60,16 +60,32 @@ _LEADERBOARD_TYPES: dict[str, dict[str, Any]] = {
     },
     "winrate": {
         "label": "Win Rate",
-        "order_expr": """
-            CAST(SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS REAL)
-            / NULLIF(SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END), 0) DESC
-        """,
-        "select_expr": """
-            CAST(SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS REAL)
-            / NULLIF(SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END), 0) AS primary_value
-        """,
-        "value_key": "win_rate",
-        "format": "percent",
+        "scopes": {
+            "highest": {
+                "order_expr": """
+                    CAST(SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS REAL)
+                    / NULLIF(SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END), 0) DESC
+                """,
+                "select_expr": """
+                    CAST(SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS REAL)
+                    / NULLIF(SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END), 0) AS primary_value
+                """,
+                "value_key": "win_rate",
+                "format": "percent",
+            },
+            "lowest": {
+                "order_expr": """
+                    CAST(SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS REAL)
+                    / NULLIF(SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END), 0) ASC
+                """,
+                "select_expr": """
+                    CAST(SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS REAL)
+                    / NULLIF(SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END), 0) AS primary_value
+                """,
+                "value_key": "win_rate",
+                "format": "percent",
+            },
+        },
     },
     "logs": {
         "label": "Most Logs",
@@ -139,20 +155,30 @@ _LEADERBOARD_TYPES: dict[str, dict[str, Any]] = {
 }
 
 LEADERBOARD_TYPE_KEYS: tuple[str, ...] = tuple(_LEADERBOARD_TYPES.keys())
-# Ubers/drops/damage_taken: ``total`` = sum across logs; ``per_log`` = average per game (per log row).
-LEADERBOARD_STAT_SCOPE_KEYS: frozenset[str] = frozenset({"total", "per_log"})
+# Ubers/drops/damage_taken: ``total`` / ``per_log``. Win rate: ``highest`` (best first) / ``lowest`` (worst first).
+LEADERBOARD_STAT_SCOPE_KEYS: frozenset[str] = frozenset(
+    {"total", "per_log", "highest", "lowest"}
+)
 LEADERBOARD_MAX_ROWS = 100
 LEADERBOARD_MIN_LOGS_DEFAULT = 10
 LEADERBOARD_MIN_LOGS_MAX = 5000
 
 
 def _leaderboard_resolve_spec(lb_type: str, stat_scope: str) -> dict[str, Any]:
-    """Flatten ``scopes`` for ubers/drops/damage_taken into order/select/format fields."""
+    """Flatten ``scopes`` for multi-variant boards into order/select/format fields."""
     base = _LEADERBOARD_TYPES[lb_type]
     scopes = base.get("scopes")
     if not scopes:
         return {k: v for k, v in base.items() if k != "scopes"}
-    ss = stat_scope if stat_scope in scopes else "total"
+    valid = set(scopes.keys())
+    ss = (stat_scope or "").strip().lower()
+    if ss not in valid:
+        if "total" in valid:
+            ss = "total"
+        elif "highest" in valid:
+            ss = "highest"
+        else:
+            ss = next(iter(valid))
     out = {k: v for k, v in base.items() if k != "scopes"}
     out.update(scopes[ss])
     return out
@@ -172,10 +198,13 @@ def _leaderboard_agg_order_clause(lb_key: str, stat_scope: str) -> str | None:
         if stat_scope == "per_log":
             return "(CAST(total_damage_taken AS REAL) / NULLIF(log_count, 0)) DESC NULLS LAST"
         return "total_damage_taken DESC NULLS LAST"
+    if lb_key == "winrate":
+        if stat_scope == "lowest":
+            return "(CAST(wins AS REAL) / NULLIF(decided_logs, 0)) ASC NULLS LAST"
+        return "(CAST(wins AS REAL) / NULLIF(decided_logs, 0)) DESC NULLS LAST"
     static: dict[str, str] = {
         "dpm": "avg_dpm DESC NULLS LAST",
         "kdr": "avg_kdr DESC NULLS LAST",
-        "winrate": "(CAST(wins AS REAL) / NULLIF(decided_logs, 0)) DESC NULLS LAST",
         "logs": "log_count DESC",
         "avg_deaths": "avg_deaths DESC NULLS LAST",
     }
@@ -1548,6 +1577,13 @@ _PROFILE_TOP_LOG_SPECS: tuple[tuple[str, str, str, str], ...] = (
     ("kills", "Most kills (one game)", "", "lp.kills DESC, l.date_ts DESC, l.log_id DESC"),
     ("assists", "Most assists (one game)", "", "lp.assists DESC, l.date_ts DESC, l.log_id DESC"),
     ("damage", "Most damage (one game)", "", "lp.damage DESC, l.date_ts DESC, l.log_id DESC"),
+    ("damage_taken", "Most damage taken (one game)", "", "lp.damage_taken DESC, l.date_ts DESC, l.log_id DESC"),
+    (
+        "dtm",
+        "Highest DTM (damage taken / min)",
+        " AND l.duration_secs IS NOT NULL AND CAST(l.duration_secs AS INTEGER) > 0",
+        "(CAST(lp.damage_taken AS REAL) * 60.0 / CAST(l.duration_secs AS REAL)) DESC, l.date_ts DESC, l.log_id DESC",
+    ),
     (
         "kdr",
         "Best KDR (one game)",
@@ -1578,6 +1614,7 @@ _PROFILE_TOP_LOG_POSITIVE_METRICS: frozenset[str] = frozenset({
     "kills",
     "assists",
     "damage",
+    "damage_taken",
     "headshots",
     "backstabs",
     "ubers",
@@ -1670,11 +1707,13 @@ def _profile_fetch_top_logs(
           l.map,
           l.title,
           l.date_ts,
+          l.duration_secs,
           lp.team,
           lp.kills,
           lp.deaths,
           lp.assists,
           lp.damage,
+          lp.damage_taken,
           lp.dapm,
           lp.kdr,
           lp.kadr,
@@ -1703,11 +1742,13 @@ def _profile_fetch_top_logs(
                 map_name,
                 title,
                 date_ts,
+                duration_secs,
                 team,
                 kills,
                 deaths,
                 assists,
                 damage,
+                damage_taken,
                 dapm,
                 kdr,
                 kadr,
@@ -1722,12 +1763,23 @@ def _profile_fetch_top_logs(
             val: float | int | None
             if metric == "dpm":
                 val = _round2(dapm)
+            elif metric == "dtm":
+                try:
+                    ds_i = int(duration_secs or 0)
+                except (TypeError, ValueError):
+                    ds_i = 0
+                if ds_i <= 0:
+                    val = None
+                else:
+                    val = _round2((float(damage_taken or 0) * 60.0) / float(ds_i))
             elif metric == "kills":
                 val = int(kills or 0)
             elif metric == "assists":
                 val = int(assists or 0)
             elif metric == "damage":
                 val = int(damage or 0)
+            elif metric == "damage_taken":
+                val = int(damage_taken or 0)
             elif metric == "kdr":
                 val = _round2(kdr)
             elif metric == "kadr":
@@ -1747,9 +1799,9 @@ def _profile_fetch_top_logs(
             else:
                 continue
 
-            if val is None and metric in ("dpm", "kdr", "kadr"):
+            if val is None and metric in ("dpm", "kdr", "kadr", "dtm"):
                 continue
-            if metric == "dpm" and val is not None and val <= 0:
+            if metric in ("dpm", "dtm") and val is not None and val <= 0:
                 continue
             if metric in _PROFILE_TOP_LOG_POSITIVE_METRICS:
                 if val is None or (isinstance(val, (int, float)) and val <= 0):
@@ -1769,6 +1821,8 @@ def _profile_fetch_top_logs(
                     "deaths": int(deaths or 0),
                     "assists": int(assists or 0),
                     "damage": int(damage or 0),
+                    "damage_taken": int(damage_taken or 0),
+                    "duration_secs": int(duration_secs) if duration_secs is not None else None,
                     "dapm": _round2(dapm),
                     "kdr": _round2(kdr),
                     "kadr": _round2(kadr),
@@ -2379,7 +2433,11 @@ def _stats_leaderboard_from_agg(
     profile_params: list[Any],
 ) -> tuple[list[dict[str, Any]], int]:
     """Serve global leaderboard from ``player_stats_agg`` (instant vs full scan of ``log_players``)."""
-    ss_eff = stat_scope if lb_key in ("ubers", "drops", "damage_taken") else "total"
+    ss_eff = (
+        stat_scope
+        if lb_key in ("ubers", "drops", "damage_taken", "winrate")
+        else "total"
+    )
     ord_clause = _leaderboard_agg_order_clause(lb_key, ss_eff)
     if ord_clause is None:
         raise RuntimeError("Unknown leaderboard type.")
@@ -2526,16 +2584,22 @@ def stats_leaderboard(
 
     ``total_logs`` is a fast count of rows in ``logs`` matching gamemode/date/map filters only
     (not class filter). Player rows and aggregates still respect the class filter when set.
-    For ``ubers``, ``drops``, and ``damage_taken``, ``stat_scope`` is ``total`` (sum) or ``per_log`` (average per game).
+    For ``ubers``, ``drops``, and ``damage_taken``, ``stat_scope`` is ``total`` (sum) or ``per_log``
+    (average per game). For ``winrate``, ``stat_scope`` is ``highest`` (best win % first) or
+    ``lowest`` (worst win % first among players meeting ``min_logs``).
     Raises RuntimeError if stats DB is unavailable or lb_type is unknown.
     """
     lb_key = (lb_type or "").strip().lower()
     if lb_key not in _LEADERBOARD_TYPES:
         raise RuntimeError("Unknown leaderboard type.")
-    ss = (stat_scope or "total").strip().lower()
-    if ss not in LEADERBOARD_STAT_SCOPE_KEYS:
-        ss = "total"
-    if lb_key not in ("ubers", "drops", "damage_taken"):
+    ss_raw = (stat_scope or "").strip().lower()
+    if ss_raw not in LEADERBOARD_STAT_SCOPE_KEYS:
+        ss_raw = "total"
+    if lb_key in ("ubers", "drops", "damage_taken"):
+        ss = ss_raw if ss_raw in ("total", "per_log") else "total"
+    elif lb_key == "winrate":
+        ss = ss_raw if ss_raw in ("highest", "lowest") else "highest"
+    else:
         ss = "total"
     spec = _leaderboard_resolve_spec(lb_key, ss)
 
@@ -3033,7 +3097,7 @@ def player_profile(
         # Per-log DPM/KDR/KADR for profile trend chart (newest first in subquery, then chronological).
         _trend_limit = 10000
         trend_sql = f"""
-            SELECT l.date_ts, lp.dapm, lp.kdr, lp.kadr
+            SELECT l.date_ts, lp.dapm, lp.kdr, lp.kadr, lp.deaths
             FROM log_players lp
             JOIN logs l ON l.log_id = lp.log_id
             WHERE lp.steamid64 = ?
@@ -3044,7 +3108,7 @@ def player_profile(
         trend_raw = list(reversed(conn.execute(trend_sql, (sid, *filter_params)).fetchall()))
         trend_rows = []
         for tr in trend_raw:
-            ts_raw, dapm_v, kdr_v, kadr_v = tr
+            ts_raw, dapm_v, kdr_v, kadr_v, deaths_v = tr
             ts = int(ts_raw or 0)
             date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
                 "%I:%M:%S %p %Z %m/%d/%Y"
@@ -3054,6 +3118,7 @@ def player_profile(
                 "dpm": round(_sql_float(dapm_v), 2),
                 "kdr": _sql_float(kdr_v),
                 "kadr": _sql_float(kadr_v),
+                "deaths": int(deaths_v or 0),
             })
 
         if logs_count > 0:
