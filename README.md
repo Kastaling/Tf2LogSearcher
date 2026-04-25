@@ -229,6 +229,29 @@ docker compose up -d downloader
 
 Use the **`downloader`** service (not `downloader-json`) so `./raw_logs` is mounted. Useful options: `--from-id` / `--to-id`, `--limit` (testing), `--batch-size` (SQLite commits, default 50), `--progress-every`, `--dry-run` (count gaps without network). See `python -m app.raw_json_gap_fetch --help`.
 
+### Convenience script (tmux + docker compose)
+
+For large libraries (e.g. **~2M JSON logs without a zip** after JSON ingestion finishes), use the wrapper so the long run lives in **tmux** and **Ctrl+C** reliably stops `docker compose` while leaving completed work on disk:
+
+```bash
+./scripts/raw_zip_gap_fetch.sh
+```
+
+- Stops **`downloader`**, runs **`python -m app.raw_json_gap_fetch`** with any extra arguments you pass, then **`docker compose up -d downloader`** on success.
+- From an interactive terminal, opens a **new tmux session** by default (session name `tf2ls-raw-gap-…` or override with `TF2LS_TMUX_SESSION`). **Detach:** Ctrl-b then d — **reattach:** `tmux attach -t <name>`.
+- **`--no-tmux` / `--foreground`** or **`TF2LS_RAW_GAP_NO_TMUX=1`** for CI, cron, or non-TTY environments.
+- **Sharding** (parallel hosts): e.g. `./scripts/raw_zip_gap_fetch.sh --shard-index 0 --shard-total 4` (see module `--help`).
+
+Examples:
+
+```bash
+./scripts/raw_zip_gap_fetch.sh --dry-run
+./scripts/raw_zip_gap_fetch.sh --batch-size 50 --progress-every 5000
+./scripts/raw_zip_gap_fetch.sh --shard-index 1 --shard-total 8
+```
+
+**Security:** same as the downloader — Compose may load `.env`; the gap fetch only talks to logs.tf with your existing rate-limit settings. Do not lower delays below what logs.tf allows. **Performance:** wall time scales with gap count × `REQUEST_DELAY_MS`; use sharding for throughput; larger `--batch-size` reduces SQLite commit overhead at the cost of more work per transaction if interrupted mid-batch.
+
 ## Fix log rounds (one-time migration)
 
 If stats were imported before round duration / first-blood parsing was corrected, rebuild only the `log_rounds` table from your existing JSON files (no full stats reimport):

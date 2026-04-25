@@ -582,35 +582,66 @@
       margin: 0 0 0.45rem;
       flex-wrap: wrap;
     }
+    /* Tab-like metric toggles: unselected = soft teal fill; selected = “inset” panel + ring (easy to read at a glance, esp. on mobile). */
     .stats-trend-btn {
       margin: 0;
       padding: 0.3rem 0.55rem;
       font-size: 0.86rem;
-      border: 1px solid var(--border);
-      background: var(--bg);
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      /* Unselected — filled chip (distinct from the selected “inset” state) */
+      background: color-mix(in srgb, var(--link) 22%, var(--bg));
       color: var(--text);
-    }
-    .stats-trend-btn:hover,
-    .stats-trend-btn:focus-visible {
-      color: var(--text);
-      background: var(--table-hover);
-      border-color: var(--link);
-      outline: none;
+      border: 1px solid color-mix(in srgb, var(--link) 40%, var(--border));
     }
     .stats-trend-btn.active {
-      border-color: var(--link);
-      box-shadow: inset 0 0 0 1px var(--link);
+      background: var(--input-bg);
       color: var(--link);
-      background: var(--bg);
-    }
-    [data-theme="dark"] .stats-trend-btn,
-    [data-theme="dark"] .stats-trend-btn:hover,
-    [data-theme="dark"] .stats-trend-btn:focus-visible,
-    [data-theme="dark"] .stats-trend-btn.active {
-      color: var(--text);
+      border: 2px solid var(--link);
+      font-weight: 700;
+      box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent);
     }
     [data-theme="dark"] .stats-trend-btn.active {
-      color: var(--link);
+      color: #f2fafb;
+      text-shadow: 0 0 0.5px color-mix(in srgb, var(--link) 50%, #000);
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, #fff 7%, transparent),
+        inset 0 -1px 0 color-mix(in srgb, #000 25%, transparent);
+    }
+    /* Fine pointers only: avoids sticky :hover on touch after tap (iOS / some WebKit). */
+    @media (hover: hover) and (pointer: fine) {
+      .stats-trend-btn:not(.active):hover {
+        background: color-mix(in srgb, var(--link) 32%, var(--bg));
+        border-color: var(--link);
+        color: var(--text);
+      }
+      /* Hovered + selected: distinct from unselected chips and from the resting selected state */
+      .stats-trend-btn.active:hover,
+      .stats-trend-btn.active:focus-visible {
+        background: color-mix(in srgb, var(--link) 24%, var(--input-bg));
+        border-color: var(--link);
+        color: var(--text);
+        font-weight: 700;
+        box-shadow:
+          0 0 0 1px color-mix(in srgb, var(--link) 55%, transparent),
+          inset 0 1px 0 color-mix(in srgb, #fff 14%, transparent);
+      }
+      [data-theme="dark"] .stats-trend-btn.active:hover,
+      [data-theme="dark"] .stats-trend-btn.active:focus-visible {
+        color: #eaffff;
+        box-shadow:
+          0 0 0 1px color-mix(in srgb, var(--link) 65%, transparent),
+          0 0 12px color-mix(in srgb, var(--link) 25%, transparent),
+          inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent);
+      }
+    }
+    .stats-trend-btn:focus-visible {
+      outline: 2px solid var(--link);
+      outline-offset: 2px;
+    }
+    .stats-trend-btn.active:focus-visible {
+      outline-offset: 3px;
     }
     .lb-type-strip {
       display: flex;
@@ -2538,7 +2569,10 @@
 
     /** Tab title animation while /results API fetch runs (address bar text cannot be changed by script). */
     var _loadingTitleTimer = null;
+    var _resultReadyTitleTimer = null;
+    var _resultReadyNotified = false;
     var _loadingTitleRestore = 'TF2 Log Searcher';
+    var PAGE_TITLE_SUFFIX = ' \u2014 TF2 Log Searcher';
 
     function startLoadingTitleAnimation() {
       if (_loadingTitleTimer != null) {
@@ -2546,23 +2580,91 @@
         _loadingTitleTimer = null;
       }
       _loadingTitleRestore = document.title || _loadingTitleRestore;
-      var suffix = ' \u2014 TF2 Log Searcher';
       var seq = ['Loading\u2026', 'Loading.', 'Loading..', 'Loading...'];
       var i = 0;
-      document.title = seq[0] + suffix;
+      document.title = seq[0] + PAGE_TITLE_SUFFIX;
       _loadingTitleTimer = window.setInterval(function() {
         i = (i + 1) % seq.length;
-        document.title = seq[i] + suffix;
+        document.title = seq[i] + PAGE_TITLE_SUFFIX;
       }, 450);
     }
+
+    function stopResultReadyTitleFlash() {
+      if (_resultReadyTitleTimer != null) {
+        window.clearInterval(_resultReadyTitleTimer);
+        _resultReadyTitleTimer = null;
+      }
+      _resultReadyNotified = false;
+    }
+
+    /**
+     * If the /results response rendered successfully but the tab is in the background, flash
+     * the title so the user notices; restore when the tab is visible again (visibility handler).
+     */
+    function startResultReadyTitleFlash() {
+      stopResultReadyTitleFlash();
+      _resultReadyNotified = true;
+      var tA = 'YOUR RESULT IS READY' + PAGE_TITLE_SUFFIX;
+      var tB = '\u25B6 YOUR RESULT IS READY' + PAGE_TITLE_SUFFIX;
+      var reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reducedMotion) {
+        document.title = tA;
+        return;
+      }
+      var phase = 0;
+      document.title = tA;
+      _resultReadyTitleTimer = window.setInterval(function() {
+        phase = 1 - phase;
+        document.title = phase ? tB : tA;
+      }, 700);
+    }
+
+    (function initResultReadyTitleVisibility() {
+      if (typeof document === 'undefined' || !document.addEventListener) {
+        return;
+      }
+      document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+          return;
+        }
+        if (_resultReadyTitleTimer != null) {
+          stopResultReadyTitleFlash();
+          document.title = _loadingTitleRestore;
+          return;
+        }
+        if (_resultReadyNotified) {
+          _resultReadyNotified = false;
+          document.title = _loadingTitleRestore;
+        }
+      });
+    })();
 
     function stopLoadingTitleAnimation() {
       if (_loadingTitleTimer != null) {
         window.clearInterval(_loadingTitleTimer);
         _loadingTitleTimer = null;
       }
+      stopResultReadyTitleFlash();
       document.title = _loadingTitleRestore;
       stopLoadingSnakeGame();
+    }
+
+    /**
+     * Called from /results fetch finally: stop loading art; if the response was good and the tab
+     * is hidden, flash \"YOUR RESULT IS READY\" until the user focuses this tab.
+     */
+    function completeResultsPageTitle(loadSucceeded) {
+      if (_loadingTitleTimer != null) {
+        window.clearInterval(_loadingTitleTimer);
+        _loadingTitleTimer = null;
+      }
+      stopLoadingSnakeGame();
+      stopResultReadyTitleFlash();
+      if (loadSucceeded && typeof document !== 'undefined' && document.hidden) {
+        startResultReadyTitleFlash();
+      } else {
+        document.title = _loadingTitleRestore;
+      }
     }
 
     /** Optional mini-game in place of loading dots; torn down when loading finishes (see ``stopLoadingTitleAnimation``). */
@@ -6407,6 +6509,7 @@
         stopLoadingTitleAnimation();
         return;
       }
+      var resultsLoadSucceeded = false;
       fetch(apiUrl)
         .then(function(r) {
           return r.text().then(function(text) {
@@ -6457,6 +6560,7 @@
             resultsContent.innerHTML = '<span class="error">' + escapeHtml(data.error) + '</span>' + requestTimingFooter(ms);
             return;
           }
+          resultsLoadSucceeded = true;
           if (mode === 'chat') {
             if (data && data.leaderboard) {
               renderChatLeaderboard(resultsContent, data, params.get('word'), ms);
@@ -6497,12 +6601,13 @@
           }
         })
         .catch(function(err) {
+          resultsLoadSucceeded = false;
           var ms = performance.now() - t0;
           var msg = err && err.message ? String(err.message) : 'Request failed.';
           resultsContent.innerHTML = '<span class="error">' + escapeHtml(msg) + '</span>' + requestTimingFooter(ms);
         })
         .finally(function() {
-          stopLoadingTitleAnimation();
+          completeResultsPageTitle(resultsLoadSucceeded);
         });
     })();
   </script>
