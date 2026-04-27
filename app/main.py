@@ -1,5 +1,6 @@
 """Tf2LogSearcher web application entry point."""
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -12,11 +13,42 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
-from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
+from starlette.responses import FileResponse, Response
+from starlette.staticfiles import NotModifiedResponse, StaticFiles
+from starlette.types import Scope
 
 from app.routes import router
 
 logger = logging.getLogger(__name__)
+
+
+def _set_static_file_headers(res: FileResponse) -> None:
+    """Unhashed URLs: revalidate (If-None-Match) on each load; 304 for unchanged files.
+
+    Each path under /static/ has its own ETag/Last-Modified (Starlette FileResponse).
+    Long max-age+immutable is only safe with content-addressed (hashed) filenames.
+    """
+    res.headers.setdefault("Cache-Control", "public, max-age=0, must-revalidate")
+    res.headers.setdefault("X-Content-Type-Options", "nosniff")
+
+
+class CachePolicyStaticFiles(StaticFiles):
+    """StaticFiles with explicit cache and MIME-sniffing policy."""
+
+    def file_response(
+        self,
+        full_path: str | os.PathLike[str],
+        stat_result: os.stat_result,
+        scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        request_headers = Headers(scope=scope)
+        response = FileResponse(full_path, status_code=status_code, stat_result=stat_result)
+        _set_static_file_headers(response)
+        if self.is_not_modified(response.headers, request_headers):
+            return NotModifiedResponse(response.headers)
+        return response
 
 
 def _is_transient_sqlite_contention(exc: BaseException) -> bool:
@@ -100,7 +132,7 @@ app.include_router(router)
 
 _static_dir = Path(__file__).resolve().parent.parent / "static"
 if _static_dir.is_dir():
-    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+    app.mount("/static", CachePolicyStaticFiles(directory=str(_static_dir)), name="static")
 
 
 @app.get("/health", response_class=PlainTextResponse)

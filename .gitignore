@@ -24,3 +24,4 @@ __pycache__/
 static/favicon.ico
 examples/
 .cursorrules
+.cursor/
