@@ -66,3 +66,19 @@ RAW_EVENTS_DB_PATH = Path(_str("RAW_EVENTS_DB_PATH", "./downloader_state/raw_eve
 # Feature flags
 DOWNLOAD_JSON_ENABLED = _str("DOWNLOAD_JSON_ENABLED", "1") == "1"
 DOWNLOAD_RAW_ENABLED = _str("DOWNLOAD_RAW_ENABLED", "1") == "1"
+
+# Storage stats visibility — disabled by default (set SHOW_STORAGE_STATS=1 to enable).
+# When off, /api/storage-stats returns {"enabled": false} and the frontend shows nothing.
+# Accept common truthy spellings (Compose and shells sometimes use true/yes).
+_SHOW_STORAGE_STATS_TRUTHY = frozenset({"1", "true", "yes", "on"})
+SHOW_STORAGE_STATS = _str("SHOW_STORAGE_STATS", "0").lower() in _SHOW_STORAGE_STATS_TRUTHY
+
+# Persistent JSON for /api/storage-stats (large LOGS_DIR scans). Default: next to downloader state.
+_STORAGE_CACHE_PATH_RAW = _str("STORAGE_STATS_CACHE_FILE", "").strip()
+STORAGE_STATS_CACHE_FILE = (
+    Path(_STORAGE_CACHE_PATH_RAW) if _STORAGE_CACHE_PATH_RAW else (DOWNLOADER_STATE_DIR / "storage_stats_cache.json")
+)
+# Short in-process TTL so we do not re-read the JSON file on every HTTP request.
+STORAGE_STATS_MEMORY_TTL_SEC = _int("STORAGE_STATS_MEMORY_TTL_SEC", 120)
+# If the on-disk snapshot is older than this, still serve it but enqueue a background rescan.
+STORAGE_STATS_RECOMPUTE_AFTER_SEC = _int("STORAGE_STATS_RECOMPUTE_AFTER_SEC", 21_600)

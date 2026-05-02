@@ -10,6 +10,7 @@ from typing import Any, Sequence
 
 from app.log_utils import team_score, winner_team_from_log as _winner_team_from_logtext
 from app.logs_tf import steamid3_to_steamid64
+from app import combined_logs as _combined_logs
 
 # Garbage / non-class strings sometimes seen in logs.tf class_stats (skip inserts).
 _BAD_CLASS_NAMES: frozenset[str] = frozenset({"", "undefined", "none"})
@@ -961,14 +962,14 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
 
 def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
     """
-    Full rebuild of ``player_stats_agg`` from ``log_players`` + ``logs`` (global unfiltered aggregates).
+    Full rebuild of ``player_stats_agg`` from ``log_players`` + ``logs``, excluding combined/merged logs.
     Run after schema upgrades or via ``python -m app.rebuild_agg``.
     """
     ts = int(time.time())
     with conn:
         conn.execute("DELETE FROM player_stats_agg")
         conn.execute(
-            """
+            f"""
             INSERT INTO player_stats_agg (
               steamid64, log_count, wins, decided_logs, avg_dpm, avg_kdr, avg_kadr,
               avg_deaths,
@@ -991,6 +992,7 @@ def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
               ?
             FROM logs l
             INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
+            WHERE 1=1{_combined_logs.stats_log_exclusion_sql("l")}
             GROUP BY lp.steamid64
             """,
             (ts,),
@@ -1026,6 +1028,8 @@ def _refresh_player_stats_agg_for_steamids_impl(
     uniq: list[str],
     ts: int,
 ) -> None:
+    # Combined log exclusion applied here must match rebuild_player_stats_agg.
+    # After deploying this change, run: python -m app.rebuild_agg
     sel_prefix = """
         SELECT
           lp.steamid64,
@@ -1045,8 +1049,9 @@ def _refresh_player_stats_agg_for_steamids_impl(
         INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
         WHERE lp.steamid64 IN (
     """
-    sel_suffix = """
-        )
+    _excl = _combined_logs.stats_log_exclusion_sql("l")
+    sel_suffix = f"""
+        ){_excl}
         GROUP BY lp.steamid64
     """
     upsert = """

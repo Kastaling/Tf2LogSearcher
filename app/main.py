@@ -9,7 +9,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Repo-root .env (directory of app/). In Docker, .env is usually not in the image — variables
+# must come from Compose/Kubernetes env_file / environment. Explicit path avoids relying on CWD.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse

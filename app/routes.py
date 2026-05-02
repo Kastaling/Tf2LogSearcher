@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import sqlite3
 import time
@@ -20,9 +21,13 @@ from app.config import (
     DOWNLOADER_STATE_DIR,
     LOGS_DIR,
     RAW_EVENTS_DB_PATH,
-    REQUEST_LOG_PATH,
+    RAW_LOGS_DIR,
+    SHOW_STORAGE_STATS,
     STATS_DB_PATH,
     STEAM_WEB_API_KEY,
+    STORAGE_STATS_CACHE_FILE,
+    STORAGE_STATS_MEMORY_TTL_SEC,
+    STORAGE_STATS_RECOMPUTE_AFTER_SEC,
 )
 from app.avatar_db import (
     connect_avatar_db,
@@ -214,6 +219,40 @@ def _client_ip(request: Request) -> str:
     if request.client:
         return str(request.client.host)
     return ""
+
+
+def _dir_size_bytes(path: Path) -> int | None:
+    """
+    Total bytes used by all files directly inside ``path`` (non-recursive, one level only).
+
+    Uses ``os.scandir`` for performance on large flat directories (e.g. LOGS_DIR with millions
+    of JSON files). Returns None if the path does not exist or is not a directory.
+    Non-recursive by design: LOGS_DIR and RAW_LOGS_DIR are flat (all files at the top level).
+    """
+    try:
+        if not path.is_dir():
+            return None
+        total = 0
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    pass
+        return total
+    except OSError:
+        return None
+
+
+def _file_size_bytes(path: Path) -> int | None:
+    """Size of a single file in bytes. Returns None if absent or not a regular file."""
+    try:
+        if not path.is_file():
+            return None
+        return path.stat().st_size
+    except OSError:
+        return None
 
 
 def _req_log_date_iso(d: date | None) -> str:
@@ -1288,6 +1327,60 @@ async def api_raw_events_stats():
 _STATS_INDEX_COUNTS_CACHE_TTL_SEC = 120.0
 _stats_index_counts_cache: dict[str, Any] = {"payload": None, "ts": 0.0}
 
+# Storage stats: small in-memory window + persistent disk snapshot; stale served while background rescans.
+_storage_stats_memory: dict[str, Any] = {"payload": None, "ts": 0.0}
+_storage_stats_bg_task: asyncio.Task[None] | None = None
+_storage_stats_cold_lock = asyncio.Lock()
+
+
+def _read_storage_stats_disk_sync(path: Path) -> tuple[dict[str, Any], float] | None:
+    """Load last payload and its timestamp. Returns None if missing or corrupt."""
+    try:
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        payload = data.get("payload")
+        computed_at = data.get("computed_at")
+        if not isinstance(payload, dict) or not isinstance(computed_at, (int, float)):
+            return None
+        if payload.get("enabled") is not True:
+            return None
+        return payload, float(computed_at)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _write_storage_stats_disk_sync(path: Path, payload: dict[str, Any]) -> None:
+    """Atomic replace: downloader/web only; no secrets in payload."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    envelope = {"computed_at": time.time(), "payload": payload}
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(envelope, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _schedule_storage_stats_background_refresh() -> None:
+    global _storage_stats_bg_task
+    t = _storage_stats_bg_task
+    if t is not None and not t.done():
+        return
+
+    async def _runner() -> None:
+        global _storage_stats_bg_task
+        try:
+            pl = await asyncio.to_thread(_compute_storage_stats)
+            await asyncio.to_thread(_write_storage_stats_disk_sync, STORAGE_STATS_CACHE_FILE, pl)
+            _storage_stats_memory["payload"] = pl
+            _storage_stats_memory["ts"] = time.time()
+        except Exception:
+            logger.exception("Background storage stats refresh failed")
+        finally:
+            _storage_stats_bg_task = None
+
+    _storage_stats_bg_task = asyncio.create_task(_runner())
+
 
 @router.get("/api/stats-index-counts")
 async def api_stats_index_counts():
@@ -1304,6 +1397,87 @@ async def api_stats_index_counts():
     _stats_index_counts_cache["payload"] = payload
     _stats_index_counts_cache["ts"] = now
     return JSONResponse(payload)
+
+
+def _compute_storage_stats() -> dict[str, Any]:
+    """
+    Synchronous worker for api_storage_stats — runs in asyncio.to_thread.
+    Measures all paths known to config.
+    """
+    json_logs = _dir_size_bytes(LOGS_DIR)
+    raw_logs = _dir_size_bytes(RAW_LOGS_DIR) if DOWNLOAD_RAW_ENABLED else None
+
+    stats_db = _file_size_bytes(Path(STATS_DB_PATH))
+    chat_db = _file_size_bytes(Path(CHAT_DB_PATH))
+    raw_db = _file_size_bytes(Path(RAW_EVENTS_DB_PATH)) if DOWNLOAD_RAW_ENABLED else None
+    avatar_db = _file_size_bytes(Path(AVATAR_DB_PATH))
+
+    db_files: dict[str, int | None] = {
+        "stats_db": stats_db,
+        "chat_db": chat_db,
+        "raw_events_db": raw_db,
+        "avatar_db": avatar_db,
+    }
+    db_total = sum(v for v in db_files.values() if v is not None) or None
+
+    components = [json_logs, raw_logs, db_total]
+    grand_total = sum(v for v in components if v is not None) or None
+
+    return {
+        "enabled": True,
+        "download_raw_enabled": DOWNLOAD_RAW_ENABLED,
+        "json_logs_bytes": json_logs,
+        "raw_logs_bytes": raw_logs,
+        "db_files": db_files,
+        "db_total_bytes": db_total,
+        "total_bytes": grand_total,
+    }
+
+
+@router.get("/api/storage-stats")
+async def api_storage_stats():
+    """
+    Disk space used by logs, raw zips, and DB files.
+    Returns {"enabled": false} when SHOW_STORAGE_STATS is off.
+
+    Serves a small persistent JSON snapshot immediately when present; rescans run in a
+    background task when the snapshot is older than STORAGE_STATS_RECOMPUTE_AFTER_SEC.
+    Cold start (no snapshot): one synchronous fill via worker thread, then future requests
+    stay fast. Not logged to request CSV.
+    """
+    if not SHOW_STORAGE_STATS:
+        return JSONResponse({"enabled": False})
+
+    now = time.time()
+    mem_ts = float(_storage_stats_memory["ts"])
+    mem_pl = _storage_stats_memory["payload"]
+    if mem_pl is not None and mem_ts > 0 and (now - mem_ts) < float(STORAGE_STATS_MEMORY_TTL_SEC):
+        return JSONResponse(mem_pl)
+
+    path = STORAGE_STATS_CACHE_FILE
+    disk = _read_storage_stats_disk_sync(path)
+    if disk is not None:
+        payload, computed_at = disk
+        _storage_stats_memory["payload"] = payload
+        _storage_stats_memory["ts"] = now
+        if now - computed_at >= float(STORAGE_STATS_RECOMPUTE_AFTER_SEC):
+            _schedule_storage_stats_background_refresh()
+        return JSONResponse(payload)
+
+    async with _storage_stats_cold_lock:
+        disk2 = _read_storage_stats_disk_sync(path)
+        if disk2 is not None:
+            payload, computed_at = disk2
+            _storage_stats_memory["payload"] = payload
+            _storage_stats_memory["ts"] = now
+            if now - computed_at >= float(STORAGE_STATS_RECOMPUTE_AFTER_SEC):
+                _schedule_storage_stats_background_refresh()
+            return JSONResponse(payload)
+        payload = await asyncio.to_thread(_compute_storage_stats)
+        await asyncio.to_thread(_write_storage_stats_disk_sync, path, payload)
+        _storage_stats_memory["payload"] = payload
+        _storage_stats_memory["ts"] = now
+        return JSONResponse(payload)
 
 
 def _static_path(name: str) -> Path:
@@ -1993,7 +2167,7 @@ async def _serve_results_with_embed(request: Request) -> HTMLResponse:
                 raw = raw.replace("<head>", "<head>" + meta, 1)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/results", 200, duration_ms)
-        return HTMLResponse(raw, media_type="text/html")
+        return HTMLResponse(raw, media_type="text/html", headers={"Cache-Control": "no-cache"})
     except Exception:
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/results", 500, duration_ms)
@@ -2008,7 +2182,11 @@ async def _serve_index(request: Request, path: str):
         if static_path.exists():
             duration_ms = int((time.perf_counter() - start) * 1000)
             _log_request(request, path, 200, duration_ms)
-            return FileResponse(static_path, media_type="text/html")
+            return FileResponse(
+                static_path,
+                media_type="text/html",
+                headers={"Cache-Control": "no-cache"},
+            )
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, path, 200, duration_ms)
         return HTMLResponse("<html><body><h1>Tf2LogSearcher</h1><p>ok</p></body></html>")

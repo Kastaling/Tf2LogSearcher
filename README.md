@@ -159,6 +159,7 @@ See `.env.example` for all options. Important ones:
 - `RAW_LOGS_DIR` — directory for `log_<id>.log.zip` files (stored compressed; parsing reads zips in memory).
 - `RAW_EVENTS_DB_PATH` — SQLite DB for position-related events from raw logs (kills with XYZ, uber deploys/charge ends, per-capper caps, spawns, round markers).
 - `DOWNLOAD_JSON_ENABLED` / `DOWNLOAD_RAW_ENABLED` — set to `0` to disable that download path independently (default `1` for both).
+- `SHOW_STORAGE_STATS` — set to `1` to show disk space utilization (JSON logs, raw zips, DB files, total) in the Log Library panel. Defaults to `0` (hidden). Disable if running a public instance and storage details are sensitive. `true` / `yes` / `on` are also accepted (case-insensitive). With Docker Compose, pass the variable into the **`web` service** (see `docker-compose.example.yml`: `env_file: .env` and/or `SHOW_STORAGE_STATS=${SHOW_STORAGE_STATS:-0}` in `environment`), then **recreate/restart** the web container so the process picks up the change. Results are cached under `DOWNLOADER_STATE_DIR` as `storage_stats_cache.json` (override with `STORAGE_STATS_CACHE_FILE`); the API returns that snapshot immediately and refreshes it in the **background** when it is older than `STORAGE_STATS_RECOMPUTE_AFTER_SEC` (default 6h). Tunables: `STORAGE_STATS_MEMORY_TTL_SEC` (default 120).
 
 Raw zips are typically **much larger** than JSON for the same match (often on the order of **5–20×**); plan disk space accordingly.
 

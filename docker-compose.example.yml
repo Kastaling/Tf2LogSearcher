@@ -27,6 +27,8 @@ services:
       - RAW_LOGS_DIR=/app/raw_logs
       - RAW_EVENTS_DB_PATH=/app/downloader_state/raw_events.db
       - STEAM_WEB_API_KEY=${STEAM_WEB_API_KEY}
+      # Log Library disk-usage panel (host .env / shell; default 0). Omit if you rely on env_file only.
+      - SHOW_STORAGE_STATS=${SHOW_STORAGE_STATS:-0}
     volumes:
       - ./logs:/app/logs
       - ./downloader_state:/app/downloader_state

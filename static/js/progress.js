@@ -1,5 +1,22 @@
 const PROGRESS_POLL_MS = 5 * 60 * 1000;
 
+// Monotonic id so stale /api/storage-stats responses cannot wipe a newer "Storage" shell
+// after renderProgress() rebuilds the Log Library DOM (progress poll).
+let _storageStatsRequestId = 0;
+
+function fmtBytes(bytes) {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return '\u2014';
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = bytes;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return (i === 0 ? v.toFixed(0) : v.toFixed(2)) + '\u00a0' + units[i];
+}
+
 function appendProgressRow(tbody, label, valueText) {
   const tr = document.createElement('tr');
   const th = document.createElement('th');
@@ -86,6 +103,7 @@ function appendIndexedPlaceholderRow(tbody, rowId, extraClass, label) {
 
 function buildIndexedLibrariesTbody() {
   const tbody = document.createElement('tbody');
+  tbody.id = 'downloadProgressIndexedLibrariesTbody';
   appendIndexedPlaceholderRow(tbody, 'downloadProgressChatRow', 'download-progress-chat-row', 'Indexed chat lines (chat.db)');
   appendIndexedPlaceholderRow(tbody, 'downloadProgressRawLogsRow', 'download-progress-row--raw', 'Raw logs indexed (raw_events.db)');
   appendIndexedPlaceholderRow(tbody, 'downloadProgressRawKillsRow', 'download-progress-row--raw', 'Kill events indexed (raw_logs)');
@@ -189,10 +207,157 @@ function fetchStatsIndexCountsAndPatch() {
     });
 }
 
+function jsonLogsDir() {
+  return 'logs/';
+}
+
+function _storageStatsShellForRequest(reqId) {
+  const el = document.getElementById('downloadProgressStorageBlock');
+  if (!el || !el.isConnected) return null;
+  if (el.getAttribute('data-storage-req-id') !== String(reqId)) return null;
+  return el;
+}
+
+function _showStorageStatsLoadError(el) {
+  const lw = el.querySelector('.download-progress-storage-loading');
+  if (!lw) return;
+  const st = lw.querySelector('.loading-state');
+  if (!st) return;
+  st.setAttribute('aria-busy', 'false');
+  const dots = st.querySelector('.loading-dots');
+  if (dots) dots.remove();
+  const lbl = st.querySelector('.loading-label');
+  if (lbl) lbl.textContent = 'Could not load storage sizes';
+  if (st.querySelector('.download-progress-storage-error-hint')) return;
+  const hint = document.createElement('span');
+  hint.className = 'download-progress-storage-error-hint';
+  hint.textContent = '\u00a0Will retry when log progress refreshes.';
+  st.appendChild(hint);
+}
+
+function _fillStorageStatsTableIntoShell(el, d) {
+  const lw = el.querySelector('.download-progress-storage-loading');
+  if (lw) lw.remove();
+
+  const tbl = document.createElement('table');
+  tbl.className = 'download-progress-stats download-progress-stats--storage download-progress-storage-reveal';
+  const tbody = document.createElement('tbody');
+
+  if (d.json_logs_bytes != null) {
+    appendProgressRow(tbody, 'JSON logs (' + jsonLogsDir() + ')', fmtBytes(d.json_logs_bytes));
+  }
+  if (d.download_raw_enabled && d.raw_logs_bytes != null) {
+    appendProgressRow(tbody, 'Raw log zips', fmtBytes(d.raw_logs_bytes));
+  }
+  const dbLabels = {
+    stats_db: 'stats.db',
+    chat_db: 'chat.db',
+    raw_events_db: 'raw_events.db',
+    avatar_db: 'avatars.db',
+  };
+  const dbFiles = d.db_files || {};
+  let anyDb = false;
+  Object.keys(dbLabels).forEach(function(key) {
+    if (key === 'raw_events_db' && !d.download_raw_enabled) return;
+    const v = dbFiles[key];
+    if (v == null) return;
+    appendProgressRow(tbody, dbLabels[key], fmtBytes(v));
+    anyDb = true;
+  });
+  if (anyDb && d.db_total_bytes != null) {
+    appendProgressRow(tbody, 'DBs total', fmtBytes(d.db_total_bytes));
+  }
+  if (d.total_bytes != null) {
+    const trDiv = document.createElement('tr');
+    trDiv.className = 'download-progress-storage-total-row';
+    const thDiv = document.createElement('th');
+    thDiv.colSpan = 2;
+    thDiv.className = 'download-progress-storage-divider';
+    trDiv.appendChild(thDiv);
+    tbody.appendChild(trDiv);
+    appendProgressRow(tbody, 'Total storage', fmtBytes(d.total_bytes));
+    const lastTr = tbody.querySelector('tr:last-child');
+    if (lastTr) lastTr.classList.add('download-progress-storage-grand-total');
+  }
+
+  tbl.appendChild(tbody);
+  el.appendChild(tbl);
+}
+
+function fetchStorageStatsAndPatch() {
+  const anchor = document.getElementById('downloadProgressIndexedLibrariesTbody');
+  if (!anchor) return;
+  const block = anchor.closest('.download-progress-stats-block');
+  if (!block) return;
+  const board = block.parentNode;
+  if (!board) return;
+
+  const existing = document.getElementById('downloadProgressStorageBlock');
+  if (existing) existing.remove();
+
+  const reqId = ++_storageStatsRequestId;
+  const shell = document.createElement('div');
+  shell.className = 'download-progress-stats-block download-progress-stats-block--storage';
+  shell.id = 'downloadProgressStorageBlock';
+  shell.setAttribute('data-storage-req-id', String(reqId));
+
+  const storageTitle = document.createElement('div');
+  storageTitle.className = 'download-progress-stats-block-title';
+  storageTitle.textContent = 'Storage utilization';
+  shell.appendChild(storageTitle);
+
+  const loadingWrap = document.createElement('div');
+  loadingWrap.className = 'download-progress-storage-loading';
+  const loadingState = document.createElement('div');
+  loadingState.className = 'loading-state';
+  loadingState.setAttribute('role', 'status');
+  loadingState.setAttribute('aria-live', 'polite');
+  loadingState.setAttribute('aria-busy', 'true');
+  const loadingLabel = document.createElement('span');
+  loadingLabel.className = 'loading-label';
+  loadingLabel.textContent = 'Measuring disk usage';
+  const dots = document.createElement('span');
+  dots.className = 'loading-dots';
+  dots.setAttribute('aria-hidden', 'true');
+  for (let i = 0; i < 3; i++) {
+    const dot = document.createElement('span');
+    dot.textContent = '.';
+    dots.appendChild(dot);
+  }
+  loadingState.appendChild(loadingLabel);
+  loadingState.appendChild(dots);
+  loadingWrap.appendChild(loadingState);
+  shell.appendChild(loadingWrap);
+
+  board.insertBefore(shell, block.nextSibling);
+
+  fetch('/api/storage-stats')
+    .then(function(res) { return res.ok ? res.json() : Promise.resolve(null); })
+    .then(function(d) {
+      const el = _storageStatsShellForRequest(reqId);
+      if (!el) return;
+      if (d && d.enabled === false) {
+        el.remove();
+        return;
+      }
+      if (!d || d.enabled !== true) {
+        _showStorageStatsLoadError(el);
+        return;
+      }
+      _fillStorageStatsTableIntoShell(el, d);
+    })
+    .catch(function() {
+      const el = _storageStatsShellForRequest(reqId);
+      if (!el) return;
+      _showStorageStatsLoadError(el);
+    });
+}
+
 function fetchIndexedLibraryStatsAndPatch() {
   fetchChatMessageCountAndPatch();
   fetchRawEventsStatsAndPatch();
   fetchStatsIndexCountsAndPatch();
+  fetchStorageStatsAndPatch();
 }
 
 function renderProgress(data) {
