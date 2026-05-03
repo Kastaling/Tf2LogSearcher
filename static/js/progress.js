@@ -17,8 +17,48 @@ function fmtBytes(bytes) {
   return (i === 0 ? v.toFixed(0) : v.toFixed(2)) + '\u00a0' + units[i];
 }
 
-function appendProgressRow(tbody, label, valueText) {
+/** Average size per file; empty string if undefined or count is zero. */
+function fmtAvgBytesPerFile(totalBytes, fileCount) {
+  if (fileCount == null || typeof fileCount !== 'number' || !Number.isFinite(fileCount) || fileCount <= 0) {
+    return '';
+  }
+  if (totalBytes == null || !Number.isFinite(totalBytes) || totalBytes < 0) {
+    return '';
+  }
+  var avg = totalBytes / fileCount;
+  if (!Number.isFinite(avg) || avg < 0) {
+    return '';
+  }
+  if (avg === 0) {
+    return '(0\u00a0B/file)';
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  var i = 0;
+  var v = avg;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  var decimals = i === 0 ? 0 : 2;
+  return '(' + v.toFixed(decimals) + '\u00a0' + units[i] + '/file)';
+}
+
+function fmtStorageDirRow(bytes, fileCount) {
+  var sz = fmtBytes(bytes);
+  if (fileCount != null && typeof fileCount === 'number' && Number.isFinite(fileCount) && fileCount >= 0) {
+    var avgPart = fmtAvgBytesPerFile(bytes, fileCount);
+    var line = sz + ' \u00b7 ' + fmtProgressNum(fileCount) + ' files';
+    if (avgPart) {
+      line += ' ' + avgPart;
+    }
+    return line;
+  }
+  return sz;
+}
+
+function appendProgressRow(tbody, label, valueText, trClass) {
   const tr = document.createElement('tr');
+  if (trClass) tr.className = trClass;
   const th = document.createElement('th');
   th.scope = 'row';
   th.textContent = label;
@@ -27,6 +67,17 @@ function appendProgressRow(tbody, label, valueText) {
   td.textContent = valueText;
   tr.appendChild(th);
   tr.appendChild(td);
+  tbody.appendChild(tr);
+}
+
+function appendStorageSectionSpacer(tbody) {
+  const tr = document.createElement('tr');
+  tr.className = 'download-progress-storage-section-spacer';
+  tr.setAttribute('role', 'presentation');
+  const th = document.createElement('th');
+  th.colSpan = 2;
+  th.className = 'download-progress-storage-section-spacer-cell';
+  tr.appendChild(th);
   tbody.appendChild(tr);
 }
 
@@ -105,7 +156,12 @@ function buildIndexedLibrariesTbody() {
   const tbody = document.createElement('tbody');
   tbody.id = 'downloadProgressIndexedLibrariesTbody';
   appendIndexedPlaceholderRow(tbody, 'downloadProgressChatRow', 'download-progress-chat-row', 'Indexed chat lines (chat.db)');
-  appendIndexedPlaceholderRow(tbody, 'downloadProgressRawLogsRow', 'download-progress-row--raw', 'Raw logs indexed (raw_events.db)');
+  appendIndexedPlaceholderRow(
+    tbody,
+    'downloadProgressRawLogsRow',
+    'download-progress-row--raw',
+    'Logs indexed into raw_events.db (kills, ubers, caps, spawns, rounds)',
+  );
   appendIndexedPlaceholderRow(tbody, 'downloadProgressRawKillsRow', 'download-progress-row--raw', 'Kill events indexed (raw_logs)');
   appendIndexedPlaceholderRow(tbody, 'downloadProgressLogPlayersRow', '', 'Stats DB rows (log_players)');
   appendIndexedPlaceholderRow(tbody, 'downloadProgressLeaderboardRow', '', 'Leaderboard players (player_stats_agg)');
@@ -243,12 +299,29 @@ function _fillStorageStatsTableIntoShell(el, d) {
   tbl.className = 'download-progress-stats download-progress-stats--storage download-progress-storage-reveal';
   const tbody = document.createElement('tbody');
 
+  const dirBytes = [];
   if (d.json_logs_bytes != null) {
-    appendProgressRow(tbody, 'JSON logs (' + jsonLogsDir() + ')', fmtBytes(d.json_logs_bytes));
+    appendProgressRow(
+      tbody,
+      'JSON log files (' + jsonLogsDir() + ')',
+      fmtStorageDirRow(d.json_logs_bytes, d.json_log_files_count),
+    );
+    dirBytes.push(d.json_logs_bytes);
   }
   if (d.download_raw_enabled && d.raw_logs_bytes != null) {
-    appendProgressRow(tbody, 'Raw log zips', fmtBytes(d.raw_logs_bytes));
+    appendProgressRow(
+      tbody,
+      'Raw log files (raw_logs/)',
+      fmtStorageDirRow(d.raw_logs_bytes, d.raw_log_files_count),
+    );
+    dirBytes.push(d.raw_logs_bytes);
   }
+  const hasDirSection = dirBytes.length > 0;
+  if (hasDirSection) {
+    const dirsTotal = dirBytes.reduce(function(a, b) { return a + b; }, 0);
+    appendProgressRow(tbody, 'Directories total', fmtBytes(dirsTotal), 'download-progress-storage-subtotal');
+  }
+
   const dbLabels = {
     stats_db: 'stats.db',
     chat_db: 'chat.db',
@@ -256,16 +329,24 @@ function _fillStorageStatsTableIntoShell(el, d) {
     avatar_db: 'avatars.db',
   };
   const dbFiles = d.db_files || {};
-  let anyDb = false;
+  const dbRows = [];
   Object.keys(dbLabels).forEach(function(key) {
     if (key === 'raw_events_db' && !d.download_raw_enabled) return;
     const v = dbFiles[key];
     if (v == null) return;
-    appendProgressRow(tbody, dbLabels[key], fmtBytes(v));
-    anyDb = true;
+    dbRows.push({ label: dbLabels[key], v: v });
+  });
+  const anyDb = dbRows.length > 0;
+
+  if (hasDirSection && (anyDb || (d.total_bytes != null))) {
+    appendStorageSectionSpacer(tbody);
+  }
+
+  dbRows.forEach(function(row) {
+    appendProgressRow(tbody, row.label, fmtBytes(row.v));
   });
   if (anyDb && d.db_total_bytes != null) {
-    appendProgressRow(tbody, 'DBs total', fmtBytes(d.db_total_bytes));
+    appendProgressRow(tbody, 'DBs total', fmtBytes(d.db_total_bytes), 'download-progress-storage-subtotal');
   }
   if (d.total_bytes != null) {
     const trDiv = document.createElement('tr');

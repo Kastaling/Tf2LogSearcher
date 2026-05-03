@@ -321,6 +321,7 @@
       max-width: 28rem;
     }
     .download-progress-stats-board--indexed-only .download-progress-stats-block {
+      min-width: min(100%, 19rem);
       max-width: min(100%, 36rem);
     }
     .download-progress-stats-block-title {
@@ -374,25 +375,36 @@
       table-layout: fixed;
     }
     .download-progress-stats th {
-      padding: 0.55rem 0.85rem 0.55rem 0.75rem;
+      box-sizing: border-box;
+      padding: 0.55rem 0.85rem 0.88rem 0.75rem;
       color: var(--text-muted);
       font-weight: 600;
-      width: 38%;
-      max-width: 14rem;
-      vertical-align: middle;
+      width: 42%;
+      min-width: 0;
+      max-width: none;
+      line-height: 1.5;
+      vertical-align: top;
       text-align: right;
+      word-break: break-word;
+      overflow-wrap: anywhere;
       border-bottom: 1px solid var(--progress-border);
       background: var(--accent-bg);
     }
     .download-progress-stats td {
-      padding: 0.55rem 0.5rem 0.55rem 0.85rem;
+      box-sizing: border-box;
+      padding: 0.55rem 0.5rem 0.82rem 0.85rem;
       color: var(--text);
       font-weight: 600;
       font-size: 1.05rem;
+      line-height: 1.5;
       word-break: break-word;
-      vertical-align: middle;
+      vertical-align: top;
       text-align: left;
       border-bottom: 1px solid var(--progress-border);
+    }
+    .download-progress-stats tbody tr:last-child th,
+    .download-progress-stats tbody tr:last-child td {
+      padding-bottom: 0.95rem;
     }
     .download-progress-stats .download-progress-value {
       font-variant-numeric: tabular-nums;
@@ -410,6 +422,24 @@
     }
     .download-progress-stats-block--storage {
       margin-top: 1rem;
+    }
+    .download-progress-stats--storage .download-progress-storage-subtotal th,
+    .download-progress-stats--storage .download-progress-storage-subtotal td {
+      border-top: 1px solid var(--progress-border);
+      padding-top: 0.62rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .download-progress-stats--storage tr.download-progress-storage-section-spacer .download-progress-storage-section-spacer-cell {
+      padding: 0.45rem 0 0.15rem;
+      border-left: none;
+      border-right: none;
+      border-bottom: none;
+      border-top: 1px solid var(--border);
+      background: transparent;
+      height: auto;
+      line-height: 0;
+      vertical-align: middle;
     }
     .download-progress-storage-loading {
       margin-top: 0.35rem;
@@ -456,13 +486,24 @@
         font-size: 0.92rem;
       }
       .download-progress-stats th {
-        width: 44%;
-        padding: 0.45rem 0.5rem 0.45rem 0.4rem;
+        width: 48%;
+        padding: 0.45rem 0.45rem 0.82rem 0.35rem;
         font-size: 0.88rem;
+        line-height: 1.5;
+        vertical-align: top;
+        min-width: 0;
+        word-break: break-word;
+        overflow-wrap: anywhere;
       }
       .download-progress-stats td {
-        padding: 0.45rem 0.35rem 0.45rem 0.5rem;
+        padding: 0.45rem 0.35rem 0.78rem 0.5rem;
         font-size: 0.95rem;
+        line-height: 1.5;
+        vertical-align: top;
+      }
+      .download-progress-stats tbody tr:last-child th,
+      .download-progress-stats tbody tr:last-child td {
+        padding-bottom: 0.9rem;
       }
       .download-progress-pct-label {
         font-size: 0.98rem;

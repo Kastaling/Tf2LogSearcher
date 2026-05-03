@@ -221,6 +221,31 @@ def _client_ip(request: Request) -> str:
     return ""
 
 
+def _dir_flat_file_stats(path: Path) -> tuple[int | None, int | None]:
+    """
+    For a single directory level only: total bytes and file count of regular files.
+
+    One ``os.scandir`` pass (same cost class as size-only). Symlinks are not followed.
+    Returns (None, None) if the path is missing or not a directory.
+    """
+    try:
+        if not path.is_dir():
+            return (None, None)
+        total = 0
+        nfiles = 0
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                        nfiles += 1
+                except OSError:
+                    pass
+        return (total, nfiles)
+    except OSError:
+        return (None, None)
+
+
 def _dir_size_bytes(path: Path) -> int | None:
     """
     Total bytes used by all files directly inside ``path`` (non-recursive, one level only).
@@ -229,20 +254,8 @@ def _dir_size_bytes(path: Path) -> int | None:
     of JSON files). Returns None if the path does not exist or is not a directory.
     Non-recursive by design: LOGS_DIR and RAW_LOGS_DIR are flat (all files at the top level).
     """
-    try:
-        if not path.is_dir():
-            return None
-        total = 0
-        with os.scandir(path) as it:
-            for entry in it:
-                try:
-                    if entry.is_file(follow_symlinks=False):
-                        total += entry.stat(follow_symlinks=False).st_size
-                except OSError:
-                    pass
-        return total
-    except OSError:
-        return None
+    b, _ = _dir_flat_file_stats(path)
+    return b
 
 
 def _file_size_bytes(path: Path) -> int | None:
@@ -1404,8 +1417,14 @@ def _compute_storage_stats() -> dict[str, Any]:
     Synchronous worker for api_storage_stats — runs in asyncio.to_thread.
     Measures all paths known to config.
     """
-    json_logs = _dir_size_bytes(LOGS_DIR)
-    raw_logs = _dir_size_bytes(RAW_LOGS_DIR) if DOWNLOAD_RAW_ENABLED else None
+    json_logs: int | None
+    json_log_files_count: int | None
+    json_logs, json_log_files_count = _dir_flat_file_stats(LOGS_DIR)
+
+    raw_logs: int | None = None
+    raw_log_files_count: int | None = None
+    if DOWNLOAD_RAW_ENABLED:
+        raw_logs, raw_log_files_count = _dir_flat_file_stats(RAW_LOGS_DIR)
 
     stats_db = _file_size_bytes(Path(STATS_DB_PATH))
     chat_db = _file_size_bytes(Path(CHAT_DB_PATH))
@@ -1427,7 +1446,9 @@ def _compute_storage_stats() -> dict[str, Any]:
         "enabled": True,
         "download_raw_enabled": DOWNLOAD_RAW_ENABLED,
         "json_logs_bytes": json_logs,
+        "json_log_files_count": json_log_files_count,
         "raw_logs_bytes": raw_logs,
+        "raw_log_files_count": raw_log_files_count,
         "db_files": db_files,
         "db_total_bytes": db_total,
         "total_bytes": grand_total,
