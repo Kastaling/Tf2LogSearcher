@@ -1,0 +1,15 @@
+{
+  "name": "tf2logsearcher-js-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test:coverage": "node --experimental-vm-modules node_modules/.bin/jest --coverage"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/tests/js/**/*.test.js"]
+  }
+}

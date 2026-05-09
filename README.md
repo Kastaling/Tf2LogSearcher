@@ -48,6 +48,15 @@ pip install -r requirements.txt
 python -m pytest -v tests
 ```
 
+### JavaScript tests (Jest)
+
+```bash
+npm install          # first time only
+npm test             # runs tests/js/*.test.js
+```
+
+Requires Node.js 18+. Tests cover the pure functions in `static/js/layout-share.js` (encoding, decoding, import/export, cookie round-trips, URL param consumption) using a lightweight VM-based mock — no browser or jsdom required.
+
 ### Understanding the output
 
 - **Header** — pytest version, Python version, and `rootdir` (should list `tests` discovery from `pytest.ini`).

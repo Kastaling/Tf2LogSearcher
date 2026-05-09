@@ -317,7 +317,7 @@ function _fillStorageStatsTableIntoShell(el, d) {
     dirBytes.push(d.raw_logs_bytes);
   }
   const hasDirSection = dirBytes.length > 0;
-  if (hasDirSection) {
+  if (dirBytes.length > 1) {
     const dirsTotal = dirBytes.reduce(function(a, b) { return a + b; }, 0);
     appendProgressRow(tbody, 'Directories total', fmtBytes(dirsTotal), 'download-progress-storage-subtotal');
   }

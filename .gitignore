@@ -25,3 +25,4 @@ static/favicon.ico
 examples/
 .cursorrules
 .cursor/
+node_modules/
