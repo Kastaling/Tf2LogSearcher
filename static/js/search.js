@@ -514,7 +514,9 @@ function restoreHomeForms() {
 (function initHomePageLayout() {
   var HOME_LAYOUT_COOKIE = 'tf2ls_home_layout_v1';
   var HOME_LAYOUT_COOKIE_MAX_AGE = 31536000;
-  var HOME_ENDPOINT_IDS = ['chat', 'profile', 'coplayers', 'logmatch', 'stats', 'leaderboard', 'playername', 'log_library'];
+  var HOME_ENDPOINT_IDS = window.TF2LS_HOME_ENDPOINT_IDS || [
+    'chat', 'profile', 'coplayers', 'logmatch', 'stats', 'leaderboard', 'playername', 'log_library'
+  ];
   var HOME_ENDPOINT_LABELS = {
     chat: 'Chat Searcher',
     logmatch: 'Multi-party Log Searcher',
@@ -705,6 +707,19 @@ function restoreHomeForms() {
     writeHomeLayoutSettings(cur);
     applyHomeEndpointOrder(stack, cur.order);
   });
+
+  var homeLayoutDetails = home.querySelector('.js-home-layout-settings');
+  if (window.tf2lsLayoutShare && homeLayoutDetails && !homeLayoutDetails._tf2lsLayoutShareBound) {
+    homeLayoutDetails._tf2lsLayoutShareBound = true;
+    window.tf2lsLayoutShare.bindPanel(homeLayoutDetails, {
+      afterApply: function() {
+        var s2 = readHomeLayoutSettings();
+        applyHomeEndpointOrder(stack, s2.order);
+        applyHomeEndpointVisibility(stack, s2.hidden);
+        rebuildHomeLayoutSortList(ul, s2);
+      },
+    });
+  }
 })();
 
 /** Tab title animation while /results API fetch runs (address bar text cannot be changed by script). */

@@ -941,6 +941,38 @@
     .profile-layout-settings-body {
       padding: 0.5rem 0.35rem 0;
     }
+    .layout-share-tools {
+      margin-top: 1rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+    }
+    .layout-share-text {
+      display: block;
+      width: 100%;
+      max-width: 42rem;
+      box-sizing: border-box;
+      font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+      font-size: 0.82rem;
+      line-height: 1.35;
+      padding: 0.45rem 0.5rem;
+      margin: 0.35rem 0 0;
+      border-radius: 6px;
+      border: 1px solid var(--border, rgba(255, 255, 255, 0.15));
+      background: rgba(0, 0, 0, 0.25);
+      color: inherit;
+      resize: none;
+      min-height: 5.5rem;
+    }
+    .layout-share-actions {
+      margin: 0.5rem 0 0;
+    }
+    .layout-share-actions button {
+      margin-right: 0.35rem;
+      margin-bottom: 0.35rem;
+    }
+    .layout-share-status--error {
+      color: var(--error-color, #c62828);
+    }
     .profile-layout-collapse-opt {
       display: flex;
       align-items: flex-start;

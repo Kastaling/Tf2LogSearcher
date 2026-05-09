@@ -51,6 +51,28 @@ REQUEST_LOG_PATH = Path(_str("REQUEST_LOG_PATH", "/data/request_logs/request_log
 # Chat SQLite database file (populated by downloader and backfill script)
 CHAT_DB_PATH = Path(_str("CHAT_DB_PATH", "/data/chat/chat.db"))
 
+
+def _optional_positive_int(name: str) -> int | None:
+    """Unset or empty env → None. Positive int → cap. Invalid or non-positive → None (logged)."""
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r — using unlimited chat result rows", name, raw)
+        return None
+    if n <= 0:
+        logger.warning("%s must be positive (got %s) — using unlimited chat result rows", name, n)
+        return None
+    return n
+
+
+# Optional hard cap on chat search hits when a Steam ID is set (per-search row limit).
+# Unset = no limit (full history for the filters you chose; UI lazy-loads rendering).
+# Set on public instances if you need to bound worst-case memory/time (e.g. 50000).
+CHAT_SEARCH_MAX_RESULTS_STEAMID = _optional_positive_int("CHAT_SEARCH_MAX_RESULTS_STEAMID")
+
 # Avatar URL cache (Steam Web API; separate SQLite file)
 AVATAR_DB_PATH = Path(_str("AVATAR_DB_PATH", "./downloader_state/avatars.db"))
 

@@ -10,7 +10,7 @@ from typing import Any
 
 from app import combined_logs
 from app.chat_db import CHAT_ALIAS_FTS_READY_META_KEY
-from app.config import CHAT_DB_PATH, STATS_DB_PATH
+from app.config import CHAT_DB_PATH, CHAT_SEARCH_MAX_RESULTS_STEAMID, STATS_DB_PATH
 from app.log_utils import winner_team_from_log as _winner_team_from_log
 from app.stats_db import player_stats_agg_nonempty, stats_log_ids_for_player
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
@@ -234,8 +234,6 @@ def _class_playtime_for_logmatch(stats: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"class": a, "seconds": b} for a, b in pairs]
 
 
-# Limits to prevent runaway queries and huge responses
-CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID = 5000   # when showing one player's chat (with or without word filter)
 CHAT_CONTEXT_PREVIEW_MAX_CHARS = 220
 CHAT_SEARCH_LEADERBOARD_MAX_ROWS = 500
 
@@ -516,14 +514,21 @@ def chat_search_sqlite(
          AND n.message_idx = cm.message_idx + 1
     """
 
-    where_tail = """
+    order_limit = """
+        ORDER BY cm.log_id DESC, cm.message_idx ASC
+    """
+    if CHAT_SEARCH_MAX_RESULTS_STEAMID is not None:
+        order_limit += "        LIMIT ?\n"
+
+    where_tail = (
+        """
         WHERE cm.steamid3 = ?
           AND (? IS NULL OR cl.log_date_ts >= ?)
           AND (? IS NULL OR cl.log_date_ts <= ?)
           AND (? = '' OR instr(lower(cl.map), ?) > 0)
-        ORDER BY cm.log_id DESC, cm.message_idx ASC
-        LIMIT ?
     """
+        + order_limit
+    )
 
     conn = sqlite3.connect(str(db_path), timeout=30)
     try:
@@ -537,7 +542,7 @@ def chat_search_sqlite(
                 """
                 + where_tail.replace("WHERE cm.steamid3 = ?", "WHERE cm.steamid3 = ? AND fts.msg MATCH ?")
             )
-            params: tuple[Any, ...] = (
+            params_list: list[Any] = [
                 steamid3,
                 fts_q,
                 start_ts,
@@ -546,8 +551,10 @@ def chat_search_sqlite(
                 end_ts,
                 map_q,
                 map_q,
-                CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID,
-            )
+            ]
+            if CHAT_SEARCH_MAX_RESULTS_STEAMID is not None:
+                params_list.append(CHAT_SEARCH_MAX_RESULTS_STEAMID)
+            params = tuple(params_list)
         else:
             sql = (
                 base_select
@@ -556,7 +563,7 @@ def chat_search_sqlite(
                     "WHERE cm.steamid3 = ? AND (? = '' OR instr(lower(cm.msg), ?) > 0)",
                 )
             )
-            params = (
+            params_list = [
                 steamid3,
                 word_lower,
                 word_lower,
@@ -566,8 +573,10 @@ def chat_search_sqlite(
                 end_ts,
                 map_q,
                 map_q,
-                CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID,
-            )
+            ]
+            if CHAT_SEARCH_MAX_RESULTS_STEAMID is not None:
+                params_list.append(CHAT_SEARCH_MAX_RESULTS_STEAMID)
+            params = tuple(params_list)
         rows = conn.execute(sql, params).fetchall()
         log_rows = conn.execute(
             "SELECT DISTINCT log_id FROM chat_messages WHERE steamid3 = ?",
@@ -774,8 +783,9 @@ def chat_search(
 
     steamid3 = steamid64_to_steamid3(steamid)
     log_ids = get_log_list_for_player(steamid)
+    cap = CHAT_SEARCH_MAX_RESULTS_STEAMID
     for log_id in log_ids:
-        if len(results) >= CHAT_SEARCH_MAX_RESULTS_WITH_STEAMID:
+        if cap is not None and len(results) >= cap:
             break
         path = logs_dir / f"{log_id}.json"
         if not path.exists():

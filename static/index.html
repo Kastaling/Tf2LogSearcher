@@ -201,6 +201,17 @@
       <p class="stats-summary-meta">Reorder search tools and hide ones you don&rsquo;t use. Stored in a cookie on this browser only.</p>
       <p class="stats-summary-meta">Drag a row to reorder. Uncheck a box to hide that section from the list above.</p>
       <ul class="profile-layout-sort-list home-layout-sort-list js-home-layout-sort-list" role="list" aria-label="Home search section order"></ul>
+      <div class="layout-share-tools">
+        <p class="stats-summary-meta">Import/export layout (saved in this browser). Text lists home section order/visibility and profile section order/collapse. Share links apply layout when opened.</p>
+        <textarea class="layout-share-text js-layout-share-text" rows="5" spellcheck="false" autocomplete="off" placeholder="tf2ls-layout-v1&#10;home.order ...&#10;... or paste a layout token from a link"></textarea>
+        <p class="layout-share-actions">
+          <button type="button" class="js-layout-share-import">Apply import</button>
+          <button type="button" class="js-layout-share-export">Copy text</button>
+          <button type="button" class="js-layout-share-link-page">Copy link (this page)</button>
+          <button type="button" class="js-layout-share-link-home">Copy link (home)</button>
+        </p>
+        <p class="layout-share-status js-layout-share-status stats-summary-meta" aria-live="polite"></p>
+      </div>
     </div>
   </details>
 
@@ -225,6 +236,7 @@
   <script src="/static/js/coplayers.js"></script>
   <script src="/static/js/leaderboard.js"></script>
   <script src="/static/js/logmatch.js"></script>
+  <script src="/static/js/layout-share.js"></script>
   <script src="/static/js/profile.js"></script>
   <script src="/static/js/search.js"></script>
 

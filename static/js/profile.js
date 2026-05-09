@@ -449,7 +449,7 @@ function bindProfileMapsTable(table) {
 
 var PROFILE_LAYOUT_COOKIE = 'tf2ls_profile_layout_v1';
 var PROFILE_LAYOUT_COOKIE_MAX_AGE = 31536000;
-var PROFILE_LAYOUT_SECTION_IDS = [
+var PROFILE_LAYOUT_SECTION_IDS = window.TF2LS_PROFILE_SECTION_IDS || [
   'trend', 'top_logs', 'coplayers', 'top_maps', 'classes', 'weapons', 'class_kills', 'rounds', 'healspread'
 ];
 var PROFILE_LAYOUT_LABELS = {
@@ -539,6 +539,17 @@ function profileLayoutSettingsPanelHtml() {
     '<label class="profile-layout-collapse-opt"><input type="checkbox" class="js-profile-layout-collapse-default" /> <span>Collapse all sections below the summary by default when opening a profile</span></label>' +
     '<p class="stats-summary-meta">Drag to reorder sections (applies to profiles on this device):</p>' +
     '<ul class="profile-layout-sort-list js-profile-layout-sort-list" role="list" aria-label="Section order"></ul>' +
+    '<div class="layout-share-tools">' +
+    '<p class="stats-summary-meta">Import/export layout (saved in this browser). Text lists home section order/visibility and profile section order/collapse. Share links apply layout when opened.</p>' +
+    '<textarea class="layout-share-text js-layout-share-text" rows="5" spellcheck="false" autocomplete="off" placeholder="tf2ls-layout-v1&#10;home.order ...&#10;... or paste a layout token from a link"></textarea>' +
+    '<p class="layout-share-actions">' +
+    '<button type="button" class="js-layout-share-import">Apply import</button> ' +
+    '<button type="button" class="js-layout-share-export">Copy text</button> ' +
+    '<button type="button" class="js-layout-share-link-page">Copy link (this page)</button> ' +
+    '<button type="button" class="js-layout-share-link-home">Copy link (home)</button>' +
+    '</p>' +
+    '<p class="layout-share-status js-layout-share-status stats-summary-meta" aria-live="polite"></p>' +
+    '</div>' +
     '</div></details>';
 }
 
@@ -592,7 +603,50 @@ function applyProfileStackOrderFromList(ul, profileRoot) {
   if (overview) stack.prepend(overview);
 }
 
+function applyProfileLayoutOrderToStack(profileRoot, order) {
+  var stack = profileRoot.querySelector('.js-profile-layout-stack');
+  if (!stack) return;
+  var full = sanitizeProfileLayoutOrder(order || []);
+  var overview = stack.querySelector('[data-section="overview"]');
+  var byId = Object.create(null);
+  stack.querySelectorAll('[data-section]').forEach(function(node) {
+    var id = node.getAttribute('data-section');
+    if (id && id !== 'overview') byId[id] = node;
+  });
+  full.forEach(function(id) {
+    var n = byId[id];
+    if (n) stack.appendChild(n);
+  });
+  if (overview) stack.prepend(overview);
+}
+
+function rebuildProfileLayoutSortListItems(ul, profileRoot, layoutSettings) {
+  if (!ul) return;
+  ul.innerHTML = '';
+  layoutSettings.order.forEach(function(sid) {
+    if (PROFILE_LAYOUT_SECTION_IDS.indexOf(sid) < 0) return;
+    var li = document.createElement('li');
+    li.setAttribute('draggable', 'true');
+    li.setAttribute('data-section', sid);
+    li.className = 'profile-layout-sort-item';
+    var stack = profileRoot.querySelector('.js-profile-layout-stack');
+    var onPage = stack && stack.querySelector('[data-section="' + sid + '"]');
+    if (!onPage) li.classList.add('profile-layout-sort-item-missing');
+    li.appendChild(document.createTextNode(PROFILE_LAYOUT_LABELS[sid] || sid));
+    if (!onPage) {
+      li.setAttribute('title', 'No data for this profile with current filters. Order is still saved for when this section appears.');
+      var hint = document.createElement('span');
+      hint.className = 'profile-layout-sort-hint';
+      hint.appendChild(document.createTextNode(' (not shown)'));
+      li.appendChild(hint);
+    }
+    ul.appendChild(li);
+  });
+}
+
 function bindProfileLayoutSortList(ul, profileRoot) {
+  if (!ul || ul._tf2lsProfileSortBound) return;
+  ul._tf2lsProfileSortBound = true;
   var dragEl = null;
   ul.addEventListener('dragstart', function(e) {
     var li = e.target && e.target.closest ? e.target.closest('li') : null;
@@ -633,35 +687,33 @@ function initProfileLayoutSettings(profileRoot, layoutSettings) {
   var cb = wrap.querySelector('.js-profile-layout-collapse-default');
   if (cb) {
     cb.checked = !!layoutSettings.collapseDefault;
-    cb.addEventListener('change', function() {
-      var s = readProfileLayoutSettings();
-      s.collapseDefault = cb.checked;
-      writeProfileLayoutSettings(s);
-    });
+    if (!cb._tf2lsCollapseBound) {
+      cb._tf2lsCollapseBound = true;
+      cb.addEventListener('change', function() {
+        var s = readProfileLayoutSettings();
+        s.collapseDefault = cb.checked;
+        writeProfileLayoutSettings(s);
+      });
+    }
   }
   var ul = wrap.querySelector('.js-profile-layout-sort-list');
   if (ul) {
-    ul.innerHTML = '';
-    layoutSettings.order.forEach(function(sid) {
-      if (PROFILE_LAYOUT_SECTION_IDS.indexOf(sid) < 0) return;
-      var li = document.createElement('li');
-      li.setAttribute('draggable', 'true');
-      li.setAttribute('data-section', sid);
-      li.className = 'profile-layout-sort-item';
-      var stack = profileRoot.querySelector('.js-profile-layout-stack');
-      var onPage = stack && stack.querySelector('[data-section="' + sid + '"]');
-      if (!onPage) li.classList.add('profile-layout-sort-item-missing');
-      li.appendChild(document.createTextNode(PROFILE_LAYOUT_LABELS[sid] || sid));
-      if (!onPage) {
-        li.setAttribute('title', 'No data for this profile with current filters. Order is still saved for when this section appears.');
-        var hint = document.createElement('span');
-        hint.className = 'profile-layout-sort-hint';
-        hint.appendChild(document.createTextNode(' (not shown)'));
-        li.appendChild(hint);
-      }
-      ul.appendChild(li);
-    });
+    rebuildProfileLayoutSortListItems(ul, profileRoot, layoutSettings);
     bindProfileLayoutSortList(ul, profileRoot);
+  }
+  if (window.tf2lsLayoutShare && wrap && !wrap._tf2lsLayoutShareBound) {
+    wrap._tf2lsLayoutShareBound = true;
+    window.tf2lsLayoutShare.bindPanel(wrap, {
+      afterApply: function() {
+        var s = readProfileLayoutSettings();
+        applyProfileLayoutOrderToStack(profileRoot, s.order);
+        var cb2 = wrap.querySelector('.js-profile-layout-collapse-default');
+        if (cb2) cb2.checked = s.collapseDefault;
+        var ul2 = wrap.querySelector('.js-profile-layout-sort-list');
+        rebuildProfileLayoutSortListItems(ul2, profileRoot, s);
+        bindProfileLayoutSortList(ul2, profileRoot);
+      },
+    });
   }
 }
 

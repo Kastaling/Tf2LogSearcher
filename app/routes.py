@@ -2169,6 +2169,33 @@ def _build_results_embed_meta(request: Request) -> str:
         return ""
 
 
+_STATIC_ASSET_REF_RE = re.compile(r'(?P<prefix>\b(?:src|href)=["\'])(?P<url>/static/[^"\']+)(?P<suffix>["\'])')
+
+
+def _with_static_asset_versions(html: str) -> str:
+    """Add cheap cache-busting versions to local static assets referenced by index.html."""
+    static_root = Path(__file__).resolve().parent.parent / "static"
+
+    def repl(match: re.Match[str]) -> str:
+        url = match.group("url")
+        path_part, sep, query_part = url.partition("?")
+        rel = path_part.removeprefix("/static/")
+        if not rel or ".." in Path(rel).parts:
+            return match.group(0)
+        asset_path = static_root / rel
+        try:
+            st = asset_path.stat()
+        except OSError:
+            return match.group(0)
+        version = f"{st.st_mtime_ns:x}-{st.st_size:x}"
+        if query_part:
+            query_part = re.sub(r"(^|&)v=[^&]*&?", r"\1", query_part).strip("&")
+        query = f"v={version}" + (f"&{query_part}" if query_part else "")
+        return f'{match.group("prefix")}{path_part}{sep or "?"}{query}{match.group("suffix")}'
+
+    return _STATIC_ASSET_REF_RE.sub(repl, html)
+
+
 async def _serve_results_with_embed(request: Request) -> HTMLResponse:
     start = time.perf_counter()
     static_path = Path(__file__).resolve().parent.parent / "static" / "index.html"
@@ -2177,7 +2204,7 @@ async def _serve_results_with_embed(request: Request) -> HTMLResponse:
             duration_ms = int((time.perf_counter() - start) * 1000)
             _log_request(request, "/results", 200, duration_ms)
             return HTMLResponse("<html><body><h1>Tf2LogSearcher</h1><p>ok</p></body></html>")
-        raw = static_path.read_text(encoding="utf-8", errors="replace")
+        raw = _with_static_asset_versions(static_path.read_text(encoding="utf-8", errors="replace"))
         meta = _build_results_embed_meta(request)
         if meta:
             # Insert immediately after <title> tag if present, else after <head>.
@@ -2201,13 +2228,10 @@ async def _serve_index(request: Request, path: str):
     try:
         static_path = Path(__file__).resolve().parent.parent / "static" / "index.html"
         if static_path.exists():
+            raw = _with_static_asset_versions(static_path.read_text(encoding="utf-8", errors="replace"))
             duration_ms = int((time.perf_counter() - start) * 1000)
             _log_request(request, path, 200, duration_ms)
-            return FileResponse(
-                static_path,
-                media_type="text/html",
-                headers={"Cache-Control": "no-cache"},
-            )
+            return HTMLResponse(raw, media_type="text/html", headers={"Cache-Control": "no-cache"})
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, path, 200, duration_ms)
         return HTMLResponse("<html><body><h1>Tf2LogSearcher</h1><p>ok</p></body></html>")
