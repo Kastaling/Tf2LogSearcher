@@ -16,3 +16,4 @@ request_logs
 raw_logs
 *.md
 !README.md
+node_modules/
