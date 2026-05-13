@@ -215,6 +215,16 @@ Flags: `--no-tmux` / `--foreground` (skip tmux; use for CI/cron or when stdin/st
 
 **Security / ops:** same as other backfills — stop the downloader first so only one process writes `stats.db`; the script does not expose API keys (Compose loads `.env` for the `downloader` service if your `docker-compose.yml` references it). **Performance:** larger `--batch-size` reduces commit overhead; lower values limit rollback cost if the process is interrupted.
 
+### Rebuild stats leaderboard aggregates only
+
+After adding or changing a leaderboard aggregate, rebuild `player_stats_agg` without re-parsing every JSON log:
+
+```bash
+./scripts/rebuild_stats_agg_tmux.sh
+```
+
+The script stops `downloader`, opens tmux by default, runs `python -m app.rebuild_agg`, closes the tmux window/session when done, and starts `downloader` again only after a successful rebuild. Use `--no-tmux` / `--foreground` for cron or CI.
+
 ## Raw events DB backfill (re-parse zips)
 
 If you already have `log_*.log.zip` files under `RAW_LOGS_DIR` (e.g. after a parser upgrade), rebuild `raw_events.db` without re-downloading:

@@ -317,6 +317,7 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
           avg_kdr          REAL,
           avg_kadr         REAL,
           avg_deaths       REAL,
+          avg_killstreak   REAL,
           total_kills      INTEGER NOT NULL DEFAULT 0,
           total_damage     INTEGER NOT NULL DEFAULT 0,
           total_ubers      INTEGER NOT NULL DEFAULT 0,
@@ -334,6 +335,7 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
     conn.commit()
     _migrate_log_players_imported_at(conn)
     _migrate_player_stats_agg_avg_deaths(conn)
+    _migrate_player_stats_agg_avg_killstreak(conn)
     _migrate_player_stats_agg_total_damage_taken(conn)
 
 
@@ -380,6 +382,27 @@ def _migrate_player_stats_agg_avg_deaths(conn: sqlite3.Connection) -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_psa_avg_deaths ON player_stats_agg(avg_deaths DESC)"
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def _migrate_player_stats_agg_avg_killstreak(conn: sqlite3.Connection) -> None:
+    """Add ``avg_killstreak`` to ``player_stats_agg`` when missing; ensure sort index exists."""
+    cur = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='player_stats_agg' LIMIT 1"
+    )
+    if cur.fetchone() is None:
+        return
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(player_stats_agg)").fetchall()}
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if "avg_killstreak" not in cols:
+            conn.execute("ALTER TABLE player_stats_agg ADD COLUMN avg_killstreak REAL")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_psa_avg_killstreak ON player_stats_agg(avg_killstreak DESC)"
         )
         conn.commit()
     except BaseException:
@@ -972,7 +995,7 @@ def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
             f"""
             INSERT INTO player_stats_agg (
               steamid64, log_count, wins, decided_logs, avg_dpm, avg_kdr, avg_kadr,
-              avg_deaths,
+              avg_deaths, avg_killstreak,
               total_kills, total_damage, total_ubers, total_drops, total_damage_taken, updated_at
             )
             SELECT
@@ -984,6 +1007,7 @@ def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
               AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END),
               AVG(CASE WHEN lp.kadr IS NOT NULL THEN lp.kadr END),
               AVG(CAST(lp.deaths AS REAL)),
+              AVG(CAST(lp.longest_killstreak AS REAL)),
               SUM(lp.kills),
               SUM(lp.damage),
               SUM(lp.ubers),
@@ -1040,6 +1064,7 @@ def _refresh_player_stats_agg_for_steamids_impl(
           AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END),
           AVG(CASE WHEN lp.kadr IS NOT NULL THEN lp.kadr END),
           AVG(CAST(lp.deaths AS REAL)),
+          AVG(CAST(lp.longest_killstreak AS REAL)),
           SUM(lp.kills),
           SUM(lp.damage),
           SUM(lp.ubers),
@@ -1057,9 +1082,9 @@ def _refresh_player_stats_agg_for_steamids_impl(
     upsert = """
         INSERT OR REPLACE INTO player_stats_agg (
           steamid64, log_count, wins, decided_logs, avg_dpm, avg_kdr, avg_kadr,
-          avg_deaths,
+          avg_deaths, avg_killstreak,
           total_kills, total_damage, total_ubers, total_drops, total_damage_taken, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     for i in range(0, len(uniq), _PSA_CHUNK):
         chunk = uniq[i : i + _PSA_CHUNK]
@@ -1088,11 +1113,12 @@ def _refresh_player_stats_agg_for_steamids_impl(
                     row[5],
                     row[6],
                     row[7],
-                    int(row[8] or 0),
+                    row[8],
                     int(row[9] or 0),
                     int(row[10] or 0),
                     int(row[11] or 0),
                     int(row[12] or 0),
+                    int(row[13] or 0),
                     ts,
                 ),
             )

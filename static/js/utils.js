@@ -16,6 +16,7 @@ var VALID_LB_TYPES = {
   drops: 1,
   damage_taken: 1,
   avg_deaths: 1,
+  avg_killstreak: 1,
 };
 function sanitizeLbTypeInput(v) {
   var s = (v == null ? '' : String(v)).trim().toLowerCase();

@@ -545,8 +545,8 @@ function profileLayoutSettingsPanelHtml() {
     '<p class="layout-share-actions">' +
     '<button type="button" class="js-layout-share-import">Apply import</button> ' +
     '<button type="button" class="js-layout-share-export">Copy text</button> ' +
-    '<button type="button" class="js-layout-share-link-page">Copy link (this page)</button> ' +
-    '<button type="button" class="js-layout-share-link-home">Copy link (home)</button>' +
+    '<button type="button" class="js-layout-share-link-page" title="Copies a link to the page you are currently viewing with your layout embedded. Use this when you want someone to open the same search/profile page and see it with your layout.">Copy link (this page)</button> ' +
+    '<button type="button" class="js-layout-share-link-home" title="Copies a link to the home page with your layout embedded. Use this when you only want to share your home/profile layout settings, not the current search or profile URL.">Copy link (home)</button>' +
     '</p>' +
     '<p class="layout-share-status js-layout-share-status stats-summary-meta" aria-live="polite"></p>' +
     '</div>' +

@@ -152,6 +152,13 @@ _LEADERBOARD_TYPES: dict[str, dict[str, Any]] = {
         "value_key": "avg_deaths",
         "format": "float2",
     },
+    "avg_killstreak": {
+        "label": "Avg Killstreak",
+        "order_expr": "AVG(CAST(lp.longest_killstreak AS REAL)) DESC",
+        "select_expr": "AVG(CAST(lp.longest_killstreak AS REAL)) AS primary_value",
+        "value_key": "avg_killstreak",
+        "format": "float2",
+    },
 }
 
 LEADERBOARD_TYPE_KEYS: tuple[str, ...] = tuple(_LEADERBOARD_TYPES.keys())
@@ -207,6 +214,7 @@ def _leaderboard_agg_order_clause(lb_key: str, stat_scope: str) -> str | None:
         "kdr": "avg_kdr DESC NULLS LAST",
         "logs": "log_count DESC",
         "avg_deaths": "avg_deaths DESC NULLS LAST",
+        "avg_killstreak": "avg_killstreak DESC NULLS LAST",
     }
     return static.get(lb_key)
 
@@ -2433,6 +2441,25 @@ def _leaderboard_is_global_unfiltered(
     return True
 
 
+def _player_stats_agg_metric_complete(path: Path, column: str) -> bool:
+    """True when a derived aggregate column has values for every aggregate row."""
+    if column not in {"avg_killstreak"}:
+        return False
+    conn = _sqlite_connect_ro(path)
+    try:
+        row = conn.execute(
+            f"""
+            SELECT 1
+            FROM player_stats_agg
+            WHERE log_count > 0 AND {column} IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        return row is None
+    finally:
+        conn.close()
+
+
 def _stats_leaderboard_from_agg(
     lb_key: str,
     stat_scope: str,
@@ -2464,7 +2491,8 @@ def _stats_leaderboard_from_agg(
           total_ubers,
           total_drops,
           total_damage_taken,
-          avg_deaths
+          avg_deaths,
+          avg_killstreak
         FROM player_stats_agg
         WHERE log_count >= ?
         ORDER BY {ord_clause}
@@ -2529,6 +2557,8 @@ def _stats_leaderboard_from_agg(
                 pv_raw = r["total_damage_taken"]
         elif lb_key == "avg_deaths":
             pv_raw = r["avg_deaths"]
+        elif lb_key == "avg_killstreak":
+            pv_raw = r["avg_killstreak"]
         else:
             pv_raw = None
         primary_value: float | int | None
@@ -2556,6 +2586,7 @@ def _stats_leaderboard_from_agg(
                 "total_drops": int(r["total_drops"] or 0),
                 "total_damage_taken": int(r["total_damage_taken"] or 0),
                 "avg_deaths": _round2(r["avg_deaths"]),
+                "avg_killstreak": _round2(r["avg_killstreak"]),
                 "primary_value": primary_value,
             }
         )
@@ -2627,7 +2658,9 @@ def stats_leaderboard(
 
     if _leaderboard_is_global_unfiltered(
         gamemode, class_filter, date_from, date_to, map_query
-    ) and player_stats_agg_nonempty(path):
+    ) and player_stats_agg_nonempty(path) and (
+        lb_key != "avg_killstreak" or _player_stats_agg_metric_complete(path, "avg_killstreak")
+    ):
         return _stats_leaderboard_from_agg(lb_key, ss, ml, spec, path, profile_sql, profile_params)
 
     select_expr = " ".join(spec["select_expr"].split())
@@ -2648,6 +2681,7 @@ def stats_leaderboard(
           SUM(lp.drops) AS total_drops,
           SUM(lp.damage_taken) AS total_damage_taken,
           AVG(CAST(lp.deaths AS REAL)) AS avg_deaths,
+          AVG(CAST(lp.longest_killstreak AS REAL)) AS avg_killstreak,
           {select_expr}
         FROM logs l
         INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
@@ -2718,6 +2752,7 @@ def stats_leaderboard(
                 "total_drops": int(r["total_drops"] or 0),
                 "total_damage_taken": int(r["total_damage_taken"] or 0),
                 "avg_deaths": _round2(r["avg_deaths"]),
+                "avg_killstreak": _round2(r["avg_killstreak"]),
                 "primary_value": primary_value,
             }
         )

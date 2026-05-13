@@ -12,7 +12,74 @@ from app.search.search import (
     _map_matches_query,
     _player_count_filter,
     _winner_team_from_log,
+    stats_leaderboard,
 )
+from app.stats_db import connect_stats_db, init_stats_db, rebuild_player_stats_agg, replace_stats_for_log
+
+
+PLAYER_A = "76561198000000001"
+PLAYER_B = "76561198000000002"
+PLAYER_A_3 = "[U:1:39734273]"
+PLAYER_B_3 = "[U:1:39734274]"
+
+
+def _leaderboard_log(a_ks: int, b_ks: int, *, log_id: int) -> dict:
+    return {
+        "info": {
+            "map": "cp_process_final",
+            "date": 1_700_000_000 + log_id,
+            "total_length": 300,
+            "title": f"Leaderboard test {log_id}",
+            "winner": None,
+        },
+        "teams": {
+            "Red": {"score": 3},
+            "Blue": {"score": 1},
+        },
+        "players": {
+            PLAYER_A_3: {
+                "team": "Red",
+                "kills": 10,
+                "assists": 2,
+                "deaths": 5,
+                "dmg": 3000,
+                "dapm": 600.0,
+                "ubers": 0,
+                "drops": 0,
+                "longest_killstreak": a_ks,
+                "class_stats": [{"type": "soldier", "total_time": 300, "kills": 10, "assists": 2, "deaths": 5, "dmg": 3000}],
+            },
+            PLAYER_B_3: {
+                "team": "Blue",
+                "kills": 8,
+                "assists": 1,
+                "deaths": 6,
+                "dmg": 2400,
+                "dapm": 480.0,
+                "ubers": 0,
+                "drops": 0,
+                "longest_killstreak": b_ks,
+                "class_stats": [{"type": "soldier", "total_time": 300, "kills": 8, "assists": 1, "deaths": 6, "dmg": 2400}],
+            },
+        },
+        "names": {
+            PLAYER_A_3: "PlayerA",
+            PLAYER_B_3: "PlayerB",
+        },
+    }
+
+
+@pytest.fixture()
+def stats_leaderboard_db(tmp_path):
+    db_path = tmp_path / "stats.db"
+    conn = connect_stats_db(db_path)
+    init_stats_db(conn)
+    with conn:
+        replace_stats_for_log(conn, 1001, _leaderboard_log(10, 4, log_id=1001))
+        replace_stats_for_log(conn, 1002, _leaderboard_log(2, 4, log_id=1002))
+    rebuild_player_stats_agg(conn)
+    conn.close()
+    return db_path
 
 
 # --- leaderboard win rate scopes ---
@@ -31,6 +98,27 @@ def test_leaderboard_resolve_spec_winrate_highest_lowest():
 def test_leaderboard_agg_order_clause_winrate():
     assert "DESC" in (_leaderboard_agg_order_clause("winrate", "highest") or "").upper()
     assert "ASC" in (_leaderboard_agg_order_clause("winrate", "lowest") or "").upper()
+
+
+def test_leaderboard_resolve_spec_avg_killstreak():
+    spec = _leaderboard_resolve_spec("avg_killstreak", "total")
+    assert "LONGEST_KILLSTREAK" in spec["order_expr"].upper()
+    assert spec["value_key"] == "avg_killstreak"
+    assert spec["format"] == "float2"
+    assert "DESC" in (_leaderboard_agg_order_clause("avg_killstreak", "total") or "").upper()
+
+
+def test_stats_leaderboard_avg_killstreak(stats_leaderboard_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", stats_leaderboard_db)
+
+    rows, total_logs = stats_leaderboard("avg_killstreak", min_logs=1)
+
+    assert total_logs == 2
+    assert rows[0]["steamid64"] == PLAYER_A
+    assert rows[0]["primary_value"] == 6.0
+    assert rows[0]["avg_killstreak"] == 6.0
+    assert rows[1]["steamid64"] == PLAYER_B
+    assert rows[1]["primary_value"] == 4.0
 
 
 # --- _log_in_date_range ---

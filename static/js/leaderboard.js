@@ -6,7 +6,7 @@ function leaderboardDefaultSortKey(lbType) {
   if (t === 'kdr') return 'avg_kdr';
   if (t === 'winrate') return 'win_rate';
   if (t === 'logs') return 'log_count';
-  if (t === 'ubers' || t === 'drops' || t === 'damage_taken' || t === 'avg_deaths') return 'primary_value';
+  if (t === 'ubers' || t === 'drops' || t === 'damage_taken' || t === 'avg_deaths' || t === 'avg_killstreak') return 'primary_value';
   return 'avg_dpm';
 }
 
@@ -38,6 +38,7 @@ function getLeaderboardPrimaryColumn(lbType, statScope) {
     return { key: 'primary_value', label: 'Damage taken (total)', type: 'number' };
   }
   if (t === 'avg_deaths') return { key: 'primary_value', label: 'Deaths/log', type: 'decimal2' };
+  if (t === 'avg_killstreak') return { key: 'primary_value', label: 'Avg killstreak', type: 'decimal2' };
   return null;
 }
 
