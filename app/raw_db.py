@@ -296,11 +296,10 @@ def replace_raw_events_for_log(
 
 def count_raw_library_rows(db_path: str | Path) -> tuple[int | None, int | None]:
     """
-    Return (approximate raw_logs row count, SUM(kill_count)) for progress UI.
+    Return (``raw_logs`` row count, SUM(kill_count)) for progress UI.
 
-    Row count uses ``COALESCE(MAX(log_id), 0)`` (``log_id`` is INTEGER PRIMARY KEY) to avoid a
-    full-table ``COUNT(*)`` scan on large DBs. If rows are deleted, this can exceed the true count
-    (gaps); same tradeoff as ``count_stats_index_rows`` proxies.
+    When ``kill_count`` exists (normal schema), both values come from one aggregate query over
+    ``raw_logs`` — the same work previously done only for ``SUM``, plus ``COUNT(*)``.
 
     (None, None) if the DB is missing or unreadable.
     """
@@ -311,14 +310,18 @@ def count_raw_library_rows(db_path: str | Path) -> tuple[int | None, int | None]
         conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
         try:
             conn.execute("PRAGMA busy_timeout=10000")
-            conn.execute("SELECT 1 FROM raw_logs LIMIT 1").fetchone()
-            cnt_row = conn.execute("SELECT COALESCE(MAX(log_id), 0) FROM raw_logs").fetchone()
-            n = int(cnt_row[0] or 0) if cnt_row else 0
             cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(raw_logs)").fetchall()}
             if "kill_count" in cols:
-                s = conn.execute("SELECT COALESCE(SUM(kill_count), 0) FROM raw_logs").fetchone()
-                kill_sum = int(s[0] or 0) if s else 0
+                row = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(kill_count), 0) FROM raw_logs"
+                ).fetchone()
+                if not row:
+                    return (0, 0)
+                n = int(row[0] or 0)
+                kill_sum = int(row[1] or 0)
             else:
+                cnt_row = conn.execute("SELECT COUNT(*) FROM raw_logs").fetchone()
+                n = int(cnt_row[0] or 0) if cnt_row else 0
                 kill_sum = 0
             return (n, kill_sum)
         except Exception:

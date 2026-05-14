@@ -533,6 +533,11 @@
       color: var(--text-muted);
       font-size: 0.9rem;
     }
+    .profile-view-stats {
+      opacity: 0.78;
+      font-size: 0.85rem;
+      margin-bottom: 0.35rem;
+    }
     .stats-summary-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(120px, 1fr));

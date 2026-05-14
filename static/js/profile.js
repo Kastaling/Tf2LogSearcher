@@ -795,6 +795,17 @@ function renderProfileResult(el, data, elapsedMs) {
   var mpcLine = mpc
     ? ('<p class="stats-summary-meta">Most played: ' + profileClassCell(mpc) + '</p>')
     : '';
+  var pv = data.profile_views;
+  var pvLine = '';
+  if (pv && typeof pv.total === 'number' && Number.isFinite(pv.total) && pv.total > 0) {
+    var uq = typeof pv.unique === 'number' && Number.isFinite(pv.unique) ? pv.unique : null;
+    pvLine =
+      '<p class="stats-summary-meta profile-view-stats" title="Total views count every profile load. Unique visitors are approximated from a hashed network + browser signature (not logins).">' +
+      escapeHtml(fmtProgressNum(pv.total)) +
+      ' page views' +
+      (uq != null ? (' \u00b7 ' + escapeHtml(fmtProgressNum(uq)) + ' unique visitors') : '') +
+      '</p>';
+  }
   var dateRange = '<p class="stats-summary-meta">Logs: ' + escapeHtml(String(data.logs_count != null ? data.logs_count : '')) +
     ' &middot; ' + profileLogsTfDateLink(ov.first_log_id, profileFormatUnixDate(ov.first_log_ts)) +
     ' \u2192 ' + profileLogsTfDateLink(ov.last_log_id, profileFormatUnixDate(ov.last_log_ts)) + '</p>';
@@ -838,7 +849,7 @@ function renderProfileResult(el, data, elapsedMs) {
     '<button type="button" class="chat-hit-link profile-copy-link-btn js-profile-copy-link" title="Copy link to this search" aria-label="Copy link to this profile search">\ud83d\udd17</button>' +
     '<div class="profile-overview-head">' + avatarHtml + '<div class="profile-overview-text">' +
     '<p class="stats-summary-title">' + name + logsTfLinkHtml + '</p>' +
-    dateRange + mpcLine +
+    dateRange + mpcLine + pvLine +
     '</div></div>' +
     '<div class="stats-summary-grid">' + grid + '</div></div>';
 

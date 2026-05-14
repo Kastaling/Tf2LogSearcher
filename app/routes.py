@@ -41,6 +41,7 @@ from app.raw_db import count_raw_library_rows
 from app.stats_db import count_stats_index_rows, stats_db_fingerprint, stats_player_stats_cache_token
 from app.rate_limit import rate_limit_exceeded
 from app.request_log import append_request_log
+from app.profile_views import record_profile_view, visitor_fingerprint
 from app.search.search import (
     LEADERBOARD_MIN_LOGS_DEFAULT,
     LEADERBOARD_MIN_LOGS_MAX,
@@ -179,11 +180,27 @@ def _resolve_profile_avatar_url(steamid64: str) -> str | None:
         conn.close()
 
 
-def _profile_response_payload(stats_payload: dict[str, Any], steamid64: str) -> dict[str, Any]:
-    """Attach ``avatar_url`` for the profile player (not stored in search cache)."""
+def _profile_response_payload(
+    stats_payload: dict[str, Any],
+    steamid64: str,
+    *,
+    profile_views: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Attach ``avatar_url`` for the profile player (not stored in search cache) and optional view counts."""
     out = dict(stats_payload)
     out["avatar_url"] = _resolve_profile_avatar_url(steamid64)
+    if profile_views is not None:
+        out["profile_views"] = profile_views
     return out
+
+
+def _profile_views_payload(request: Request, steamid64: str) -> dict[str, int] | None:
+    """Record this view and return ``{total, unique}`` for JSON, or ``None`` if storage failed."""
+    fp = visitor_fingerprint(_client_ip(request), request.headers.get("user-agent"))
+    total, unique = record_profile_view(steamid64, fp)
+    if total <= 0:
+        return None
+    return {"total": total, "unique": unique}
 
 
 _PREFETCH_MAX = 20  # cap how many profiles to warm per trigger
@@ -1590,8 +1607,9 @@ def _api_profile_impl(
             date_to=_req_log_date_iso(date_to),
             map_query=map_query,
         )
+        views = _profile_views_payload(request, steamid64)
         return JSONResponse(
-            _profile_response_payload(cached, steamid64),
+            _profile_response_payload(cached, steamid64, profile_views=views),
             headers={"Cache-Control": "private, max-age=300"},
         )
     rl = rate_limit_exceeded(kind="profile", client_ip=_client_ip(request))
@@ -1630,8 +1648,9 @@ def _api_profile_impl(
             date_to=_req_log_date_iso(date_to),
             map_query=map_query,
         )
+        views = _profile_views_payload(request, steamid64)
         return JSONResponse(
-            _profile_response_payload(profile, steamid64),
+            _profile_response_payload(profile, steamid64, profile_views=views),
             headers={"Cache-Control": "private, max-age=300"},
         )
     except RuntimeError:

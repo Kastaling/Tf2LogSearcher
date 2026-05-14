@@ -76,6 +76,19 @@ CHAT_SEARCH_MAX_RESULTS_STEAMID = _optional_positive_int("CHAT_SEARCH_MAX_RESULT
 # Avatar URL cache (Steam Web API; separate SQLite file)
 AVATAR_DB_PATH = Path(_str("AVATAR_DB_PATH", "./downloader_state/avatars.db"))
 
+# Public profile view counters (total + unique visitor buckets)
+_PROFILE_VIEWS_PATH_RAW = _str("PROFILE_VIEWS_DB_PATH", "").strip()
+PROFILE_VIEWS_DB_PATH = (
+    Path(_PROFILE_VIEWS_PATH_RAW)
+    if _PROFILE_VIEWS_PATH_RAW
+    else (DOWNLOADER_STATE_DIR / "profile_views.db")
+)
+# Optional HMAC key so visitor fingerprints are not guessable from IP+UA alone. Unset = SHA-256 only.
+_PROFILE_HASH_SECRET_RAW = (os.environ.get("PROFILE_VIEW_HASH_SECRET") or "").strip()
+PROFILE_VIEW_HASH_SECRET: bytes | None = (
+    _PROFILE_HASH_SECRET_RAW.encode("utf-8") if _PROFILE_HASH_SECRET_RAW else None
+)
+
 # SQLite DB for per-log player stats (populated by downloader and backfill script)
 STATS_DB_PATH = Path(_str("STATS_DB_PATH", "./downloader_state/stats.db"))
 

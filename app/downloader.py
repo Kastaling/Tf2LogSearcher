@@ -44,6 +44,7 @@ from app.raw_log_parser import parse_raw_log
 from app.raw_zip_io import extract_log_content_from_zip, fetch_raw_log_zip_with_retry, save_raw_log_zip
 from app.logs_tf import fetch_log_list, fetch_log_json, steamid3_to_steamid64
 from app.subscriptions import check_log_for_subscriptions
+from app.download_eta_checkpoint import load_eta_checkpoint, maybe_save_eta_checkpoint
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -221,14 +222,14 @@ def _format_eta_from_rate(rate: float | None, remaining: int) -> str:
     return _human_duration(remaining / rate)
 
 
-def _aggregated_rate_logs_per_sec(session_start_time: float, session_downloads: int) -> float | None:
-    """Session-based rate (logs/s) since process start. Returns None until MIN_ELAPSED_FOR_AGGREGATED_SEC and at least one download."""
-    if session_start_time <= 0 or session_downloads <= 0:
+def _aggregated_rate_logs_per_sec(wall_start_time: float, total_downloads: int) -> float | None:
+    """Long-run rate (logs/s) since ``wall_start_time`` (persisted across restarts)."""
+    if wall_start_time <= 0 or total_downloads <= 0:
         return None
-    elapsed = time.time() - session_start_time
+    elapsed = time.time() - wall_start_time
     if elapsed < MIN_ELAPSED_FOR_AGGREGATED_SEC:
         return None
-    return session_downloads / elapsed
+    return total_downloads / elapsed
 
 
 def _log_stats_and_eta(logs_dir: Path, recent_writes: list[tuple[float, int]]) -> None:
@@ -282,6 +283,35 @@ def _rate_logs_per_sec(recent_writes: list[tuple[float, int]]) -> float | None:
     return len(recent_writes) / elapsed
 
 
+def _bump_download_tracking(
+    recent_writes: list[tuple[float, int]],
+    log_id: int,
+    downloads_ref: list[int],
+    *,
+    state_dir: Path | None = None,
+    wall_start: float | None = None,
+    last_eta_ckpt_save_ref: list[float] | None = None,
+) -> None:
+    """Sliding window + monotonic download counter; optionally flush ETA checkpoint (rate-limited)."""
+    recent_writes.append((time.time(), log_id))
+    downloads_ref[0] += 1
+    if len(recent_writes) > RECENT_WRITES_SIZE:
+        del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
+    if (
+        state_dir is not None
+        and wall_start is not None
+        and last_eta_ckpt_save_ref is not None
+    ):
+        maybe_save_eta_checkpoint(
+            state_dir,
+            wall_start,
+            downloads_ref[0],
+            recent_writes,
+            last_eta_ckpt_save_ref,
+            force=False,
+        )
+
+
 # Unix timestamp range for validation (roughly 2001–2033)
 _EARLIEST_LOG_DATE_MIN = int(1e9)
 _EARLIEST_LOG_DATE_MAX = int(2e9)
@@ -319,11 +349,12 @@ def _write_progress_if_due(
     progress_interval_ref: list[dict[str, int]],
     session_start_time_ref: list[float],
     session_downloads_ref: list[int],
+    last_eta_ckpt_save_ref: list[float],
 ) -> None:
     """
     Write progress.json for the web UI at most every PROGRESS_UPDATE_INTERVAL_SEC.
     Uses atomic write (temp file + rename). All payload values are server-controlled (no user input).
-    ETA uses aggregated session rate when available (after MIN_ELAPSED_FOR_AGGREGATED_SEC), else recent-window rate.
+    ETA prefers long-run aggregated rate (persisted checkpoint) when available, else recent-window rate.
     """
     now = time.time()
     if last_progress_write_ref[0] > 0 and (now - last_progress_write_ref[0]) < PROGRESS_UPDATE_INTERVAL_SEC:
@@ -384,6 +415,14 @@ def _write_progress_if_due(
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(target)
         last_progress_write_ref[0] = now
+        maybe_save_eta_checkpoint(
+            state_dir,
+            session_start_time_ref[0],
+            session_downloads_ref[0],
+            recent_writes,
+            last_eta_ckpt_save_ref,
+            force=True,
+        )
     except OSError as e:
         logger.warning("Could not write progress.json: %s", e)
 
@@ -517,6 +556,9 @@ def try_raw_download_and_index(
     recent_writes: list[tuple[float, int]],
     progress_interval_ref: list[dict[str, int]],
     session_downloads_ref: list[int],
+    state_dir: Path | None = None,
+    checkpoint_wall_start: float | None = None,
+    last_eta_ckpt_save_ref: list[float] | None = None,
 ) -> bool:
     """
     Rate-limit, fetch raw zip, save, parse, store in raw_events.db.
@@ -568,11 +610,15 @@ def try_raw_download_and_index(
         progress_interval_ref[0]["raw_failed_index"] += 1
         return False
 
-    recent_writes.append((time.time(), log_id))
     progress_interval_ref[0]["raw_ok"] += 1
-    session_downloads_ref[0] += 1
-    if len(recent_writes) > RECENT_WRITES_SIZE:
-        del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
+    _bump_download_tracking(
+        recent_writes,
+        log_id,
+        session_downloads_ref,
+        state_dir=state_dir,
+        wall_start=checkpoint_wall_start,
+        last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
+    )
     return True
 
 
@@ -586,6 +632,7 @@ def run_catch_up_newest(
     progress_interval_ref: list[dict[str, int]],
     session_start_time_ref: list[float],
     session_downloads_ref: list[int],
+    last_eta_ckpt_save_ref: list[float],
     chat_db_conn: sqlite3.Connection | None = None,
     stats_db_conn: sqlite3.Connection | None = None,
     raw_db_conn: sqlite3.Connection | None = None,
@@ -624,6 +671,9 @@ def run_catch_up_newest(
                 recent_writes,
                 progress_interval_ref,
                 session_downloads_ref,
+                state_dir=state_dir,
+                checkpoint_wall_start=session_start_time_ref[0],
+                last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
             ):
                 downloaded += 1
             continue
@@ -654,11 +704,15 @@ def run_catch_up_newest(
                     logger.info("Indexed stats for log %s (%s player row(s))", log_id, n_stats)
                     _collect_pending_agg_steamids_from_log(data, pending_agg_steamids, log_id, state_dir)
             size_bytes = path.stat().st_size
-            recent_writes.append((time.time(), log_id))
             progress_interval_ref[0]["json_ok"] += 1
-            session_downloads_ref[0] += 1
-            if len(recent_writes) > RECENT_WRITES_SIZE:
-                del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
+            _bump_download_tracking(
+                recent_writes,
+                log_id,
+                session_downloads_ref,
+                state_dir=state_dir,
+                wall_start=session_start_time_ref[0],
+                last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
+            )
             downloaded += 1
             logger.info("Wrote new log %s (%s)", log_id, _human_bytes(size_bytes))
             try:
@@ -674,6 +728,9 @@ def run_catch_up_newest(
                 recent_writes,
                 progress_interval_ref,
                 session_downloads_ref,
+                state_dir=state_dir,
+                checkpoint_wall_start=session_start_time_ref[0],
+                last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
             )
         else:
             progress_interval_ref[0]["json_failed"] += 1
@@ -682,7 +739,16 @@ def run_catch_up_newest(
             logger.info("Skipped log %s (failed or invalid)", log_id)
     logger.info("Phase 1 done: downloaded %s new log(s) from offset 0", downloaded)
     _log_stats_and_eta(logs_dir, recent_writes)
-    _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, progress_interval_ref, session_start_time_ref, session_downloads_ref)
+    _write_progress_if_due(
+        logs_dir,
+        state_dir,
+        recent_writes,
+        last_progress_write_ref,
+        progress_interval_ref,
+        session_start_time_ref,
+        session_downloads_ref,
+        last_eta_ckpt_save_ref,
+    )
     return downloaded
 
 
@@ -697,6 +763,7 @@ def run_backfill_from_offset(
     progress_interval_ref: list[dict[str, int]],
     session_start_time_ref: list[float],
     session_downloads_ref: list[int],
+    last_eta_ckpt_save_ref: list[float],
     chat_db_conn: sqlite3.Connection | None = None,
     stats_db_conn: sqlite3.Connection | None = None,
     raw_db_conn: sqlite3.Connection | None = None,
@@ -711,7 +778,16 @@ def run_backfill_from_offset(
             logger.info("No more logs at offset %s (reached end of API)", next_offset)
             save_next_offset(state_dir, next_offset)
             _log_stats_and_eta(logs_dir, recent_writes)
-            _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, progress_interval_ref, session_start_time_ref, session_downloads_ref)
+            _write_progress_if_due(
+                logs_dir,
+                state_dir,
+                recent_writes,
+                last_progress_write_ref,
+                progress_interval_ref,
+                session_start_time_ref,
+                session_downloads_ref,
+                last_eta_ckpt_save_ref,
+            )
             return next_offset
         logger.info("Got %s log IDs from API (offset %s)", len(logs), next_offset)
         downloaded = 0
@@ -742,6 +818,9 @@ def run_backfill_from_offset(
                     recent_writes,
                     progress_interval_ref,
                     session_downloads_ref,
+                    state_dir=state_dir,
+                    checkpoint_wall_start=session_start_time_ref[0],
+                    last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
                 ):
                     downloaded += 1
                 continue
@@ -773,11 +852,15 @@ def run_backfill_from_offset(
                         logger.info("Indexed stats for log %s (%s player row(s))", log_id, n_stats)
                         _collect_pending_agg_steamids_from_log(data, pending_agg_steamids, log_id, state_dir)
                 size_bytes = path.stat().st_size
-                recent_writes.append((time.time(), log_id))
                 progress_interval_ref[0]["json_ok"] += 1
-                session_downloads_ref[0] += 1
-                if len(recent_writes) > RECENT_WRITES_SIZE:
-                    del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
+                _bump_download_tracking(
+                    recent_writes,
+                    log_id,
+                    session_downloads_ref,
+                    state_dir=state_dir,
+                    wall_start=session_start_time_ref[0],
+                    last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
+                )
                 downloaded += 1
                 logger.info("Wrote log %s (%s)", log_id, _human_bytes(size_bytes))
                 try:
@@ -793,6 +876,9 @@ def run_backfill_from_offset(
                     recent_writes,
                     progress_interval_ref,
                     session_downloads_ref,
+                    state_dir=state_dir,
+                    checkpoint_wall_start=session_start_time_ref[0],
+                    last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
                 )
             else:
                 progress_interval_ref[0]["json_failed"] += 1
@@ -803,7 +889,16 @@ def run_backfill_from_offset(
         next_offset += len(logs)
         save_next_offset(state_dir, next_offset)
         _log_stats_and_eta(logs_dir, recent_writes)
-        _write_progress_if_due(logs_dir, state_dir, recent_writes, last_progress_write_ref, progress_interval_ref, session_start_time_ref, session_downloads_ref)
+        _write_progress_if_due(
+            logs_dir,
+            state_dir,
+            recent_writes,
+            last_progress_write_ref,
+            progress_interval_ref,
+            session_start_time_ref,
+            session_downloads_ref,
+            last_eta_ckpt_save_ref,
+        )
         logger.info("Page done: offset now %s | downloaded=%s skipped=%s already_had=%s", next_offset, downloaded, skipped_this_page, already_had)
         if len(logs) < LIMIT:
             break
@@ -824,6 +919,7 @@ def run_once(logs_dir: Path, state_dir: Path, skipped: set[int], next_offset: in
         [_empty_progress_interval()],
         [0.0],
         [0],
+        [0.0],
         None,
         None,
         None,
@@ -910,11 +1006,19 @@ def main() -> None:
     logger.info("Download modes: JSON=%s RAW=%s", DOWNLOAD_JSON_ENABLED, DOWNLOAD_RAW_ENABLED)
 
     try:
-        recent_writes: list[tuple[float, int]] = []  # sliding window for ETA rate (fallback)
+        wall_start, total_dl, loaded_recent = load_eta_checkpoint(state_dir)
+        recent_writes: list[tuple[float, int]] = loaded_recent
         last_progress_write_ref: list[float] = [0.0]  # last time we wrote progress.json
         progress_interval_ref: list[dict[str, int]] = [_empty_progress_interval()]
-        session_start_time_ref: list[float] = [time.time()]  # process start for aggregated ETA rate
-        session_downloads_ref: list[int] = [0]  # total logs written this run for aggregated ETA rate
+        session_start_time_ref: list[float] = [wall_start]  # wall clock start for long-run ETA (persisted)
+        session_downloads_ref: list[int] = [total_dl]  # monotonic download counter (persisted)
+        last_eta_ckpt_save_ref: list[float] = [0.0]  # last time ETA checkpoint JSON was flushed
+        logger.info(
+            "ETA checkpoint: wall_start=%.0f total_downloads=%s recent_window=%s",
+            wall_start,
+            total_dl,
+            len(recent_writes),
+        )
         pending_agg_steamids: set[str] = _load_pending_agg_steamids(state_dir)
         while True:
             if chat_db_conn is not None and alias_fts_rebuild_pending(chat_db_conn):
@@ -942,6 +1046,7 @@ def main() -> None:
                     progress_interval_ref,
                     session_start_time_ref,
                     session_downloads_ref,
+                    last_eta_ckpt_save_ref,
                     chat_db_conn,
                     stats_db_conn,
                     raw_db_conn,
@@ -970,6 +1075,7 @@ def main() -> None:
                     progress_interval_ref,
                     session_start_time_ref,
                     session_downloads_ref,
+                    last_eta_ckpt_save_ref,
                     chat_db_conn,
                     stats_db_conn,
                     raw_db_conn,
