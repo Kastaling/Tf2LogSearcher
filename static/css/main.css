@@ -430,6 +430,21 @@
       font-weight: 600;
       color: var(--text);
     }
+    .download-progress-stats--storage .download-progress-storage-main {
+      font-weight: inherit;
+    }
+    .download-progress-stats--storage .download-progress-storage-pct {
+      font-weight: 400;
+      font-size: 0.82em;
+      color: var(--text-muted);
+      opacity: 0.48;
+      margin-left: 0.12em;
+      white-space: nowrap;
+    }
+    .download-progress-stats--storage .download-progress-storage-subtotal .download-progress-storage-pct {
+      font-size: 0.85em;
+      opacity: 0.52;
+    }
     .download-progress-stats--storage tr.download-progress-storage-section-spacer .download-progress-storage-section-spacer-cell {
       padding: 0.45rem 0 0.15rem;
       border-left: none;

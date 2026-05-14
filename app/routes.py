@@ -20,6 +20,7 @@ from app.config import (
     DOWNLOAD_RAW_ENABLED,
     DOWNLOADER_STATE_DIR,
     LOGS_DIR,
+    PROFILE_VIEWS_DB_PATH,
     RAW_EVENTS_DB_PATH,
     RAW_LOGS_DIR,
     SHOW_STORAGE_STATS,
@@ -1447,14 +1448,19 @@ def _compute_storage_stats() -> dict[str, Any]:
     chat_db = _file_size_bytes(Path(CHAT_DB_PATH))
     raw_db = _file_size_bytes(Path(RAW_EVENTS_DB_PATH)) if DOWNLOAD_RAW_ENABLED else None
     avatar_db = _file_size_bytes(Path(AVATAR_DB_PATH))
+    pv_sz = _file_size_bytes(Path(PROFILE_VIEWS_DB_PATH))
+    # Always surface in API/UI so the row appears even before first profile view creates the file.
+    profile_views_db = 0 if pv_sz is None else pv_sz
 
     db_files: dict[str, int | None] = {
         "stats_db": stats_db,
         "chat_db": chat_db,
         "raw_events_db": raw_db,
         "avatar_db": avatar_db,
+        "profile_views_db": profile_views_db,
     }
-    db_total = sum(v for v in db_files.values() if v is not None) or None
+    _db_parts = [v for v in db_files.values() if v is not None]
+    db_total: int | None = sum(_db_parts) if _db_parts else None
 
     components = [json_logs, raw_logs, db_total]
     grand_total = sum(v for v in components if v is not None) or None

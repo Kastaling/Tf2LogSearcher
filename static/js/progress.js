@@ -17,6 +17,16 @@ function fmtBytes(bytes) {
   return (i === 0 ? v.toFixed(0) : v.toFixed(2)) + '\u00a0' + units[i];
 }
 
+/** Percent of ``bytes`` vs ``totalBytes`` as ``NN.NN`` (two decimals), or ``null``. */
+function storagePctPercent(bytes, totalBytes) {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return null;
+  if (totalBytes == null || !Number.isFinite(totalBytes) || totalBytes <= 0) return null;
+  var p = (bytes / totalBytes) * 100;
+  if (!Number.isFinite(p)) return null;
+  p = Math.max(0, Math.min(100, p));
+  return (Math.round(p * 100) / 100).toFixed(2);
+}
+
 /** Average size per file; empty string if undefined or count is zero. */
 function fmtAvgBytesPerFile(totalBytes, fileCount) {
   if (fileCount == null || typeof fileCount !== 'number' || !Number.isFinite(fileCount) || fileCount <= 0) {
@@ -65,6 +75,31 @@ function appendProgressRow(tbody, label, valueText, trClass) {
   const td = document.createElement('td');
   td.className = 'download-progress-value';
   td.textContent = valueText;
+  tr.appendChild(th);
+  tr.appendChild(td);
+  tbody.appendChild(tr);
+}
+
+/** Storage table: primary value + optional faded ``(pct%)`` vs grand total (no HTML from server). */
+function appendStorageValueRow(tbody, label, primaryText, trClass, bytesForPct, totalBytes) {
+  const tr = document.createElement('tr');
+  if (trClass) tr.className = trClass;
+  const th = document.createElement('th');
+  th.scope = 'row';
+  th.textContent = label;
+  const td = document.createElement('td');
+  td.className = 'download-progress-value';
+  const main = document.createElement('span');
+  main.className = 'download-progress-storage-main';
+  main.textContent = primaryText;
+  td.appendChild(main);
+  const pctStr = storagePctPercent(bytesForPct, totalBytes);
+  if (pctStr != null) {
+    const sp = document.createElement('span');
+    sp.className = 'download-progress-storage-pct';
+    sp.textContent = ' (' + pctStr + '%)';
+    td.appendChild(sp);
+  }
   tr.appendChild(th);
   tr.appendChild(td);
   tbody.appendChild(tr);
@@ -301,25 +336,38 @@ function _fillStorageStatsTableIntoShell(el, d) {
 
   const dirBytes = [];
   if (d.json_logs_bytes != null) {
-    appendProgressRow(
+    appendStorageValueRow(
       tbody,
       'JSON log files (' + jsonLogsDir() + ')',
       fmtStorageDirRow(d.json_logs_bytes, d.json_log_files_count),
+      '',
+      d.json_logs_bytes,
+      d.total_bytes,
     );
     dirBytes.push(d.json_logs_bytes);
   }
   if (d.download_raw_enabled && d.raw_logs_bytes != null) {
-    appendProgressRow(
+    appendStorageValueRow(
       tbody,
       'Raw log files (raw_logs/)',
       fmtStorageDirRow(d.raw_logs_bytes, d.raw_log_files_count),
+      '',
+      d.raw_logs_bytes,
+      d.total_bytes,
     );
     dirBytes.push(d.raw_logs_bytes);
   }
   const hasDirSection = dirBytes.length > 0;
   if (dirBytes.length > 1) {
     const dirsTotal = dirBytes.reduce(function(a, b) { return a + b; }, 0);
-    appendProgressRow(tbody, 'Directories total', fmtBytes(dirsTotal), 'download-progress-storage-subtotal');
+    appendStorageValueRow(
+      tbody,
+      'Directories total',
+      fmtBytes(dirsTotal),
+      'download-progress-storage-subtotal',
+      dirsTotal,
+      d.total_bytes,
+    );
   }
 
   const dbLabels = {
@@ -327,12 +375,18 @@ function _fillStorageStatsTableIntoShell(el, d) {
     chat_db: 'chat.db',
     raw_events_db: 'raw_events.db',
     avatar_db: 'avatars.db',
+    profile_views_db: 'profile_views.db',
   };
   const dbFiles = d.db_files || {};
   const dbRows = [];
   Object.keys(dbLabels).forEach(function(key) {
     if (key === 'raw_events_db' && !d.download_raw_enabled) return;
-    const v = dbFiles[key];
+    var v = dbFiles[key];
+    if (key === 'profile_views_db') {
+      var pvVal = v != null && typeof v === 'number' && Number.isFinite(v) ? v : 0;
+      dbRows.push({ label: dbLabels[key], v: pvVal });
+      return;
+    }
     if (v == null) return;
     dbRows.push({ label: dbLabels[key], v: v });
   });
@@ -343,10 +397,17 @@ function _fillStorageStatsTableIntoShell(el, d) {
   }
 
   dbRows.forEach(function(row) {
-    appendProgressRow(tbody, row.label, fmtBytes(row.v));
+    appendStorageValueRow(tbody, row.label, fmtBytes(row.v), '', row.v, d.total_bytes);
   });
   if (anyDb && d.db_total_bytes != null) {
-    appendProgressRow(tbody, 'DBs total', fmtBytes(d.db_total_bytes), 'download-progress-storage-subtotal');
+    appendStorageValueRow(
+      tbody,
+      'DBs total',
+      fmtBytes(d.db_total_bytes),
+      'download-progress-storage-subtotal',
+      d.db_total_bytes,
+      d.total_bytes,
+    );
   }
   if (d.total_bytes != null) {
     const trDiv = document.createElement('tr');

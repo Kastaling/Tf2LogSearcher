@@ -118,10 +118,12 @@ def test_compute_storage_stats_raw_enabled_true(tmp_path: Path) -> None:
     chat_db = state / "chat.db"
     raw_db = state / "raw_events.db"
     avatar_db = state / "avatars.db"
+    profile_views_db = state / "profile_views.db"
     stats_db.write_bytes(b"_" * 10)
     chat_db.write_bytes(b"_" * 4)
     raw_db.write_bytes(b"_" * 6)
     avatar_db.write_bytes(b"x")
+    profile_views_db.write_bytes(b"zzz")
 
     with (
         patch.object(routes, "LOGS_DIR", logs),
@@ -130,6 +132,7 @@ def test_compute_storage_stats_raw_enabled_true(tmp_path: Path) -> None:
         patch.object(routes, "CHAT_DB_PATH", chat_db),
         patch.object(routes, "RAW_EVENTS_DB_PATH", raw_db),
         patch.object(routes, "AVATAR_DB_PATH", avatar_db),
+        patch.object(routes, "PROFILE_VIEWS_DB_PATH", profile_views_db),
         patch.object(routes, "DOWNLOAD_RAW_ENABLED", True),
     ):
         out = routes._compute_storage_stats()
@@ -145,8 +148,9 @@ def test_compute_storage_stats_raw_enabled_true(tmp_path: Path) -> None:
     assert dbs["chat_db"] == 4
     assert dbs["raw_events_db"] == 6
     assert dbs["avatar_db"] == 1
-    assert out["db_total_bytes"] == 21
-    assert out["total_bytes"] == 5 + 2 + 21
+    assert dbs["profile_views_db"] == 3
+    assert out["db_total_bytes"] == 24
+    assert out["total_bytes"] == 5 + 2 + 24
 
 
 def test_compute_storage_stats_raw_disabled_skips_raw_paths(tmp_path: Path) -> None:
@@ -162,7 +166,8 @@ def test_compute_storage_stats_raw_disabled_skips_raw_paths(tmp_path: Path) -> N
     chat_db = state / "chat.db"
     raw_db = state / "raw_events.db"
     avatar_db = state / "avatars.db"
-    for p, n in ((stats_db, 3), (chat_db, 2), (raw_db, 99), (avatar_db, 1)):
+    profile_views_db = state / "profile_views.db"
+    for p, n in ((stats_db, 3), (chat_db, 2), (raw_db, 99), (avatar_db, 1), (profile_views_db, 5)):
         p.write_bytes(b"0" * n)
 
     with (
@@ -172,6 +177,7 @@ def test_compute_storage_stats_raw_disabled_skips_raw_paths(tmp_path: Path) -> N
         patch.object(routes, "CHAT_DB_PATH", chat_db),
         patch.object(routes, "RAW_EVENTS_DB_PATH", raw_db),
         patch.object(routes, "AVATAR_DB_PATH", avatar_db),
+        patch.object(routes, "PROFILE_VIEWS_DB_PATH", profile_views_db),
         patch.object(routes, "DOWNLOAD_RAW_ENABLED", False),
     ):
         out = routes._compute_storage_stats()
@@ -182,8 +188,9 @@ def test_compute_storage_stats_raw_disabled_skips_raw_paths(tmp_path: Path) -> N
     assert out["raw_logs_bytes"] is None
     assert out["raw_log_files_count"] is None
     assert out["db_files"]["raw_events_db"] is None
-    db_total = 3 + 2 + 1
+    db_total = 3 + 2 + 1 + 5
     assert out["db_total_bytes"] == db_total
+    assert out["db_files"]["profile_views_db"] == 5
     assert out["total_bytes"] == 2 + db_total
 
 
@@ -201,6 +208,7 @@ def test_compute_storage_stats_partial_db_files(tmp_path: Path) -> None:
     chat_db = state / "chat.db"
     raw_db = state / "raw_events.db"
     avatar_db = state / "avatars.db"
+    profile_views_db = state / "profile_views.db"
 
     with (
         patch.object(routes, "LOGS_DIR", logs),
@@ -209,6 +217,7 @@ def test_compute_storage_stats_partial_db_files(tmp_path: Path) -> None:
         patch.object(routes, "CHAT_DB_PATH", chat_db),
         patch.object(routes, "RAW_EVENTS_DB_PATH", raw_db),
         patch.object(routes, "AVATAR_DB_PATH", avatar_db),
+        patch.object(routes, "PROFILE_VIEWS_DB_PATH", profile_views_db),
         patch.object(routes, "DOWNLOAD_RAW_ENABLED", True),
     ):
         out = routes._compute_storage_stats()
@@ -221,5 +230,6 @@ def test_compute_storage_stats_partial_db_files(tmp_path: Path) -> None:
     assert out["db_files"]["chat_db"] is None
     assert out["db_files"]["raw_events_db"] is None
     assert out["db_files"]["avatar_db"] is None
+    assert out["db_files"]["profile_views_db"] == 0
     assert out["db_total_bytes"] == 2
     assert out["total_bytes"] == 3
