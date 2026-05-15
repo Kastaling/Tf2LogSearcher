@@ -315,6 +315,30 @@
         justify-content: center;
       }
     }
+    /* When storage pie is open: stack Download queue + Indexed libraries in one column (wide screens). */
+    @media (min-width: 768px) {
+      .download-progress-stats-board.download-progress-stats-board--storage-chart-open {
+        display: grid;
+        grid-template-columns: minmax(15.5rem, 28rem) minmax(15.5rem, 28rem);
+        grid-template-rows: auto auto;
+        gap: 1rem 1.25rem;
+        align-items: start;
+        justify-content: center;
+        overflow-x: visible;
+      }
+      .download-progress-stats-board--storage-chart-open > :nth-child(1) {
+        grid-column: 1;
+        grid-row: 1;
+      }
+      .download-progress-stats-board--storage-chart-open > :nth-child(2) {
+        grid-column: 1;
+        grid-row: 2;
+      }
+      .download-progress-stats-board--storage-chart-open > :nth-child(3) {
+        grid-column: 2;
+        grid-row: 1 / -1;
+      }
+    }
     .download-progress-stats-block {
       flex: 1 1 auto;
       min-width: min(100%, 15.5rem);
@@ -422,6 +446,91 @@
     }
     .download-progress-stats-block--storage {
       margin-top: 1rem;
+    }
+    .download-progress-storage-main {
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      align-items: stretch;
+    }
+    .download-progress-storage-pie-disclosure {
+      margin: 0;
+    }
+    .download-progress-storage-pie-summary {
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin: 0.15rem 0 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+    .download-progress-storage-pie-summary::-webkit-details-marker {
+      display: none;
+    }
+    .download-progress-storage-pie-summary::marker {
+      content: '';
+    }
+    .download-progress-storage-pie-summary::after {
+      content: '';
+      flex-shrink: 0;
+      width: 0.38em;
+      height: 0.38em;
+      border-right: 2px solid var(--text-muted);
+      border-bottom: 2px solid var(--text-muted);
+      transform: rotate(-45deg);
+      margin-top: -0.15em;
+      opacity: 0.75;
+      transition: transform 0.15s ease, opacity 0.15s ease;
+    }
+    .download-progress-storage-pie-disclosure[open] .download-progress-storage-pie-summary::after {
+      transform: rotate(45deg);
+      margin-top: 0.12em;
+    }
+    .download-progress-storage-pie-panel {
+      padding-top: 0.5rem;
+    }
+    .download-progress-storage-pie-wrap {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+      max-width: 220px;
+      margin: 0 auto;
+      flex-shrink: 0;
+    }
+    .download-progress-storage-pie-svg {
+      width: 100%;
+      height: auto;
+      max-height: 210px;
+      display: block;
+      overflow: visible;
+    }
+    .download-progress-storage-pie-slice {
+      stroke: var(--border);
+      stroke-width: 0.75;
+      stroke-linejoin: round;
+      cursor: pointer;
+      opacity: 0.95;
+      transition: opacity 0.14s ease, filter 0.14s ease;
+    }
+    .download-progress-storage-pie-svg:has(.download-progress-storage-pie-slice--active)
+      .download-progress-storage-pie-slice:not(.download-progress-storage-pie-slice--active) {
+      opacity: 0.4;
+    }
+    .download-progress-storage-pie-slice--active {
+      opacity: 1;
+      filter: brightness(1.14);
+    }
+    .download-progress-stats--storage tr.download-progress-storage-data-row.download-progress-storage-row--active th,
+    .download-progress-stats--storage tr.download-progress-storage-data-row.download-progress-storage-row--active td {
+      background-color: var(--table-hover);
     }
     .download-progress-stats--storage .download-progress-storage-subtotal th,
     .download-progress-stats--storage .download-progress-storage-subtotal td {
@@ -821,6 +930,32 @@
     .profile-coplayers-toggle {
       flex: 1 1 auto;
       min-width: min(100%, 14rem);
+    }
+    .profile-maps-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 0.75rem;
+      margin: 0.35rem 0 0.25rem;
+    }
+    .profile-maps-toolbar .profile-maps-toolbar-label {
+      margin: 0;
+    }
+    .profile-maps-view-toggle {
+      flex: 1 1 auto;
+      min-width: min(100%, 15rem);
+    }
+    .profile-maps-gamemode td:not(.profile-maps-expand-cell) {
+      font-weight: 600;
+    }
+    .profile-maps-parent--under-gm .profile-maps-expand-cell {
+      padding-left: 1rem;
+    }
+    .profile-maps-parent--under-gm td:nth-child(2) {
+      padding-left: 0.35rem;
+    }
+    .profile-maps-version--under-gm .profile-maps-version-map {
+      padding-left: 1.65rem;
     }
     .profile-maps-expand-cell {
       width: 2.25rem;

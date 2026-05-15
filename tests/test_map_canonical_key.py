@@ -34,6 +34,12 @@ from app.search.search import _map_canonical_key
         ("koth_clearcut_b15d", "koth_clearcut"),
         ("koth_clearcut_b15c", "koth_clearcut"),
         ("cp_villa_b17a", "cp_villa"),
+        # WIP / playtest tails after beta builds (e.g. ``pl_eruption_b10_test3``)
+        ("pl_eruption_b10_test3", "pl_eruption"),
+        ("pl_eruption_test1", "pl_eruption"),
+        # ``rev`` revision tail: bare ``rev`` or ``rev`` + digits (``rev\d+`` would miss bare ``rev``)
+        ("cp_workshop_rev", "cp_workshop"),
+        ("cp_map_rev2", "cp_map"),
         # Trailing numeric segment (only when enough path segments)
         ("pl_upward_2", "pl_upward"),
         # Multi-segment map names — do not strip meaningful segments

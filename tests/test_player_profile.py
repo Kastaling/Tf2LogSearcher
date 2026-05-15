@@ -205,6 +205,41 @@ def test_profile_top_maps_consolidation(maps_consolidation_db, monkeypatch):
     assert sum(v["logs_count"] for v in vig["versions"]) == 2
 
 
+@pytest.fixture()
+def maps_eruption_test_suffix_db(stats_db):
+    """Base map + beta+playtest suffix must share one canonical group."""
+    conn = connect_stats_db(stats_db)
+    with conn:
+        replace_stats_for_log(conn, 3101, _make_logtext(PLAYER_A_3, PLAYER_B_3, map_name="pl_eruption"))
+        replace_stats_for_log(
+            conn,
+            3102,
+            _make_logtext(
+                PLAYER_A_3,
+                PLAYER_B_3,
+                map_name="pl_eruption_b10_test3",
+                date_ts=1_700_200_000,
+            ),
+        )
+    conn.close()
+    return stats_db
+
+
+def test_profile_top_maps_groups_eruption_test_suffix(maps_eruption_test_suffix_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", maps_eruption_test_suffix_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    profile, _ = player_profile(PLAYER_A)
+    tm = profile.get("top_maps") or []
+    eru = next((x for x in tm if x.get("map_key") == "pl_eruption"), None)
+    assert eru is not None
+    assert eru["logs_count"] == 2
+    assert len(eru["versions"]) == 2
+    assert sum(v["logs_count"] for v in eru["versions"]) == 2
+    raw_names = {v["map"] for v in eru["versions"]}
+    assert raw_names == {"pl_eruption", "pl_eruption_b10_test3"}
+
+
 def test_profile_top_maps_grouped_and_pct(populated_db, monkeypatch):
     monkeypatch.setattr("app.search.search.STATS_DB_PATH", populated_db)
     monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})

@@ -294,11 +294,19 @@ var PROFILE_MAPS_COLUMNS = [
 function profileMapsSortValue(row, colKey, type) {
   if (type === 'text') {
     var t = row[colKey];
+    if ((t == null || t === '') && colKey === 'map_label' && row.map != null) {
+      t = row.map;
+    }
     return (t != null ? String(t) : '').toLowerCase();
   }
   var v = row[colKey];
   if (v == null || (typeof v === 'number' && !Number.isFinite(v))) return null;
   return Number(v);
+}
+
+/** Stable tie-break for map parents and per-version rows. */
+function profileMapsSortTieKey(row) {
+  return String(row.map_key != null ? row.map_key : row.map != null ? row.map : '');
 }
 
 function profileMapsSortedParents(rows, sortCol, sortDir) {
@@ -309,7 +317,7 @@ function profileMapsSortedParents(rows, sortCol, sortDir) {
     var va = profileMapsSortValue(a, colDef.key, colDef.type);
     var vb = profileMapsSortValue(b, colDef.key, colDef.type);
     if (va === null && vb === null) {
-      return String(a.map_key || '').localeCompare(String(b.map_key || ''));
+      return profileMapsSortTieKey(a).localeCompare(profileMapsSortTieKey(b));
     }
     if (va === null) return 1;
     if (vb === null) return -1;
@@ -320,9 +328,134 @@ function profileMapsSortedParents(rows, sortCol, sortDir) {
       if (va < vb) return -sortDir;
       if (va > vb) return sortDir;
     }
-    return String(a.map_key || '').localeCompare(String(b.map_key || ''));
+    return profileMapsSortTieKey(a).localeCompare(profileMapsSortTieKey(b));
   });
   return sorted;
+}
+
+/**
+ * Map filename prefix (segment before the first ``_``) → display name.
+ * Includes TF2 Wiki “Official map prefixes” plus common community / Hammer prefixes (Wiki “User created map prefixes” and related).
+ * Add keys in lowercase when you encounter new prefixes.
+ */
+var PROFILE_MAP_PREFIX_LABELS = {
+  ach: 'Achievement',
+  achievement: 'Achievement',
+  achievements: 'Achievement',
+  arena: 'Arena',
+  ccp: 'Cyclic capture point',
+  cp: 'Control Point',
+  ctf: 'Capture the Flag and Mannpower',
+  db: 'Dodgeball',
+  dbs: 'Dodgeball',
+  dcp: 'Dual capture progress',
+  dm: 'Deathmatch',
+  duel: 'Duel',
+  dz: 'DZ (community)',
+  es: 'Escort',
+  fy: 'FY (community)',
+  fw: 'FortWars',
+  gf: 'GF (community)',
+  gg: 'Gun game',
+  gungame: 'Gun game',
+  hs: 'Sniper duel',
+  htf: 'Hold the Flag',
+  ig: 'Instagib',
+  jump: 'Jump',
+  ktf: 'Hold the Flag',
+  koth: 'King of the Hill',
+  mvm: 'Mann vs. Machine',
+  od: 'Object destruction',
+  pass: 'PASS Time',
+  pd: 'Player Destruction',
+  pf: 'Parkour Fortress',
+  ph: 'Prop Hunt',
+  pl: 'Payload',
+  plr: 'Payload Race',
+  pz: 'PZ (community)',
+  rats: 'Rats',
+  rc: 'Random capture',
+  rd: 'Robot Destruction',
+  rj: 'Rocket jump',
+  sd: 'Special Delivery',
+  sn: 'Sniper duel',
+  sniper: 'Sniper duel',
+  soccer: 'Soccer',
+  surf: 'Surf',
+  tc: 'Territorial Control',
+  tfdb: 'Dodgeball',
+  toy: 'Toy / rats',
+  trade: 'Trade',
+  tow: 'Tug of War',
+  tr: 'Training Mode',
+  ud: 'Ultiduo',
+  ultiduo: 'Ultiduo',
+  vsh: 'Versus Saxton Hale',
+  zi: 'Zombie Infection',
+  zf: 'Zombie Fortress',
+  zs: 'Zombie survival',
+};
+
+/** First path segment of ``map_key`` (e.g. ``koth`` from ``koth_product``); ``other`` if unknown. */
+function profileMapGamemodePrefix(mapKey) {
+  var s = mapKey != null ? String(mapKey).trim() : '';
+  if (!s || s === '(unknown)') return 'other';
+  var i = s.indexOf('_');
+  if (i <= 0) return 'other';
+  return s.slice(0, i).toLowerCase();
+}
+
+function profileMapGamemodeLabel(prefix) {
+  if (prefix === 'other') return 'Other';
+  var p = String(prefix).toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(PROFILE_MAP_PREFIX_LABELS, p)) {
+    return PROFILE_MAP_PREFIX_LABELS[p];
+  }
+  return String(prefix) + '_';
+}
+
+/**
+ * Roll ``top_maps`` rows into gamemode buckets (prefix before first ``_``).
+ * Each bucket matches parent-row fields for sorting + thead columns.
+ * ``sortCol`` / ``sortDir`` order maps inside each gamemode like the active table sort.
+ */
+function profileMapsFoldGamemodes(mapRows, logsTotal, sortCol, sortDir) {
+  var sc = sortCol != null ? sortCol : 'logs_count';
+  var sd = sortDir != null ? sortDir : -1;
+  var byGm = Object.create(null);
+  mapRows.forEach(function(p) {
+    var gk = profileMapGamemodePrefix(p.map_key);
+    if (!byGm[gk]) {
+      byGm[gk] = { maps: [], logs_count: 0, wins: 0, losses: 0, undecided_logs: 0 };
+    }
+    var g = byGm[gk];
+    g.maps.push(p);
+    g.logs_count += Number(p.logs_count) || 0;
+    g.wins += Number(p.wins) || 0;
+    g.losses += Number(p.losses) || 0;
+    g.undecided_logs += Number(p.undecided_logs) || 0;
+  });
+  var lt = Number(logsTotal);
+  if (!Number.isFinite(lt)) lt = 0;
+  return Object.keys(byGm).map(function(gk) {
+    var g = byGm[gk];
+    g.maps = profileMapsSortedParents(g.maps.slice(), sc, sd);
+    var decided = g.wins + g.losses;
+    var winRate = decided > 0 ? Math.round((g.wins / decided) * 1e6) / 1e6 : null;
+    var pct = lt > 0 ? Math.round((g.logs_count / lt) * 1e6) / 1e6 : null;
+    return {
+      gamemode_key: gk,
+      map_key: '__gm__' + gk,
+      map_label: profileMapGamemodeLabel(gk),
+      logs_count: g.logs_count,
+      wins: g.wins,
+      losses: g.losses,
+      undecided_logs: g.undecided_logs,
+      win_rate: winRate,
+      pct_of_total: pct,
+      maps: g.maps,
+    };
+  });
 }
 
 function profileMapsTheadHtml(sortCol, sortDir) {
@@ -336,25 +469,77 @@ function profileMapsTheadHtml(sortCol, sortDir) {
   return '<thead>' + h + '</thead>';
 }
 
-function profileMapsRowsOnly(sortedParents, expandedMap) {
+function profileMapsRowsOnly(sortedParents, expandedMap, sortCol, sortDir) {
   var map = expandedMap || {};
+  var sc = sortCol != null ? sortCol : 'logs_count';
+  var sd = sortDir != null ? sortDir : -1;
   var html = '';
   sortedParents.forEach(function(p) {
     var mkey = p.map_key != null ? String(p.map_key) : '';
-    var vers = Array.isArray(p.versions) ? p.versions : [];
+    var versRaw = Array.isArray(p.versions) ? p.versions : [];
+    var vers = profileMapsSortedParents(versRaw.slice(), sc, sd);
     var hasVers = vers.length > 1;
     var exp = !!map[mkey];
-    html += profileMapsParentRowHtml(p, hasVers, exp);
+    html += profileMapsParentRowHtml(p, hasVers, exp, false);
     if (hasVers && exp) {
       vers.forEach(function(v) {
-        html += profileMapsVersionRowHtml(v);
+        html += profileMapsVersionRowHtml(v, false);
       });
     }
   });
   return html;
 }
 
-function profileMapsParentRowHtml(p, hasVers, expanded) {
+function profileMapsRowsGamemode(sortedGamemodes, expandedGm, expandedMap, sortCol, sortDir) {
+  var gmState = expandedGm || {};
+  var mapState = expandedMap || {};
+  var sc = sortCol != null ? sortCol : 'logs_count';
+  var sd = sortDir != null ? sortDir : -1;
+  var html = '';
+  sortedGamemodes.forEach(function(g) {
+    var gk = g.gamemode_key != null ? String(g.gamemode_key) : '';
+    var expGm = !!gmState[gk];
+    html += profileMapsGamemodeRowHtml(g, expGm);
+    if (expGm) {
+      (g.maps || []).forEach(function(p) {
+        var mkey = p.map_key != null ? String(p.map_key) : '';
+        var versRaw = Array.isArray(p.versions) ? p.versions : [];
+        var vers = profileMapsSortedParents(versRaw.slice(), sc, sd);
+        var hasVers = vers.length > 1;
+        var expMap = !!mapState[mkey];
+        html += profileMapsParentRowHtml(p, hasVers, expMap, true);
+        if (hasVers && expMap) {
+          vers.forEach(function(v) {
+            html += profileMapsVersionRowHtml(v, true);
+          });
+        }
+      });
+    }
+  });
+  return html;
+}
+
+function profileMapsGamemodeRowHtml(g, expanded) {
+  var pl = g.map_label != null ? String(g.map_label) : '';
+  var openTitle = 'Show maps — ' + pl;
+  var btn = '<button type="button" class="profile-maps-expand-btn profile-maps-gm-expand-btn" aria-expanded="' + (expanded ? 'true' : 'false') + '" data-gamemode-key="' + escapeAttr(String(g.gamemode_key)) + '" title="' + escapeAttr(openTitle) + '">' +
+    (expanded ? '\u25BC' : '\u25B6') + '</button>';
+  var pct = profileMapsPctDisplay(g.pct_of_total);
+  var wr = profileMapsWinRateDisplay(g.win_rate);
+  var u = g.undecided_logs != null ? Number(g.undecided_logs) : 0;
+  var undec = (u > 0) ? (' <span class="stats-summary-meta">(' + escapeHtml(String(u)) + ' undecided)</span>') : '';
+  return '<tr class="profile-maps-gamemode" data-gamemode-key="' + escapeAttr(String(g.gamemode_key)) + '">' +
+    '<td class="profile-maps-expand-cell">' + btn + '</td>' +
+    '<td>' + escapeHtml(pl) + undec + '</td>' +
+    '<td>' + escapeHtml(String(g.logs_count != null ? g.logs_count : '')) + '</td>' +
+    '<td>' + (pct === '\u2014' ? '\u2014' : escapeHtml(pct)) + '</td>' +
+    '<td>' + (wr === '\u2014' ? '\u2014' : escapeHtml(wr)) + '</td>' +
+    '<td>' + escapeHtml(String(g.wins != null ? g.wins : '')) + '</td>' +
+    '<td>' + escapeHtml(String(g.losses != null ? g.losses : '')) + '</td>' +
+    '</tr>';
+}
+
+function profileMapsParentRowHtml(p, hasVers, expanded, underGamemode) {
   var btn = '';
   if (hasVers) {
     btn = '<button type="button" class="profile-maps-expand-btn" aria-expanded="' + (expanded ? 'true' : 'false') + '" data-map-key="' + escapeAttr(String(p.map_key)) + '" title="Show versions">' +
@@ -367,7 +552,8 @@ function profileMapsParentRowHtml(p, hasVers, expanded) {
   var wr = profileMapsWinRateDisplay(p.win_rate);
   var u = p.undecided_logs != null ? Number(p.undecided_logs) : 0;
   var undec = (u > 0) ? (' <span class="stats-summary-meta">(' + escapeHtml(String(u)) + ' undecided)</span>') : '';
-  return '<tr class="profile-maps-parent" data-map-key="' + escapeAttr(String(p.map_key)) + '">' +
+  var rowCls = 'profile-maps-parent' + (underGamemode ? ' profile-maps-parent--under-gm' : '');
+  return '<tr class="' + rowCls + '" data-map-key="' + escapeAttr(String(p.map_key)) + '">' +
     '<td class="profile-maps-expand-cell">' + btn + '</td>' +
     '<td>' + escapeHtml(pl) + undec + '</td>' +
     '<td>' + escapeHtml(String(p.logs_count != null ? p.logs_count : '')) + '</td>' +
@@ -378,13 +564,14 @@ function profileMapsParentRowHtml(p, hasVers, expanded) {
     '</tr>';
 }
 
-function profileMapsVersionRowHtml(v) {
+function profileMapsVersionRowHtml(v, underGamemode) {
   var pl = v.map != null ? String(v.map) : '';
   var pct = profileMapsPctDisplay(v.pct_of_total);
   var wr = profileMapsWinRateDisplay(v.win_rate);
   var u = v.undecided_logs != null ? Number(v.undecided_logs) : 0;
   var undec = (u > 0) ? (' <span class="stats-summary-meta">(' + escapeHtml(String(u)) + ' undecided)</span>') : '';
-  return '<tr class="profile-maps-version">' +
+  var rowCls = 'profile-maps-version' + (underGamemode ? ' profile-maps-version--under-gm' : '');
+  return '<tr class="' + rowCls + '">' +
     '<td class="profile-maps-expand-cell"></td>' +
     '<td class="profile-maps-version-map">' + escapeHtml(pl) + undec + '</td>' +
     '<td>' + escapeHtml(String(v.logs_count != null ? v.logs_count : '')) + '</td>' +
@@ -399,27 +586,85 @@ function profileMapsTableShellHtml() {
   return profileMapsTheadHtml('logs_count', -1) + '<tbody class="js-profile-maps-tbody"></tbody>';
 }
 
+var PROFILE_MAPS_META_MAPS = 'One row per base map (variants combined). Expand to see each version. Column headers sort this main list.';
+var PROFILE_MAPS_META_GAMEMODE = 'One row per game type. Expand for maps, then for versions when there is more than one. Column headers sort the type list.';
+
 function profileTopMapsBlock() {
   return '<div class="stats-summary profile-top-maps">' +
     '<p class="stats-summary-title">Most played maps</p>' +
-    '<p class="stats-summary-meta">Maps with the same base name are grouped (RC / beta / final suffixes). Expand a row to see per-version stats. Column headers sort grouped rows only.</p>' +
+    '<div class="profile-maps-toolbar">' +
+    '<span class="stats-summary-meta profile-maps-toolbar-label">View</span>' +
+    '<div class="stats-trend-toggle profile-maps-view-toggle" role="tablist" aria-label="Most played maps grouping">' +
+    '<button type="button" class="stats-trend-btn js-profile-maps-view active" data-view="maps" role="tab" aria-selected="true">By map</button>' +
+    '<button type="button" class="stats-trend-btn js-profile-maps-view" data-view="gamemode" role="tab" aria-selected="false">By gamemode</button>' +
+    '</div></div>' +
+    '<p class="stats-summary-meta js-profile-maps-meta">' + escapeHtml(PROFILE_MAPS_META_MAPS) + '</p>' +
     '<div class="stats-table-wrap"><table class="stats-table js-profile-maps">' + profileMapsTableShellHtml() + '</table></div></div>';
 }
 
 function bindProfileMapsTable(table) {
   var tbody = table.querySelector('tbody.js-profile-maps-tbody');
   if (!tbody) return;
+  var card = table.closest('.profile-top-maps');
   function render() {
     var parents = table._profileMapRows || [];
-    var sorted = profileMapsSortedParents(parents, table._sortCol, table._sortDir);
-    tbody.innerHTML = profileMapsRowsOnly(sorted, table._mapsExpanded || {});
+    var view = table._mapsView || 'maps';
+    var logsTotal = table._profileLogsTotal;
+    if (logsTotal == null || !Number.isFinite(Number(logsTotal))) {
+      logsTotal = parents.reduce(function(acc, p) { return acc + (Number(p.logs_count) || 0); }, 0);
+    }
+    var sorted;
+    var bodyHtml;
+    if (view === 'gamemode') {
+      var groups = profileMapsFoldGamemodes(parents, logsTotal, table._sortCol, table._sortDir);
+      sorted = profileMapsSortedParents(groups, table._sortCol, table._sortDir);
+      bodyHtml = profileMapsRowsGamemode(sorted, table._mapsGmExpanded || {}, table._mapsExpanded || {}, table._sortCol, table._sortDir);
+    } else {
+      sorted = profileMapsSortedParents(parents, table._sortCol, table._sortDir);
+      bodyHtml = profileMapsRowsOnly(sorted, table._mapsExpanded || {}, table._sortCol, table._sortDir);
+    }
+    tbody.innerHTML = bodyHtml;
     var oldThead = table.querySelector('thead');
     if (oldThead) {
       oldThead.outerHTML = profileMapsTheadHtml(table._sortCol, table._sortDir);
     }
   }
+  table._mapsView = table._mapsView || 'maps';
+  table._mapsGmExpanded = table._mapsGmExpanded || {};
+  if (card && !card.hasAttribute('data-profile-maps-view-bound')) {
+    card.setAttribute('data-profile-maps-view-bound', '1');
+    card.addEventListener('click', function(ev) {
+      var vbtn = ev.target.closest('.js-profile-maps-view');
+      if (!vbtn || !card.contains(vbtn)) return;
+      var v = vbtn.getAttribute('data-view');
+      if (v !== 'maps' && v !== 'gamemode') return;
+      if (table._mapsView === v) return;
+      table._mapsView = v;
+      table._mapsExpanded = {};
+      table._mapsGmExpanded = {};
+      card.querySelectorAll('.js-profile-maps-view').forEach(function(b) {
+        var on = b.getAttribute('data-view') === v;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      var m = card.querySelector('.js-profile-maps-meta');
+      if (m) m.textContent = v === 'gamemode' ? PROFILE_MAPS_META_GAMEMODE : PROFILE_MAPS_META_MAPS;
+      render();
+    });
+  }
   table.addEventListener('click', function(ev) {
-    var btn = ev.target.closest('button.profile-maps-expand-btn');
+    var gmBtn = ev.target.closest('button.profile-maps-gm-expand-btn');
+    if (gmBtn && table.contains(gmBtn)) {
+      ev.preventDefault();
+      var gk = gmBtn.getAttribute('data-gamemode-key');
+      if (!gk) return;
+      var gex = table._mapsGmExpanded || {};
+      gex[gk] = !gex[gk];
+      table._mapsGmExpanded = gex;
+      render();
+      return;
+    }
+    var btn = ev.target.closest('button.profile-maps-expand-btn:not(.profile-maps-gm-expand-btn)');
     if (btn && table.contains(btn)) {
       ev.preventDefault();
       var mk = btn.getAttribute('data-map-key');
@@ -1037,6 +1282,9 @@ function renderProfileResult(el, data, elapsedMs) {
     mapTable._sortCol = 'logs_count';
     mapTable._sortDir = -1;
     mapTable._mapsExpanded = {};
+    mapTable._mapsGmExpanded = {};
+    mapTable._mapsView = 'maps';
+    mapTable._profileLogsTotal = data.logs_count != null ? Number(data.logs_count) : null;
     bindProfileMapsTable(mapTable);
   }
 

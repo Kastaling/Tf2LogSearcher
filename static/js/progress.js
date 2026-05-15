@@ -121,9 +121,13 @@ function appendProgressRow(tbody, label, valueText, trClass) {
 }
 
 /** Storage table: primary value + optional faded ``(pct%)`` vs grand total (no HTML from server). */
-function appendStorageValueRow(tbody, label, primaryText, trClass, bytesForPct, totalBytes) {
+function appendStorageValueRow(tbody, label, primaryText, trClass, bytesForPct, totalBytes, sliceId) {
   const tr = document.createElement('tr');
   if (trClass) tr.className = trClass;
+  if (sliceId) {
+    tr.setAttribute('data-storage-slice', String(sliceId));
+    tr.classList.add('download-progress-storage-data-row');
+  }
   const th = document.createElement('th');
   th.scope = 'row';
   th.textContent = label;
@@ -143,6 +147,113 @@ function appendStorageValueRow(tbody, label, primaryText, trClass, bytesForPct, 
   tr.appendChild(th);
   tr.appendChild(td);
   tbody.appendChild(tr);
+}
+
+const STORAGE_PIE_COLORS = [
+  '#5B8DEF',
+  '#3DBB8E',
+  '#E89C3C',
+  '#D96CE8',
+  '#E85B7A',
+  '#5BC4D4',
+  '#A896D8',
+];
+
+function storagePiePolar(cx, cy, r, angleRad) {
+  return { x: cx + r * Math.cos(angleRad), y: cy + r * Math.sin(angleRad) };
+}
+
+/**
+ * SVG pie chart for storage leaf categories. Slices and table rows share ``data-storage-slice``.
+ */
+function mountStoragePieChart(wrapEl, tbody, segments, totalBytes) {
+  wrapEl.textContent = '';
+  if (!segments.length || totalBytes == null || !Number.isFinite(totalBytes) || totalBytes <= 0) {
+    return;
+  }
+  const nonzero = segments.filter(function(s) {
+    return s.bytes != null && typeof s.bytes === 'number' && Number.isFinite(s.bytes) && s.bytes > 0;
+  });
+  if (!nonzero.length) {
+    return;
+  }
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 200 200');
+  svg.setAttribute('class', 'download-progress-storage-pie-svg');
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('focusable', 'false');
+  const ariaParts = nonzero.map(function(s) {
+    return s.label + ' ' + fmtBytes(s.bytes);
+  });
+  svg.setAttribute('aria-label', 'Storage breakdown: ' + ariaParts.join('; '));
+
+  const cx = 100;
+  const cy = 100;
+  const radius = 82;
+  let angle = -Math.PI / 2;
+
+  function setSliceHighlight(sliceId, on) {
+    var sel = '[data-storage-slice="' + sliceId + '"]';
+    wrapEl.querySelectorAll(sel).forEach(function(el2) {
+      el2.classList.toggle('download-progress-storage-pie-slice--active', on);
+    });
+    tbody.querySelectorAll(sel).forEach(function(el2) {
+      el2.classList.toggle('download-progress-storage-row--active', on);
+    });
+  }
+
+  nonzero.forEach(function(seg, i) {
+    const frac = Math.min(1, Math.max(0, seg.bytes / totalBytes));
+    if (frac <= 0) {
+      return;
+    }
+    const sweep = frac * 2 * Math.PI;
+    const endAngle = angle + sweep;
+    const color = STORAGE_PIE_COLORS[i % STORAGE_PIE_COLORS.length];
+    let path;
+    if (nonzero.length === 1 || frac >= 1 - 1e-9) {
+      path = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      path.setAttribute('cx', String(cx));
+      path.setAttribute('cy', String(cy));
+      path.setAttribute('r', String(radius));
+      path.setAttribute('fill', color);
+    } else {
+      const p1 = storagePiePolar(cx, cy, radius, angle);
+      const p2 = storagePiePolar(cx, cy, radius, endAngle);
+      const largeArc = sweep > Math.PI ? 1 : 0;
+      const d =
+        'M ' + cx + ' ' + cy + ' L ' + p1.x + ' ' + p1.y + ' A ' + radius + ' ' + radius + ' 0 ' + largeArc + ' 1 ' + p2.x + ' ' + p2.y + ' Z';
+      path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', d);
+      path.setAttribute('fill', color);
+    }
+    path.setAttribute('class', 'download-progress-storage-pie-slice');
+    path.setAttribute('data-storage-slice', seg.id);
+    const pctStr = storagePctPercent(seg.bytes, totalBytes);
+    path.setAttribute('title', seg.label + (pctStr != null ? ' (' + pctStr + '%)' : '') + ' — ' + fmtBytes(seg.bytes));
+    path.addEventListener('mouseenter', function() {
+      setSliceHighlight(seg.id, true);
+    });
+    path.addEventListener('mouseleave', function() {
+      setSliceHighlight(seg.id, false);
+    });
+    svg.appendChild(path);
+    angle = endAngle;
+  });
+
+  wrapEl.appendChild(svg);
+
+  tbody.querySelectorAll('tr[data-storage-slice]').forEach(function(tr) {
+    const sid = tr.getAttribute('data-storage-slice');
+    if (!sid) return;
+    tr.addEventListener('mouseenter', function() {
+      setSliceHighlight(sid, true);
+    });
+    tr.addEventListener('mouseleave', function() {
+      setSliceHighlight(sid, false);
+    });
+  });
 }
 
 function appendStorageSectionSpacer(tbody) {
@@ -370,12 +481,18 @@ function _fillStorageStatsTableIntoShell(el, d) {
   const lw = el.querySelector('.download-progress-storage-loading');
   if (lw) lw.remove();
 
+  const pieSegments = [];
   const tbl = document.createElement('table');
   tbl.className = 'download-progress-stats download-progress-stats--storage download-progress-storage-reveal';
   const tbody = document.createElement('tbody');
 
   const dirBytes = [];
   if (d.json_logs_bytes != null) {
+    pieSegments.push({
+      id: 'json_logs',
+      label: 'JSON log files (' + jsonLogsDir() + ')',
+      bytes: d.json_logs_bytes,
+    });
     appendStorageValueRow(
       tbody,
       'JSON log files (' + jsonLogsDir() + ')',
@@ -383,10 +500,16 @@ function _fillStorageStatsTableIntoShell(el, d) {
       '',
       d.json_logs_bytes,
       d.total_bytes,
+      'json_logs',
     );
     dirBytes.push(d.json_logs_bytes);
   }
   if (d.download_raw_enabled && d.raw_logs_bytes != null) {
+    pieSegments.push({
+      id: 'raw_logs',
+      label: 'Raw log files (raw_logs/)',
+      bytes: d.raw_logs_bytes,
+    });
     appendStorageValueRow(
       tbody,
       'Raw log files (raw_logs/)',
@@ -394,20 +517,16 @@ function _fillStorageStatsTableIntoShell(el, d) {
       '',
       d.raw_logs_bytes,
       d.total_bytes,
+      'raw_logs',
     );
     dirBytes.push(d.raw_logs_bytes);
   }
   const hasDirSection = dirBytes.length > 0;
   if (dirBytes.length > 1) {
-    const dirsTotal = dirBytes.reduce(function(a, b) { return a + b; }, 0);
-    appendStorageValueRow(
-      tbody,
-      'Directories total',
-      fmtBytes(dirsTotal),
-      'download-progress-storage-subtotal',
-      dirsTotal,
-      d.total_bytes,
-    );
+    const dirsTotal = dirBytes.reduce(function(a, b) {
+      return a + b;
+    }, 0);
+    appendStorageValueRow(tbody, 'Directories total', fmtBytes(dirsTotal), 'download-progress-storage-subtotal', dirsTotal, d.total_bytes);
   }
 
   const dbLabels = {
@@ -424,20 +543,21 @@ function _fillStorageStatsTableIntoShell(el, d) {
     var v = dbFiles[key];
     if (key === 'profile_views_db') {
       var pvVal = v != null && typeof v === 'number' && Number.isFinite(v) ? v : 0;
-      dbRows.push({ label: dbLabels[key], v: pvVal });
+      dbRows.push({ key: key, label: dbLabels[key], v: pvVal });
       return;
     }
     if (v == null) return;
-    dbRows.push({ label: dbLabels[key], v: v });
+    dbRows.push({ key: key, label: dbLabels[key], v: v });
   });
   const anyDb = dbRows.length > 0;
 
-  if (hasDirSection && (anyDb || (d.total_bytes != null))) {
+  if (hasDirSection && (anyDb || d.total_bytes != null)) {
     appendStorageSectionSpacer(tbody);
   }
 
   dbRows.forEach(function(row) {
-    appendStorageValueRow(tbody, row.label, fmtBytes(row.v), '', row.v, d.total_bytes);
+    pieSegments.push({ id: row.key, label: row.label, bytes: row.v });
+    appendStorageValueRow(tbody, row.label, fmtBytes(row.v), '', row.v, d.total_bytes, row.key);
   });
   if (anyDb && d.db_total_bytes != null) {
     appendStorageValueRow(
@@ -463,7 +583,42 @@ function _fillStorageStatsTableIntoShell(el, d) {
   }
 
   tbl.appendChild(tbody);
-  el.appendChild(tbl);
+
+  var main = el.querySelector('.download-progress-storage-main');
+  if (!main) {
+    main = el;
+  }
+  el.querySelectorAll('.download-progress-storage-pie-disclosure').forEach(function(n) {
+    n.remove();
+  });
+  main.appendChild(tbl);
+
+  const pieWrap = document.createElement('div');
+  pieWrap.className = 'download-progress-storage-pie-wrap';
+  mountStoragePieChart(pieWrap, tbody, pieSegments, d.total_bytes);
+
+  if (pieWrap.firstChild) {
+    const pieDisclosure = document.createElement('details');
+    pieDisclosure.className = 'download-progress-storage-pie-disclosure';
+    const pieSummary = document.createElement('summary');
+    pieSummary.className = 'download-progress-storage-pie-summary';
+    pieSummary.textContent = 'Show storage chart';
+    const piePanel = document.createElement('div');
+    piePanel.className = 'download-progress-storage-pie-panel';
+    piePanel.appendChild(pieWrap);
+    pieDisclosure.appendChild(pieSummary);
+    pieDisclosure.appendChild(piePanel);
+    main.appendChild(pieDisclosure);
+    pieDisclosure.addEventListener('toggle', function() {
+      const b = el.closest('.download-progress-stats-board');
+      if (!b) return;
+      if (pieDisclosure.open) {
+        b.classList.add('download-progress-stats-board--storage-chart-open');
+      } else {
+        b.classList.remove('download-progress-stats-board--storage-chart-open');
+      }
+    });
+  }
 }
 
 function fetchStorageStatsAndPatch() {
@@ -475,7 +630,10 @@ function fetchStorageStatsAndPatch() {
   if (!board) return;
 
   const existing = document.getElementById('downloadProgressStorageBlock');
-  if (existing) existing.remove();
+  if (existing) {
+    board.classList.remove('download-progress-stats-board--storage-chart-open');
+    existing.remove();
+  }
 
   const reqId = ++_storageStatsRequestId;
   const shell = document.createElement('div');
@@ -486,7 +644,9 @@ function fetchStorageStatsAndPatch() {
   const storageTitle = document.createElement('div');
   storageTitle.className = 'download-progress-stats-block-title';
   storageTitle.textContent = 'Storage utilization';
-  shell.appendChild(storageTitle);
+
+  const main = document.createElement('div');
+  main.className = 'download-progress-storage-main';
 
   const loadingWrap = document.createElement('div');
   loadingWrap.className = 'download-progress-storage-loading';
@@ -509,7 +669,10 @@ function fetchStorageStatsAndPatch() {
   loadingState.appendChild(loadingLabel);
   loadingState.appendChild(dots);
   loadingWrap.appendChild(loadingState);
-  shell.appendChild(loadingWrap);
+  main.appendChild(loadingWrap);
+
+  shell.appendChild(storageTitle);
+  shell.appendChild(main);
 
   board.insertBefore(shell, block.nextSibling);
 
@@ -519,6 +682,8 @@ function fetchStorageStatsAndPatch() {
       const el = _storageStatsShellForRequest(reqId);
       if (!el) return;
       if (d && d.enabled === false) {
+        const b = el.closest('.download-progress-stats-board');
+        if (b) b.classList.remove('download-progress-stats-board--storage-chart-open');
         el.remove();
         return;
       }

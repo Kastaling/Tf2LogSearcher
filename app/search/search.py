@@ -1906,6 +1906,7 @@ _MAP_VER_TAIL_RE = re.compile(
       [uv]\d+ |
       p\d+ |
       (?:alpha|beta|gamma|delta)\d* |
+      test\d+ |
       final\d* |
       pro\d* |
       fix\d* |

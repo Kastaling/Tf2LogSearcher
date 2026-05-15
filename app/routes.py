@@ -78,6 +78,13 @@ PLAYER_NAME_QUERY_MIN_LENGTH = 3
 PLAYER_NAME_QUERY_MAX_LENGTH = 64
 PLAYER_NAME_RESULT_LIMIT = 200
 
+# Default SERP / link-preview text when a page has no specific snippet (keep in sync with static/index.html <meta name="description">).
+SITE_META_DESCRIPTION = (
+    "Search Team Fortress 2 logs.tf data: chat and word leaderboards, player profiles, "
+    "co-players, multi-party log search, class stats, rankings, and chat name lookup. "
+    "Accepts SteamID64, Steam profile URLs, and vanity names."
+)
+
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1955,7 +1962,7 @@ def _build_results_embed_meta(request: Request) -> str:
             full_url += f"?{request.url.query}"
 
         title = "TF2 Log Searcher"
-        desc = "TF2 logs.tf search results."
+        desc = SITE_META_DESCRIPTION
         og_image_url: str | None = None
 
         # Try to pull cached payloads to include counts without doing heavy work.
@@ -2180,6 +2187,7 @@ def _build_results_embed_meta(request: Request) -> str:
                 f'\n  <meta name="twitter:image" content="{esc_img}">'
             )
         return (
+            f'\n  <meta name="description" content="{esc_desc}">'
             f'\n  <meta property="og:type" content="website">'
             f'\n  <meta property="og:site_name" content="TF2 Log Searcher">'
             f'\n  <meta property="og:title" content="{esc_title}">'
@@ -2195,6 +2203,59 @@ def _build_results_embed_meta(request: Request) -> str:
 
 
 _STATIC_ASSET_REF_RE = re.compile(r'(?P<prefix>\b(?:src|href)=["\'])(?P<url>/static/[^"\']+)(?P<suffix>["\'])')
+# Server-generated Open Graph block for /results replaces this region of static/index.html (avoid duplicate meta tags).
+_RESULTS_EMBED_META_BLOCK_RE = re.compile(
+    r"  <!-- tf2ls:embed-meta-replace-start -->.*?  <!-- tf2ls:embed-meta-replace-end -->\r?\n",
+    re.DOTALL,
+)
+
+_EMBED_META_START_MARK = "<!-- tf2ls:embed-meta-replace-start -->"
+_EMBED_META_END_MARK = "<!-- tf2ls:embed-meta-replace-end -->"
+
+
+def _strip_tf2ls_embed_meta_block(html: str) -> str | None:
+    """Remove the marked OG/meta placeholder region from ``index.html`` HTML (one occurrence).
+
+    Used when :data:`_RESULTS_EMBED_META_BLOCK_RE` cannot replace the block so we inject meta
+    elsewhere without leaving duplicate tags. Returns ``None`` if start/end markers are missing
+    or malformed (caller should avoid injecting in that case if duplicates matter).
+    """
+    i = html.find(_EMBED_META_START_MARK)
+    if i == -1:
+        return None
+    j = html.find(_EMBED_META_END_MARK, i)
+    if j == -1:
+        return None
+    j2 = j + len(_EMBED_META_END_MARK)
+    if j2 < len(html) and html[j2] == "\r":
+        j2 += 1
+    if j2 < len(html) and html[j2] == "\n":
+        j2 += 1
+    line_start = html.rfind("\n", 0, i)
+    line_start = 0 if line_start == -1 else line_start + 1
+    if html[line_start:i].strip() == "":
+        i = line_start
+    return html[:i] + html[j2:]
+
+
+def _inject_results_meta_after_title(html: str, meta: str) -> str:
+    """Insert ``meta`` HTML immediately after the site ``<title>``, else after ``<head>``."""
+    needle = "<title>TF2 Log Searcher</title>"
+    if needle in html:
+        return html.replace(needle, needle + meta, 1)
+    return html.replace("<head>", "<head>" + meta, 1)
+
+
+def _merge_results_embed_meta_regex_miss(html: str, meta: str) -> str:
+    """If the marked block regex misses, strip the tf2ls region when possible, then inject ``meta`` only then.
+
+    When markers are missing, the template may still contain OG/meta tags; injecting after ``<title>`` would
+    duplicate them, so we leave ``html`` unchanged (still one set of tags from the template).
+    """
+    stripped = _strip_tf2ls_embed_meta_block(html)
+    if stripped is None:
+        return html
+    return _inject_results_meta_after_title(stripped, meta)
 
 
 def _with_static_asset_versions(html: str) -> str:
@@ -2232,12 +2293,12 @@ async def _serve_results_with_embed(request: Request) -> HTMLResponse:
         raw = _with_static_asset_versions(static_path.read_text(encoding="utf-8", errors="replace"))
         meta = _build_results_embed_meta(request)
         if meta:
-            # Insert immediately after <title> tag if present, else after <head>.
-            needle = "<title>TF2 Log Searcher</title>"
-            if needle in raw:
-                raw = raw.replace(needle, needle + meta, 1)
+            replacement = f"  <!-- tf2ls:embed-meta-replace-start -->{meta}  <!-- tf2ls:embed-meta-replace-end -->\n"
+            new_raw, n_sub = _RESULTS_EMBED_META_BLOCK_RE.subn(replacement, raw, count=1)
+            if n_sub:
+                raw = new_raw
             else:
-                raw = raw.replace("<head>", "<head>" + meta, 1)
+                raw = _merge_results_embed_meta_regex_miss(raw, meta)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(request, "/results", 200, duration_ms)
         return HTMLResponse(raw, media_type="text/html", headers={"Cache-Control": "no-cache"})
