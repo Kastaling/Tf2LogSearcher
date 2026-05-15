@@ -6,7 +6,7 @@ function leaderboardDefaultSortKey(lbType) {
   if (t === 'kdr') return 'avg_kdr';
   if (t === 'winrate') return 'win_rate';
   if (t === 'logs') return 'log_count';
-  if (t === 'ubers' || t === 'drops' || t === 'damage_taken' || t === 'avg_deaths' || t === 'avg_killstreak') return 'primary_value';
+  if (t === 'ubers' || t === 'drops' || t === 'damage_taken' || t === 'avg_deaths' || t === 'avg_killstreak' || t === 'backstabs' || t === 'headshots') return 'primary_value';
   return 'avg_dpm';
 }
 
@@ -36,6 +36,14 @@ function getLeaderboardPrimaryColumn(lbType, statScope) {
   if (t === 'damage_taken') {
     if (ss === 'per_log') return { key: 'primary_value', label: 'Damage taken / log', type: 'decimal2' };
     return { key: 'primary_value', label: 'Damage taken (total)', type: 'number' };
+  }
+  if (t === 'backstabs') {
+    if (ss === 'per_log') return { key: 'primary_value', label: 'Backstabs / log', type: 'decimal2' };
+    return { key: 'primary_value', label: 'Total backstabs', type: 'int' };
+  }
+  if (t === 'headshots') {
+    if (ss === 'per_log') return { key: 'primary_value', label: 'Headshots / log', type: 'decimal2' };
+    return { key: 'primary_value', label: 'Total headshots', type: 'int' };
   }
   if (t === 'avg_deaths') return { key: 'primary_value', label: 'Deaths/log', type: 'decimal2' };
   if (t === 'avg_killstreak') return { key: 'primary_value', label: 'Avg killstreak', type: 'decimal2' };
@@ -93,7 +101,7 @@ function getLeaderboardSortValue(row, key, type) {
     var wr = Number(row.win_rate);
     return Number.isFinite(wr) ? wr : -Infinity;
   }
-  if (type === 'decimal2' || type === 'number') {
+  if (type === 'decimal2' || type === 'number' || type === 'int') {
     return getSortValue(row, key, 'number');
   }
   if (type === 'name') {
@@ -181,7 +189,7 @@ function bindLeaderboardCsvDownload(container) {
     var sorted = getSortedLeaderboardRows(rows, lb, sc);
     var csv = buildLeaderboardCsvContent(sorted, lb, sc);
     var d = new Date();
-    var scopePart = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken' || lb === 'winrate') ? '-' + String(sc).replace(/[^a-z0-9_-]/gi, '_') : '';
+    var scopePart = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken' || lb === 'winrate' || lb === 'backstabs' || lb === 'headshots') ? '-' + String(sc).replace(/[^a-z0-9_-]/gi, '_') : '';
     var fn = 'tf2-stats-leaderboard-' + lb + scopePart + '-' + d.getFullYear() + '-' + (d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate() + '.csv';
     triggerCsvDownload(fn, csv);
   });

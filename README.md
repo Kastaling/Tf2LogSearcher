@@ -1,299 +1,190 @@
 # Tf2LogSearcher
 
-A small web app and downloader for searching [logs.tf](https://logs.tf) TF2 match logs. You can run the full stack (web UI + downloader) or **only the downloader** to build a local log library.
+A small web app and downloader for building a local [logs.tf](https://logs.tf) library and searching TF2 match logs.
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/)
 - [Docker Compose](https://docs.docker.com/compose/install/)
 
----
-
-## Running tests (pytest)
-
-The project includes an automated **pytest** suite under [`tests/`](tests/). It covers search helpers, player profile aggregation, rate limiting, log-match logic, and HTTP-mocked Steam avatar calls. Tests use **temporary directories** and **do not** read your real `./logs` or `./downloader_state` data.
-
-### Docker Compose (recommended)
-
-Use the dedicated **`test`** service (Compose **profile** `test` so it never starts with a plain `docker compose up`):
+## Quick Start
 
 ```bash
-# From the repo root (use docker-compose.yml copied from docker-compose.example.yml if needed)
-docker compose --profile test build test
-docker compose --profile test run --rm test
+git clone https://github.com/Kastaling/Tf2LogSearcher.git
+cd Tf2LogSearcher
+cp docker-compose.example.yml docker-compose.yml
+# Optional: cp .env.example .env
+docker compose up -d
 ```
 
-If you still use **Compose V1**, replace `docker compose` with `docker-compose` (same arguments).
+The web UI is available at <http://localhost:8027>. The default `downloader` service downloads logs.tf JSON files to `./logs`, raw log zips to `./raw_logs`, and state/SQLite databases to `./downloader_state`.
 
-- **`build test`** — builds the `test` stage of the [`Dockerfile`](Dockerfile): same dependencies as the app image, plus `tests/` and `pytest.ini`, running as a **non-root** user inside the container.
-- **`run --rm test`** — runs `pytest -v tests` once and removes the container. Exit code **0** means all tests passed; **non-zero** means at least one failure or error.
+Use `docker-compose` instead of `docker compose` if you are still on Compose V1.
 
-**Optional arguments** (forwarded to pytest):
+## Downloader Modes
+
+Run only one downloader variant at a time:
 
 ```bash
-docker compose --profile test run --rm test python -m pytest tests/test_search_utils.py -q
-docker compose --profile test run --rm test python -m pytest tests/ --tb=long --maxfail=1
+# Default: JSON + raw zips
+docker compose up -d downloader
+
+# JSON only
+docker compose --profile json-only up -d downloader-json
+
+# Raw zips only
+docker compose --profile raw-only up -d downloader-raw
 ```
 
-**Security / environment:** the `test` service does **not** load `.env`. You do not need a real `STEAM_WEB_API_KEY` for the suite; outbound calls are mocked where relevant.
-
-### Local Python (without Docker)
-
-If you have **Python 3.11+** and prefer running on the host:
+View downloader logs:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python -m pytest -v tests
+docker compose logs -f downloader
 ```
 
-### JavaScript tests (Jest)
+## Data Locations
 
-```bash
-npm install          # first time only
-npm test             # runs tests/js/*.test.js
-```
+| Data | Default location |
+| --- | --- |
+| Log JSON files | `./logs` |
+| Raw log zips | `./raw_logs` |
+| Downloader state | `./downloader_state` |
+| Chat SQLite DB | `./downloader_state/chat.db` |
+| Stats SQLite DB | `./downloader_state/stats.db` |
+| Raw events DB | `./downloader_state/raw_events.db` |
+| Request logs | `./request_logs` |
 
-Requires Node.js 18+. Tests cover the pure functions in `static/js/layout-share.js` (encoding, decoding, import/export, cookie round-trips, URL param consumption) using a lightweight VM-based mock — no browser or jsdom required.
-
-### Understanding the output
-
-- **Header** — pytest version, Python version, and `rootdir` (should list `tests` discovery from `pytest.ini`).
-- **Per test** — each line is a test name; `PASSED` / `FAILED` / `ERROR` shows the outcome. `ERROR` usually means an exception during setup or import, not a failed assertion.
-- **Failures** — pytest prints a **short traceback** by default; use `-vv` or `--tb=long` for full tracebacks. The **first** failure in the log is often the root cause when several tests cascade.
-- **Warnings** — a **warnings summary** at the end lists deprecations or library notices; it does not fail the run unless warnings are turned into errors (not configured here).
-- **Exit code** — `0` = success; `1` = tests failed; `2` = user error (bad args); `3` = internal error; `4` = pytest usage error; `5` = no tests collected.
-
----
-
-## Quick start (web + downloader)
-
-1. **Clone the repo**
-   ```bash
-   git clone https://github.com/Kastaling/Tf2LogSearcher.git
-   cd Tf2LogSearcher
-   ```
-
-2. **Create your Compose file** (tracked template → local `docker-compose.yml`, which is gitignored so you can customize ports/volumes without polluting the repo):
-   ```bash
-   cp docker-compose.example.yml docker-compose.yml
-   ```
-
-3. **Optional:** Copy `.env.example` to `.env` and adjust settings (log paths, rate limits, etc.):
-   ```bash
-   cp .env.example .env
-   ```
-
-4. **Start both services**
-   ```bash
-   docker-compose up -d
-   ```
-   - Web UI: http://localhost:8027  
-   - The default **downloader** service (no profile) downloads **both** logs.tf JSON and raw `.log.zip` files. JSONs go to `./logs`; raw zips go to `./raw_logs`; position/event rows are stored in `./downloader_state/raw_events.db`. State (offset, skip list, progress) is in `./downloader_state`.
-
-**Alternative downloader modes** (only one downloader variant should run at a time):
-
-- **JSON only** (no raw zips / raw DB updates):
-  ```bash
-  docker-compose --profile json-only up -d downloader-json
-  ```
-- **Raw only** (no new JSON files; still walks the logs.tf API and downloads `log_<id>.log.zip` when missing):
-  ```bash
-  docker-compose --profile raw-only up -d downloader-raw
-  ```
-
-5. **View logs**
-   ```bash
-   docker-compose logs -f downloader
-   ```
-
----
-
-## Run only the downloader (no web)
-
-If you only want to download logs and do **not** want to run the web app:
-
-```bash
-docker-compose up -d downloader
-```
-
-Only the downloader container will start. It will use the same `./logs` and `./downloader_state` directories. You can run the web part later with `docker-compose up -d web` if you change your mind.
-
-To run the downloader in the foreground so you see logs in the terminal:
-
-```bash
-docker-compose up downloader
-```
-
----
-
-## Volumes and ports
-
-| What              | Default location       | Purpose                          |
-|-------------------|------------------------|----------------------------------|
-| Log JSON files    | `./logs`               | Filled by downloader; read by web |
-| Downloader state  | `./downloader_state`   | Offset, skip list, progress JSON  |
-| Chat SQLite DB    | `./downloader_state/chat.db` | Chat index written by downloader/backfill |
-| Stats SQLite DB   | `./downloader_state/stats.db` | Per-log player stats (downloader/backfill) |
-| Raw log zips      | `./raw_logs`           | `log_<id>.log.zip` from logs.tf (not extracted on disk) |
-| Raw events DB     | `./downloader_state/raw_events.db` | Kills (incl. XYZ + assists), spawns, uber deploy/end, caps, rounds — from raw logs (storage-only for now) |
-| Request log (web)| `./request_logs`       | CSV of API requests (web only)   |
-
-- **Web port:** 8027 (host) → 8000 (container). Change the left number in your local `docker-compose.yml` if needed.
-
-### Docker Compose layout
-
-The repo ships **`docker-compose.example.yml`** (web + downloader variants). Copy it to **`docker-compose.yml`** once; the latter is listed in `.gitignore` for local overrides.
-
-**Downloader profiles** (Compose v2+): a service can set `profiles: [name]`. Services with a **non-empty** profile do **not** start on plain `docker-compose up` unless you pass `--profile name`. Here:
-
-- **`downloader`** has `profiles: []` (empty), so it **is** included in the default project — that is the “JSON + raw” downloader.
-- **`downloader-json`** has `profiles: [json-only]` — start with `--profile json-only` when you want that service instead of the default downloader (stop the default downloader first so only one runs).
-- **`downloader-raw`** has `profiles: [raw-only]` — same idea for raw-only mode.
+The default web port is `8027` on the host mapped to `8000` in the container. Change the left side of the port mapping in your local `docker-compose.yml` if needed.
 
 ## Configuration
 
-See `.env.example` for all options. Important ones:
+Copy `.env.example` to `.env` when you need to override defaults. Common options:
 
-- `LOGS_DIR`, `DOWNLOADER_STATE_DIR` — paths inside the container (compose maps `./logs` and `./downloader_state`).
-- `DOWNLOAD_INTERVAL_SEC` — seconds between download cycles (default 3600).
-- `REQUEST_DELAY_MS`, `MAX_REQUESTS_BEFORE_BACKOFF`, `BACKOFF_SEC` — rate limiting for the logs.tf API.
-- `RATE_LIMIT_PROFILE_PER_MINUTE`, `RATE_LIMIT_LEADERBOARD_PER_MINUTE`, `RATE_LIMIT_WINDOW_SECONDS` — per-IP sliding-window rate limits for the profile and leaderboard endpoints (default: 10 requests per 60 seconds each). Only applied on cache misses; cached responses are always served without consuming a slot.
-- `RATE_LIMIT_STEAM_VANITY_PER_MINUTE` — per-IP limit for outbound Steam vanity (ResolveVanityURL) HTTP calls (default: 10 per 60 seconds). Enforced only when a network call would be made; hits on the in-process vanity cache do not consume a slot.
-- `STEAM_WEB_API_KEY` — Steam Web API key for vanity URL/name resolution.
-- `REQUEST_LOG_PATH` — path to the request log CSV file.
-- `CHAT_DB_PATH` — path to SQLite DB where chat rows are indexed.
-- `STATS_DB_PATH` — path to SQLite DB where per-log player stats are stored.
-- `RAW_LOGS_DIR` — directory for `log_<id>.log.zip` files (stored compressed; parsing reads zips in memory).
-- `RAW_EVENTS_DB_PATH` — SQLite DB for position-related events from raw logs (kills with XYZ, uber deploys/charge ends, per-capper caps, spawns, round markers).
-- `DOWNLOAD_JSON_ENABLED` / `DOWNLOAD_RAW_ENABLED` — set to `0` to disable that download path independently (default `1` for both).
-- `SHOW_STORAGE_STATS` — set to `1` to show disk space utilization (JSON logs, raw zips, DB files, total) in the Log Library panel. Defaults to `0` (hidden). Disable if running a public instance and storage details are sensitive. `true` / `yes` / `on` are also accepted (case-insensitive). With Docker Compose, pass the variable into the **`web` service** (see `docker-compose.example.yml`: `env_file: .env` and/or `SHOW_STORAGE_STATS=${SHOW_STORAGE_STATS:-0}` in `environment`), then **recreate/restart** the web container so the process picks up the change. Results are cached under `DOWNLOADER_STATE_DIR` as `storage_stats_cache.json` (override with `STORAGE_STATS_CACHE_FILE`); the API returns that snapshot immediately and refreshes it in the **background** when it is older than `STORAGE_STATS_RECOMPUTE_AFTER_SEC` (default 6h). Tunables: `STORAGE_STATS_MEMORY_TTL_SEC` (default 120).
+- `DOWNLOAD_INTERVAL_SEC` - seconds between download cycles.
+- `REQUEST_DELAY_MS`, `MAX_REQUESTS_BEFORE_BACKOFF`, `BACKOFF_SEC` - logs.tf API pacing.
+- `STEAM_WEB_API_KEY` - optional Steam Web API key for vanity URL and name resolution.
+- `DOWNLOAD_JSON_ENABLED`, `DOWNLOAD_RAW_ENABLED` - enable or disable JSON/raw download paths.
+- `RATE_LIMIT_PROFILE_PER_MINUTE`, `RATE_LIMIT_LEADERBOARD_PER_MINUTE`, `RATE_LIMIT_STEAM_VANITY_PER_MINUTE` - public endpoint and outbound Steam vanity rate limits.
+- `SHOW_STORAGE_STATS` - set to `1` to show disk usage in the Log Library panel. It defaults to `0`; keep it disabled on public instances if storage details are sensitive. Restart/recreate the `web` container after changing it.
 
-Raw zips are typically **much larger** than JSON for the same match (often on the order of **5–20×**); plan disk space accordingly.
+Raw zips are usually much larger than JSON files, so plan disk space before enabling raw downloads at scale.
 
-## Chat DB backfill (one-time migration)
+## Maintenance Commands
 
-If you already have downloaded JSON logs, run this once to import existing chat into SQLite:
+Stop the downloader before commands that rewrite `chat.db`, `stats.db`, or `raw_events.db`:
 
 ```bash
-# stop downloader first so DB writes are single-writer
-docker-compose stop downloader
-
-# run backfill inside downloader container environment
-docker-compose run --rm downloader python -m app.chat_backfill --batch-size 500
-
-# start downloader again (new logs will be indexed automatically)
-docker-compose up -d downloader
+docker compose stop downloader
+# run the maintenance command
+docker compose up -d downloader
 ```
 
-The downloader now indexes chat for every newly fetched log into `CHAT_DB_PATH`.
+### Backfill Chat DB
 
-## Stats DB backfill (one-time migration)
+Import chat from existing JSON logs:
 
 ```bash
-docker-compose stop downloader
-docker-compose run --rm downloader python -m app.stats_backfill --batch-size 500
-docker-compose up -d downloader
+docker compose run --rm downloader python -m app.chat_backfill --batch-size 500
 ```
 
-The downloader writes stats for every newly fetched log into `STATS_DB_PATH`. Re-running the backfill is safe: each log is replaced atomically.
+### Backfill Stats DB
 
-### Re-ingest stats (e.g. fix damage taken after an importer change)
-
-If you **already have** `{id}.json` files under `./logs` but need to **re-parse** them into `stats.db` (for example after a fix to how damage taken is read from logs.tf payloads), use the same backfill as above. The run ends with a full `player_stats_agg` rebuild.
-
-Convenience script (stops `downloader`, runs `app.stats_backfill`, starts `downloader` again):
+Import per-log player stats from existing JSON logs. Re-running is safe; rows are replaced atomically.
 
 ```bash
-./scripts/reingest_stats_damage_taken.sh
+docker compose run --rm downloader python -m app.stats_backfill --batch-size 500
 ```
 
-From an interactive terminal it **starts a new tmux session** by default (detach with **Ctrl-b** then **d**, reattach with `tmux attach -t <session>`). **Ctrl+C** in that pane forwards to `docker compose` and stops the backfill; SQLite keeps work committed through the last completed `--batch-size` batch. If the backfill is interrupted or fails, the downloader is **left stopped** — bring it back with `docker compose up -d downloader` (the script prints the exact compose command it resolved).
+### Rebuild Leaderboard Aggregates
 
-Flags: `--no-tmux` / `--foreground` (skip tmux; use for CI/cron or when stdin/stdout is not a TTY). Optional: `--batch-size 1000` or `BATCH_SIZE=750 ./scripts/reingest_stats_damage_taken.sh`. Uses `docker compose` when available, otherwise `docker-compose`. Override the binary with `DOCKER_COMPOSE_CMD="docker compose -f compose.yml"`.
+Rebuild `player_stats_agg` after adding or changing aggregate leaderboard columns:
 
-**Security / ops:** same as other backfills — stop the downloader first so only one process writes `stats.db`; the script does not expose API keys (Compose loads `.env` for the `downloader` service if your `docker-compose.yml` references it). **Performance:** larger `--batch-size` reduces commit overhead; lower values limit rollback cost if the process is interrupted.
+```bash
+docker compose run --rm downloader python -m app.rebuild_agg
+```
 
-### Rebuild stats leaderboard aggregates only
-
-After adding or changing a leaderboard aggregate, rebuild `player_stats_agg` without re-parsing every JSON log:
+For long interactive runs, the wrapper handles stopping/starting the downloader and runs in tmux by default:
 
 ```bash
 ./scripts/rebuild_stats_agg_tmux.sh
 ```
 
-The script stops `downloader`, opens tmux by default, runs `python -m app.rebuild_agg`, closes the tmux window/session when done, and starts `downloader` again only after a successful rebuild. Use `--no-tmux` / `--foreground` for cron or CI.
+### Re-ingest Stats
 
-## Raw events DB backfill (re-parse zips)
-
-If you already have `log_*.log.zip` files under `RAW_LOGS_DIR` (e.g. after a parser upgrade), rebuild `raw_events.db` without re-downloading:
+Use this when importer logic changes and existing JSON logs need to be parsed into `stats.db` again:
 
 ```bash
-docker-compose stop downloader
-docker-compose run --rm downloader python -m app.raw_backfill --batch-size 200
-docker-compose up -d downloader
+./scripts/reingest_stats_damage_taken.sh
 ```
 
-Options: `--raw-logs-dir`, `--db-path` (defaults from `app.config`), `--batch-size` (default 200). Safe to re-run: each log’s rows are replaced atomically.
+Pass `--no-tmux` / `--foreground` for CI, cron, or non-interactive terminals.
 
-## Raw gap fetch (JSON on disk, raw zip missing)
+### Backfill Raw Events DB
 
-If you already have many `{id}.json` files but never downloaded the matching `log_{id}.log.zip`, this pass walks `LOGS_DIR`, skips IDs that already have a raw zip, downloads the rest from logs.tf, and imports into `raw_events.db`. It uses the same rate limits as the downloader (`REQUEST_DELAY_MS`, backoff). **Expect very long runtimes** at large scale (millions of gaps × ~300ms delay is weeks of wall time single-threaded); use `tmux`/`screen`, and optional `--shard-index` / `--shard-total` to parallelize across machines.
+Re-parse existing `log_*.log.zip` files into `raw_events.db`:
 
 ```bash
-docker compose stop downloader
+docker compose run --rm downloader python -m app.raw_backfill --batch-size 200
+```
+
+### Fetch Missing Raw Zips
+
+Download raw zips for JSON logs that already exist locally:
+
+```bash
 docker compose run --rm downloader python -m app.raw_json_gap_fetch
-docker compose up -d downloader
 ```
 
-Use the **`downloader`** service (not `downloader-json`) so `./raw_logs` is mounted. Useful options: `--from-id` / `--to-id`, `--limit` (testing), `--batch-size` (SQLite commits, default 50), `--progress-every`, `--dry-run` (count gaps without network). See `python -m app.raw_json_gap_fetch --help`.
-
-### Convenience script (tmux + docker compose)
-
-For large libraries (e.g. **~2M JSON logs without a zip** after JSON ingestion finishes), use the wrapper so the long run lives in **tmux** and **Ctrl+C** reliably stops `docker compose` while leaving completed work on disk:
+For large runs, use the tmux wrapper:
 
 ```bash
 ./scripts/raw_zip_gap_fetch.sh
 ```
 
-- Stops **`downloader`**, runs **`python -m app.raw_json_gap_fetch`** with any extra arguments you pass, then **`docker compose up -d downloader`** on success.
-- From an interactive terminal, opens a **new tmux session** by default (session name `tf2ls-raw-gap-…` or override with `TF2LS_TMUX_SESSION`). **Detach:** Ctrl-b then d — **reattach:** `tmux attach -t <name>`.
-- **`--no-tmux` / `--foreground`** or **`TF2LS_RAW_GAP_NO_TMUX=1`** for CI, cron, or non-TTY environments.
-- **Sharding** (parallel hosts): e.g. `./scripts/raw_zip_gap_fetch.sh --shard-index 0 --shard-total 4` (see module `--help`).
+Useful options include `--dry-run`, `--from-id`, `--to-id`, `--limit`, `--batch-size`, `--shard-index`, and `--shard-total`. See `python -m app.raw_json_gap_fetch --help`.
 
-Examples:
+### Fix Log Rounds
 
-```bash
-./scripts/raw_zip_gap_fetch.sh --dry-run
-./scripts/raw_zip_gap_fetch.sh --batch-size 50 --progress-every 5000
-./scripts/raw_zip_gap_fetch.sh --shard-index 1 --shard-total 8
-```
-
-**Security:** same as the downloader — Compose may load `.env`; the gap fetch only talks to logs.tf with your existing rate-limit settings. Do not lower delays below what logs.tf allows. **Performance:** wall time scales with gap count × `REQUEST_DELAY_MS`; use sharding for throughput; larger `--batch-size` reduces SQLite commit overhead at the cost of more work per transaction if interrupted mid-batch.
-
-## Fix log rounds (one-time migration)
-
-If stats were imported before round duration / first-blood parsing was corrected, rebuild only the `log_rounds` table from your existing JSON files (no full stats reimport):
+Rebuild only the `log_rounds` table from existing JSON logs:
 
 ```bash
-docker-compose stop downloader
-docker-compose run --rm downloader python -m app.fix_log_rounds_from_json
-docker-compose up -d downloader
+docker compose run --rm downloader python -m app.fix_log_rounds_from_json
 ```
 
-Options: `--dry-run`, `--from-id N`, `--to-id M`, `--logs-dir`, `--db-path` (same layout as `app.stats_backfill`).
+Options include `--dry-run`, `--from-id`, `--to-id`, `--logs-dir`, and `--db-path`.
 
-## Player names backfill (fast, run after stats backfill)
+### Backfill Player Names
 
-Roster display names come from each log’s `names` dict and are stored in the `player_names` table (used for search aliases even when a player never chatted). This pass only reads `names` + `info.date` from each JSON file.
-
-Can run while the downloader is running — uses `INSERT OR REPLACE`, safe for concurrent writes to `player_names`.
+Populate `player_names` from each log's `names` payload. This can run while the downloader is active.
 
 ```bash
-docker-compose run --rm downloader python -m app.player_names_backfill --batch-size 1000
+docker compose run --rm downloader python -m app.player_names_backfill --batch-size 1000
 ```
+
+## Tests
+
+Run the Python suite through the isolated Docker Compose test profile:
+
+```bash
+docker compose --profile test build test
+docker compose --profile test run --rm test
+```
+
+Run a targeted test file:
+
+```bash
+docker compose --profile test run --rm test python -m pytest tests/test_search_utils.py -q
+```
+
+JavaScript tests:
+
+```bash
+npm install
+npm test
+```
+
+The Docker test service does not load `.env` and uses temporary data directories.
 
 ---
 
-*Hosted at [search.kastal.ing](https://search.kastal.ing). Contact Kastaling on Discord for questions.*
+Hosted at [search.kastal.ing](https://search.kastal.ing). Contact Kastaling on Discord for questions.

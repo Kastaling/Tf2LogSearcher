@@ -17,6 +17,8 @@ var VALID_LB_TYPES = {
   damage_taken: 1,
   avg_deaths: 1,
   avg_killstreak: 1,
+  backstabs: 1,
+  headshots: 1,
 };
 function sanitizeLbTypeInput(v) {
   var s = (v == null ? '' : String(v)).trim().toLowerCase();
@@ -56,7 +58,7 @@ function syncLeaderboardClassSelectForMedicLeaderboards(form) {
 function sanitizeLeaderboardStatScopeInput(raw, lbType) {
   var s = (raw == null ? '' : String(raw)).trim().toLowerCase();
   var t = sanitizeLbTypeInput(lbType || 'dpm');
-  if (t === 'ubers' || t === 'drops' || t === 'damage_taken') {
+  if (t === 'ubers' || t === 'drops' || t === 'damage_taken' || t === 'backstabs' || t === 'headshots') {
     if (s === 'total' || s === 'per_log') return s;
     return 'total';
   }

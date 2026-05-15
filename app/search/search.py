@@ -159,6 +159,40 @@ _LEADERBOARD_TYPES: dict[str, dict[str, Any]] = {
         "value_key": "avg_killstreak",
         "format": "float2",
     },
+    "backstabs": {
+        "label": "Backstabs",
+        "scopes": {
+            "total": {
+                "order_expr": "SUM(lp.backstabs) DESC",
+                "select_expr": "SUM(lp.backstabs) AS primary_value",
+                "value_key": "total_backstabs",
+                "format": "int",
+            },
+            "per_log": {
+                "order_expr": "AVG(CAST(lp.backstabs AS REAL)) DESC",
+                "select_expr": "AVG(CAST(lp.backstabs AS REAL)) AS primary_value",
+                "value_key": "avg_backstabs_per_log",
+                "format": "float2",
+            },
+        },
+    },
+    "headshots": {
+        "label": "Headshots",
+        "scopes": {
+            "total": {
+                "order_expr": "SUM(lp.headshots) DESC",
+                "select_expr": "SUM(lp.headshots) AS primary_value",
+                "value_key": "total_headshots",
+                "format": "int",
+            },
+            "per_log": {
+                "order_expr": "AVG(CAST(lp.headshots AS REAL)) DESC",
+                "select_expr": "AVG(CAST(lp.headshots AS REAL)) AS primary_value",
+                "value_key": "avg_headshots_per_log",
+                "format": "float2",
+            },
+        },
+    },
 }
 
 LEADERBOARD_TYPE_KEYS: tuple[str, ...] = tuple(_LEADERBOARD_TYPES.keys())
@@ -205,6 +239,14 @@ def _leaderboard_agg_order_clause(lb_key: str, stat_scope: str) -> str | None:
         if stat_scope == "per_log":
             return "(CAST(total_damage_taken AS REAL) / NULLIF(log_count, 0)) DESC NULLS LAST"
         return "total_damage_taken DESC NULLS LAST"
+    if lb_key == "backstabs":
+        if stat_scope == "per_log":
+            return "(CAST(total_backstabs AS REAL) / NULLIF(log_count, 0)) DESC NULLS LAST"
+        return "total_backstabs DESC NULLS LAST"
+    if lb_key == "headshots":
+        if stat_scope == "per_log":
+            return "(CAST(total_headshots AS REAL) / NULLIF(log_count, 0)) DESC NULLS LAST"
+        return "total_headshots DESC NULLS LAST"
     if lb_key == "winrate":
         if stat_scope == "lowest":
             return "(CAST(wins AS REAL) / NULLIF(decided_logs, 0)) ASC NULLS LAST"
@@ -2472,7 +2514,7 @@ def _stats_leaderboard_from_agg(
     """Serve global leaderboard from ``player_stats_agg`` (instant vs full scan of ``log_players``)."""
     ss_eff = (
         stat_scope
-        if lb_key in ("ubers", "drops", "damage_taken", "winrate")
+        if lb_key in ("ubers", "drops", "damage_taken", "winrate", "backstabs", "headshots")
         else "total"
     )
     ord_clause = _leaderboard_agg_order_clause(lb_key, ss_eff)
@@ -2490,6 +2532,8 @@ def _stats_leaderboard_from_agg(
           avg_kadr,
           total_ubers,
           total_drops,
+          total_headshots,
+          total_backstabs,
           total_damage_taken,
           avg_deaths,
           avg_killstreak
@@ -2555,6 +2599,20 @@ def _stats_leaderboard_from_agg(
                 pv_raw = (float(dt_i) / float(lc_i)) if lc_i > 0 else None
             else:
                 pv_raw = r["total_damage_taken"]
+        elif lb_key == "backstabs":
+            if ss_eff == "per_log":
+                lc_i = int(r["log_count"] or 0)
+                tb_i = int(r["total_backstabs"] or 0)
+                pv_raw = (float(tb_i) / float(lc_i)) if lc_i > 0 else None
+            else:
+                pv_raw = r["total_backstabs"]
+        elif lb_key == "headshots":
+            if ss_eff == "per_log":
+                lc_i = int(r["log_count"] or 0)
+                th_i = int(r["total_headshots"] or 0)
+                pv_raw = (float(th_i) / float(lc_i)) if lc_i > 0 else None
+            else:
+                pv_raw = r["total_headshots"]
         elif lb_key == "avg_deaths":
             pv_raw = r["avg_deaths"]
         elif lb_key == "avg_killstreak":
@@ -2584,6 +2642,8 @@ def _stats_leaderboard_from_agg(
                 "decided_logs": decided,
                 "total_ubers": int(r["total_ubers"] or 0),
                 "total_drops": int(r["total_drops"] or 0),
+                "total_headshots": int(r["total_headshots"] or 0),
+                "total_backstabs": int(r["total_backstabs"] or 0),
                 "total_damage_taken": int(r["total_damage_taken"] or 0),
                 "avg_deaths": _round2(r["avg_deaths"]),
                 "avg_killstreak": _round2(r["avg_killstreak"]),
@@ -2625,7 +2685,8 @@ def stats_leaderboard(
 
     ``total_logs`` is a fast count of rows in ``logs`` matching gamemode/date/map filters only
     (not class filter). Player rows and aggregates still respect the class filter when set.
-    For ``ubers``, ``drops``, and ``damage_taken``, ``stat_scope`` is ``total`` (sum) or ``per_log``
+    For ``ubers``, ``drops``, ``damage_taken``, ``backstabs``, and ``headshots``, ``stat_scope`` is
+    ``total`` (sum) or ``per_log``
     (average per game). For ``winrate``, ``stat_scope`` is ``highest`` (best win % first) or
     ``lowest`` (worst win % first among players meeting ``min_logs``).
     Raises RuntimeError if stats DB is unavailable or lb_type is unknown.
@@ -2636,7 +2697,7 @@ def stats_leaderboard(
     ss_raw = (stat_scope or "").strip().lower()
     if ss_raw not in LEADERBOARD_STAT_SCOPE_KEYS:
         ss_raw = "total"
-    if lb_key in ("ubers", "drops", "damage_taken"):
+    if lb_key in ("ubers", "drops", "damage_taken", "backstabs", "headshots"):
         ss = ss_raw if ss_raw in ("total", "per_log") else "total"
     elif lb_key == "winrate":
         ss = ss_raw if ss_raw in ("highest", "lowest") else "highest"
@@ -2679,6 +2740,8 @@ def stats_leaderboard(
           SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END) AS decided_logs,
           SUM(lp.ubers) AS total_ubers,
           SUM(lp.drops) AS total_drops,
+          SUM(lp.headshots) AS total_headshots,
+          SUM(lp.backstabs) AS total_backstabs,
           SUM(lp.damage_taken) AS total_damage_taken,
           AVG(CAST(lp.deaths AS REAL)) AS avg_deaths,
           AVG(CAST(lp.longest_killstreak AS REAL)) AS avg_killstreak,
@@ -2750,6 +2813,8 @@ def stats_leaderboard(
                 "decided_logs": decided,
                 "total_ubers": int(r["total_ubers"] or 0),
                 "total_drops": int(r["total_drops"] or 0),
+                "total_headshots": int(r["total_headshots"] or 0),
+                "total_backstabs": int(r["total_backstabs"] or 0),
                 "total_damage_taken": int(r["total_damage_taken"] or 0),
                 "avg_deaths": _round2(r["avg_deaths"]),
                 "avg_killstreak": _round2(r["avg_killstreak"]),

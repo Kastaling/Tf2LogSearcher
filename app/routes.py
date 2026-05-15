@@ -1774,7 +1774,7 @@ def _api_leaderboard_impl(
     ss = (stat_scope_raw or "").strip().lower()
     if ss not in LEADERBOARD_STAT_SCOPE_KEYS:
         ss = "total"
-    if lt in ("ubers", "drops", "damage_taken"):
+    if lt in ("ubers", "drops", "damage_taken", "backstabs", "headshots"):
         ss = ss if ss in ("total", "per_log") else "total"
     elif lt == "winrate":
         ss = ss if ss in ("highest", "lowest") else "highest"
@@ -2131,7 +2131,7 @@ def _build_results_embed_meta(request: Request) -> str:
             ss_e = (qp.get("stat_scope") or "total").strip().lower()
             if ss_e not in LEADERBOARD_STAT_SCOPE_KEYS:
                 ss_e = "total"
-            if lb_t in ("ubers", "drops", "damage_taken"):
+            if lb_t in ("ubers", "drops", "damage_taken", "backstabs", "headshots"):
                 ss_e = ss_e if ss_e in ("total", "per_log") else "total"
             elif lb_t == "winrate":
                 ss_e = ss_e if ss_e in ("highest", "lowest") else "highest"

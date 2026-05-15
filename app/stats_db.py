@@ -337,6 +337,37 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
     _migrate_player_stats_agg_avg_deaths(conn)
     _migrate_player_stats_agg_avg_killstreak(conn)
     _migrate_player_stats_agg_total_damage_taken(conn)
+    _migrate_player_stats_agg_headshots_backstabs(conn)
+
+
+def _migrate_player_stats_agg_headshots_backstabs(conn: sqlite3.Connection) -> None:
+    """Add total_headshots and total_backstabs to player_stats_agg when missing."""
+    cur = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='player_stats_agg' LIMIT 1"
+    )
+    if cur.fetchone() is None:
+        return
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(player_stats_agg)").fetchall()}
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if "total_headshots" not in cols:
+            conn.execute(
+                "ALTER TABLE player_stats_agg ADD COLUMN total_headshots INTEGER NOT NULL DEFAULT 0"
+            )
+        if "total_backstabs" not in cols:
+            conn.execute(
+                "ALTER TABLE player_stats_agg ADD COLUMN total_backstabs INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_psa_total_headshots ON player_stats_agg(total_headshots DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_psa_total_backstabs ON player_stats_agg(total_backstabs DESC)"
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _migrate_player_stats_agg_total_damage_taken(conn: sqlite3.Connection) -> None:
@@ -996,7 +1027,8 @@ def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
             INSERT INTO player_stats_agg (
               steamid64, log_count, wins, decided_logs, avg_dpm, avg_kdr, avg_kadr,
               avg_deaths, avg_killstreak,
-              total_kills, total_damage, total_ubers, total_drops, total_damage_taken, updated_at
+              total_kills, total_damage, total_ubers, total_drops, total_headshots, total_backstabs,
+              total_damage_taken, updated_at
             )
             SELECT
               lp.steamid64,
@@ -1012,6 +1044,8 @@ def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
               SUM(lp.damage),
               SUM(lp.ubers),
               SUM(lp.drops),
+              SUM(COALESCE(lp.headshots, 0)),
+              SUM(COALESCE(lp.backstabs, 0)),
               SUM(lp.damage_taken),
               ?
             FROM logs l
@@ -1069,6 +1103,8 @@ def _refresh_player_stats_agg_for_steamids_impl(
           SUM(lp.damage),
           SUM(lp.ubers),
           SUM(lp.drops),
+          SUM(COALESCE(lp.headshots, 0)),
+          SUM(COALESCE(lp.backstabs, 0)),
           SUM(lp.damage_taken)
         FROM logs l
         INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
@@ -1083,8 +1119,9 @@ def _refresh_player_stats_agg_for_steamids_impl(
         INSERT OR REPLACE INTO player_stats_agg (
           steamid64, log_count, wins, decided_logs, avg_dpm, avg_kdr, avg_kadr,
           avg_deaths, avg_killstreak,
-          total_kills, total_damage, total_ubers, total_drops, total_damage_taken, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          total_kills, total_damage, total_ubers, total_drops, total_headshots, total_backstabs,
+          total_damage_taken, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     for i in range(0, len(uniq), _PSA_CHUNK):
         chunk = uniq[i : i + _PSA_CHUNK]
@@ -1119,6 +1156,8 @@ def _refresh_player_stats_agg_for_steamids_impl(
                     int(row[11] or 0),
                     int(row[12] or 0),
                     int(row[13] or 0),
+                    int(row[14] or 0),
+                    int(row[15] or 0),
                     ts,
                 ),
             )

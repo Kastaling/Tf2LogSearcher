@@ -23,7 +23,16 @@ PLAYER_A_3 = "[U:1:39734273]"
 PLAYER_B_3 = "[U:1:39734274]"
 
 
-def _leaderboard_log(a_ks: int, b_ks: int, *, log_id: int) -> dict:
+def _leaderboard_log(
+    a_ks: int,
+    b_ks: int,
+    *,
+    log_id: int,
+    a_headshots: int = 0,
+    a_backstabs: int = 0,
+    b_headshots: int = 0,
+    b_backstabs: int = 0,
+) -> dict:
     return {
         "info": {
             "map": "cp_process_final",
@@ -46,6 +55,8 @@ def _leaderboard_log(a_ks: int, b_ks: int, *, log_id: int) -> dict:
                 "dapm": 600.0,
                 "ubers": 0,
                 "drops": 0,
+                "headshots": a_headshots,
+                "backstabs": a_backstabs,
                 "longest_killstreak": a_ks,
                 "class_stats": [{"type": "soldier", "total_time": 300, "kills": 10, "assists": 2, "deaths": 5, "dmg": 3000}],
             },
@@ -58,6 +69,8 @@ def _leaderboard_log(a_ks: int, b_ks: int, *, log_id: int) -> dict:
                 "dapm": 480.0,
                 "ubers": 0,
                 "drops": 0,
+                "headshots": b_headshots,
+                "backstabs": b_backstabs,
                 "longest_killstreak": b_ks,
                 "class_stats": [{"type": "soldier", "total_time": 300, "kills": 8, "assists": 1, "deaths": 6, "dmg": 2400}],
             },
@@ -75,8 +88,12 @@ def stats_leaderboard_db(tmp_path):
     conn = connect_stats_db(db_path)
     init_stats_db(conn)
     with conn:
-        replace_stats_for_log(conn, 1001, _leaderboard_log(10, 4, log_id=1001))
-        replace_stats_for_log(conn, 1002, _leaderboard_log(2, 4, log_id=1002))
+        replace_stats_for_log(
+            conn, 1001, _leaderboard_log(10, 4, log_id=1001, a_headshots=6, a_backstabs=10, b_headshots=1, b_backstabs=2)
+        )
+        replace_stats_for_log(
+            conn, 1002, _leaderboard_log(2, 4, log_id=1002, a_headshots=4, a_backstabs=0, b_headshots=1, b_backstabs=2)
+        )
     rebuild_player_stats_agg(conn)
     conn.close()
     return db_path
@@ -106,6 +123,42 @@ def test_leaderboard_resolve_spec_avg_killstreak():
     assert spec["value_key"] == "avg_killstreak"
     assert spec["format"] == "float2"
     assert "DESC" in (_leaderboard_agg_order_clause("avg_killstreak", "total") or "").upper()
+
+
+def test_leaderboard_resolve_spec_headshots_backstabs():
+    ht = _leaderboard_resolve_spec("headshots", "total")
+    assert "HEADSHOTS" in ht["order_expr"].upper()
+    assert ht["value_key"] == "total_headshots"
+    hp = _leaderboard_resolve_spec("headshots", "per_log")
+    assert "AVG" in hp["select_expr"].upper() and "HEADSHOTS" in hp["select_expr"].upper()
+    bt = _leaderboard_resolve_spec("backstabs", "total")
+    assert "BACKSTABS" in bt["order_expr"].upper()
+    assert bt["value_key"] == "total_backstabs"
+
+
+def test_leaderboard_agg_order_clause_headshots_backstabs():
+    assert "total_headshots" in (_leaderboard_agg_order_clause("headshots", "total") or "").lower()
+    assert "log_count" in (_leaderboard_agg_order_clause("headshots", "per_log") or "").lower()
+    assert "total_backstabs" in (_leaderboard_agg_order_clause("backstabs", "total") or "").lower()
+    assert "log_count" in (_leaderboard_agg_order_clause("backstabs", "per_log") or "").lower()
+
+
+def test_stats_leaderboard_headshots_and_backstabs(stats_leaderboard_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", stats_leaderboard_db)
+    rows_t, _ = stats_leaderboard("headshots", min_logs=1)
+    assert rows_t[0]["steamid64"] == PLAYER_A
+    assert rows_t[0]["primary_value"] == 10
+    assert rows_t[1]["primary_value"] == 2
+    rows_p, _ = stats_leaderboard("headshots", stat_scope="per_log", min_logs=1)
+    assert rows_p[0]["primary_value"] == 5.0
+    assert rows_p[1]["primary_value"] == 1.0
+    rows_bs, _ = stats_leaderboard("backstabs", min_logs=1)
+    assert rows_bs[0]["steamid64"] == PLAYER_A
+    assert rows_bs[0]["primary_value"] == 10
+    assert rows_bs[1]["primary_value"] == 4
+    rows_bsp, _ = stats_leaderboard("backstabs", stat_scope="per_log", min_logs=1)
+    assert rows_bsp[0]["primary_value"] == 5.0
+    assert rows_bsp[1]["primary_value"] == 2.0
 
 
 def test_stats_leaderboard_avg_killstreak(stats_leaderboard_db, monkeypatch):

@@ -79,7 +79,7 @@ function syncLeaderboardStatScopeStrip(form) {
   var stripWr = form.querySelector('.js-lb-winrate-scope-strip');
   var hidden = form.elements.stat_scope;
   var lb = sanitizeLbTypeInput(form.elements.lb_type && form.elements.lb_type.value ? form.elements.lb_type.value : 'dpm');
-  var showTp = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken');
+  var showTp = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken' || lb === 'backstabs' || lb === 'headshots');
   var showWr = (lb === 'winrate');
   if (stripTp) {
     if (showTp) stripTp.removeAttribute('hidden');

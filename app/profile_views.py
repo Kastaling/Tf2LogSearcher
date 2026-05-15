@@ -4,10 +4,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
 from app.config import PROFILE_VIEW_HASH_SECRET, PROFILE_VIEWS_DB_PATH
+
+_lock = threading.Lock()
+_conn: sqlite3.Connection | None = None
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -16,6 +20,21 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
+
+
+def _get_conn() -> sqlite3.Connection:
+    """Return the module-level connection, initialising it on first call."""
+    global _conn
+    if _conn is not None:
+        return _conn
+    with _lock:
+        if _conn is not None:  # double-checked locking
+            return _conn
+        path = Path(PROFILE_VIEWS_DB_PATH)
+        c = _connect(path)
+        init_profile_views_db(c)
+        _conn = c
+    return _conn
 
 
 def init_profile_views_db(conn: sqlite3.Connection) -> None:
@@ -61,44 +80,40 @@ def record_profile_view(steamid64: str, visitor_id: str) -> tuple[int, int]:
     vid = (visitor_id or "").strip()
     if not sid.isdigit() or len(sid) != 17 or len(vid) < 16 or len(vid) > 64:
         return (0, 0)
-
-    path = Path(PROFILE_VIEWS_DB_PATH)
     try:
-        conn = _connect(path)
+        conn = _get_conn()
     except OSError:
         return (0, 0)
     try:
-        init_profile_views_db(conn)
         now = int(time.time())
         unique_delta = 0
-        with conn:
-            cur = conn.execute(
-                """
-                INSERT OR IGNORE INTO profile_view_visitors (steamid64, visitor_id, first_seen)
-                VALUES (?, ?, ?)
-                """,
-                (sid, vid, now),
-            )
-            if cur.rowcount > 0:
-                unique_delta = 1
-            conn.execute(
-                """
-                INSERT INTO profile_view_totals (steamid64, total_views, unique_visitors)
-                VALUES (?, 1, ?)
-                ON CONFLICT(steamid64) DO UPDATE SET
-                  total_views = total_views + 1,
-                  unique_visitors = unique_visitors + ?
-                """,
-                (sid, unique_delta, unique_delta),
-            )
-        row = conn.execute(
-            "SELECT total_views, unique_visitors FROM profile_view_totals WHERE steamid64 = ?",
-            (sid,),
-        ).fetchone()
+        with _lock:
+            with conn:
+                cur = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO profile_view_visitors (steamid64, visitor_id, first_seen)
+                    VALUES (?, ?, ?)
+                    """,
+                    (sid, vid, now),
+                )
+                if cur.rowcount > 0:
+                    unique_delta = 1
+                conn.execute(
+                    """
+                    INSERT INTO profile_view_totals (steamid64, total_views, unique_visitors)
+                    VALUES (?, 1, ?)
+                    ON CONFLICT(steamid64) DO UPDATE SET
+                      total_views = total_views + 1,
+                      unique_visitors = unique_visitors + ?
+                    """,
+                    (sid, unique_delta, unique_delta),
+                )
+            row = conn.execute(
+                "SELECT total_views, unique_visitors FROM profile_view_totals WHERE steamid64 = ?",
+                (sid,),
+            ).fetchone()
         if not row:
             return (0, 0)
         return (int(row[0] or 0), int(row[1] or 0))
     except Exception:
         return (0, 0)
-    finally:
-        conn.close()

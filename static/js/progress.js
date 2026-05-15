@@ -17,14 +17,54 @@ function fmtBytes(bytes) {
   return (i === 0 ? v.toFixed(0) : v.toFixed(2)) + '\u00a0' + units[i];
 }
 
-/** Percent of ``bytes`` vs ``totalBytes`` as ``NN.NN`` (two decimals), or ``null``. */
+/** Max decimal places when amplifying sub-perceptual shares (two decimals would read as 0.00%). */
+const STORAGE_PCT_MAX_EXTENDED_DP = 12;
+
+/** Count ``1``–``9`` digits after the decimal point (ignoring trailing format zeros). */
+function storagePctFractionNonZeroDigits(percentFixed) {
+  var dot = percentFixed.indexOf('.');
+  if (dot < 0) return 0;
+  var n = 0;
+  for (var i = dot + 1; i < percentFixed.length; i++) {
+    var c = percentFixed[i];
+    if (c >= '1' && c <= '9') {
+      n += 1;
+    }
+  }
+  return n;
+}
+
+/**
+ * Percent of ``bytes`` vs ``totalBytes`` for display: usually two decimals; if that would read as
+ * ``0.00%`` but ``bytes > 0``, use extra decimals: first the same minimum as before plus one
+ * place, then (if needed) more until at least two non-zero fractional digits appear so values do
+ * not collapse to a single digit like ``0.000010``.
+ */
 function storagePctPercent(bytes, totalBytes) {
   if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return null;
   if (totalBytes == null || !Number.isFinite(totalBytes) || totalBytes <= 0) return null;
   var p = (bytes / totalBytes) * 100;
   if (!Number.isFinite(p)) return null;
   p = Math.max(0, Math.min(100, p));
-  return (Math.round(p * 100) / 100).toFixed(2);
+  var twoDp = (Math.round(p * 100) / 100).toFixed(2);
+  if (bytes <= 0 || twoDp !== '0.00') {
+    return twoDp;
+  }
+  var d;
+  var s;
+  for (d = 3; d <= STORAGE_PCT_MAX_EXTENDED_DP; d += 1) {
+    s = p.toFixed(d);
+    if (parseFloat(s) > 0) {
+      var outDp = Math.min(d + 1, STORAGE_PCT_MAX_EXTENDED_DP);
+      var out = p.toFixed(outDp);
+      while (outDp < STORAGE_PCT_MAX_EXTENDED_DP && storagePctFractionNonZeroDigits(out) < 2) {
+        outDp += 1;
+        out = p.toFixed(outDp);
+      }
+      return out;
+    }
+  }
+  return twoDp;
 }
 
 /** Average size per file; empty string if undefined or count is zero. */
