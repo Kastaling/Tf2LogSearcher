@@ -525,6 +525,19 @@ def _classkills_dict(stats: dict[str, Any]) -> dict[str, Any]:
     return ck if isinstance(ck, dict) else {}
 
 
+def _accumulate_weapon_subdict(accum: dict[str, dict[str, int]], wsub: dict[str, Any]) -> None:
+    """Merge a logs.tf ``weapon`` map (name -> stats dict) into accumulators keyed by weapon id."""
+    for wname, wst in wsub.items():
+        wn = str(wname).strip()
+        if not wn or not isinstance(wst, dict):
+            continue
+        cur = accum.setdefault(wn, {"kills": 0, "damage": 0, "shots": 0, "hits": 0})
+        cur["kills"] += _int_safe(wst.get("kills"), 0)
+        cur["damage"] += _int_safe(wst.get("dmg") or wst.get("damage"), 0)
+        cur["shots"] += _int_safe(wst.get("shots"), 0)
+        cur["hits"] += _int_safe(wst.get("hits"), 0)
+
+
 def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
     """Parse one logs.tf JSON dict into row dicts for stats tables."""
     info = logtext.get("info") if isinstance(logtext.get("info"), dict) else {}
@@ -592,6 +605,8 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
     weapon_rows: list[dict[str, Any]] = []
     classkill_rows: list[dict[str, Any]] = []
     healspread_rows: list[dict[str, Any]] = []
+    healspread_from_players: list[dict[str, Any]] = []
+    classkill_from_players: list[dict[str, Any]] = []
 
     for steamid3, stats in players.items():
         if not isinstance(stats, dict):
@@ -731,21 +746,29 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
                     }
                 )
 
-        for wname, wst in _weapon_dict(stats).items():
-            wn = str(wname).strip()
-            if not wn or not isinstance(wst, dict):
-                continue
-            avg_d = _float_safe(wst.get("avg_dmg") or wst.get("avg_damage"))
+        weapon_accum: dict[str, dict[str, int]] = {}
+        _accumulate_weapon_subdict(weapon_accum, _weapon_dict(stats))
+        if isinstance(class_stats, list):
+            for cs in class_stats:
+                if not isinstance(cs, dict):
+                    continue
+                wsub = cs.get("weapon")
+                if isinstance(wsub, dict):
+                    _accumulate_weapon_subdict(weapon_accum, wsub)
+        for wn, cur in sorted(weapon_accum.items()):
+            td = cur["damage"]
+            th = cur["hits"]
+            avg_d: float | None = round(td / th, 4) if th > 0 else None
             weapon_rows.append(
                 {
                     "log_id": log_id,
                     "steamid64": sid64,
                     "weapon": wn,
-                    "kills": _int_safe(wst.get("kills"), 0),
-                    "damage": _int_safe(wst.get("dmg") or wst.get("damage"), 0),
+                    "kills": cur["kills"],
+                    "damage": td,
                     "avg_damage": avg_d,
-                    "shots": _int_safe(wst.get("shots"), 0),
-                    "hits": _int_safe(wst.get("hits"), 0),
+                    "shots": cur["shots"],
+                    "hits": th,
                 }
             )
 
@@ -753,7 +776,7 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
             vc = str(victim).strip().lower()
             if not vc or vc in _BAD_CLASS_NAMES:
                 continue
-            classkill_rows.append(
+            classkill_from_players.append(
                 {
                     "log_id": log_id,
                     "steamid64": sid64,
@@ -766,7 +789,7 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
             p64 = steamid3_to_steamid64(str(patient3).strip())
             if not p64:
                 continue
-            healspread_rows.append(
+            healspread_from_players.append(
                 {
                     "log_id": log_id,
                     "healer_steamid64": sid64,
@@ -774,6 +797,52 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
                     "healing": _int_safe(heal_amt, 0),
                 }
             )
+
+    # logs.tf exposes healspread and classkills at the log root (per-healer / per-killer dicts).
+    # Prefer those when present so we match the API; keep per-player fallbacks for odd exports.
+    root_hs = logtext.get("healspread")
+    if isinstance(root_hs, dict) and any(isinstance(v, dict) and v for v in root_hs.values()):
+        healspread_rows = []
+        for healer3, patients in root_hs.items():
+            h64 = steamid3_to_steamid64(str(healer3).strip())
+            if not h64 or not isinstance(patients, dict):
+                continue
+            for patient3, heal_amt in patients.items():
+                p64 = steamid3_to_steamid64(str(patient3).strip())
+                if not p64:
+                    continue
+                healspread_rows.append(
+                    {
+                        "log_id": log_id,
+                        "healer_steamid64": h64,
+                        "patient_steamid64": p64,
+                        "healing": _int_safe(heal_amt, 0),
+                    }
+                )
+    else:
+        healspread_rows = healspread_from_players
+
+    root_ck = logtext.get("classkills") or logtext.get("class_kills")
+    if isinstance(root_ck, dict) and any(isinstance(v, dict) and v for v in root_ck.values()):
+        classkill_rows = []
+        for killer3, victims in root_ck.items():
+            k64 = steamid3_to_steamid64(str(killer3).strip())
+            if not k64 or not isinstance(victims, dict):
+                continue
+            for victim_class, kc in victims.items():
+                vc = _normalize_class_name(victim_class)
+                if not vc or vc in _BAD_CLASS_NAMES:
+                    continue
+                classkill_rows.append(
+                    {
+                        "log_id": log_id,
+                        "steamid64": k64,
+                        "victim_class": vc,
+                        "kills": _int_safe(kc, 0),
+                    }
+                )
+    else:
+        classkill_rows = classkill_from_players
 
     round_rows: list[dict[str, Any]] = []
     rounds = logtext.get("rounds")

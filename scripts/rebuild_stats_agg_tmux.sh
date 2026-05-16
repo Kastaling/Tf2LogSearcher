@@ -16,6 +16,8 @@
 #   TF2LS_TMUX_SESSION          tmux session name when outside tmux
 #   TF2LS_TMUX_WINDOW           tmux window name when inside tmux
 #   TF2LS_REBUILD_AGG_NO_TMUX=1 Same as --no-tmux
+#   TF2LS_MAINT_LOG_DIR         Directory for verbose maintenance logs (default: ./maintenance_logs)
+#   TF2LS_MAINT_LOG_FILE        Exact log file path to append to (set automatically for tmux child)
 #
 # Stops the normal `downloader` service to avoid concurrent SQLite writes.
 # Restarts it only after a successful aggregate rebuild.
@@ -29,6 +31,37 @@ usage() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SELF_SCRIPT="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+
+init_log_file() {
+  local log_dir old_umask ts
+  ts="$(date +%Y%m%d-%H%M%S)"
+  log_dir="${TF2LS_MAINT_LOG_DIR:-${REPO_ROOT}/maintenance_logs}"
+  mkdir -p -- "${log_dir}"
+  if [[ -z "${TF2LS_MAINT_LOG_FILE:-}" ]]; then
+    TF2LS_MAINT_LOG_FILE="${log_dir}/rebuild_stats_agg-${ts}.log"
+    export TF2LS_MAINT_LOG_FILE
+  fi
+  old_umask="$(umask)"
+  umask 077
+  touch -- "${TF2LS_MAINT_LOG_FILE}"
+  umask "${old_umask}"
+}
+
+start_logging() {
+  exec > >(tee -a "${TF2LS_MAINT_LOG_FILE}") 2>&1
+  echo "================================================================"
+  echo "Tf2LogSearcher leaderboard aggregate rebuild"
+  echo "Started:       $(date -Is)"
+  echo "Repository:    ${REPO_ROOT}"
+  echo "Script:        ${SELF_SCRIPT}"
+  echo "Log file:      ${TF2LS_MAINT_LOG_FILE}"
+  echo "Arguments:     ${*:-<none>}"
+  if command -v git >/dev/null 2>&1; then
+    echo "Git HEAD:      $(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  fi
+  echo "Purpose:       rebuild player_stats_agg from log_players/logs after imports or schema changes."
+  echo "================================================================"
+}
 
 use_tmux=1
 rebuild_args=()
@@ -59,6 +92,8 @@ if [[ -n "${TF2LS_REBUILD_AGG_NO_TMUX:-}" ]]; then
 fi
 
 cd "${REPO_ROOT}"
+init_log_file
+start_logging "$@"
 
 if [[ ! -f docker-compose.yml ]] && [[ ! -f docker-compose.yaml ]]; then
   echo "error: no docker-compose.yml in ${REPO_ROOT}. Copy docker-compose.example.yml per README." >&2
@@ -67,15 +102,17 @@ fi
 
 resolve_compose() {
   if [[ -n "${DOCKER_COMPOSE_CMD:-}" ]]; then
-    echo "${DOCKER_COMPOSE_CMD}"
+    # Deliberately split into argv tokens, never eval. Keep overrides simple:
+    #   DOCKER_COMPOSE_CMD="docker compose -f docker-compose.prod.yml"
+    read -r -a COMPOSE_CMD <<< "${DOCKER_COMPOSE_CMD}"
     return
   fi
   if docker compose version >/dev/null 2>&1; then
-    echo "docker compose"
+    COMPOSE_CMD=(docker compose)
     return
   fi
   if docker-compose version >/dev/null 2>&1; then
-    echo "docker-compose"
+    COMPOSE_CMD=(docker-compose)
     return
   fi
   echo "error: need Docker Compose (try: docker compose OR docker-compose)" >&2
@@ -90,7 +127,9 @@ if [[ "${use_tmux}" -eq 1 ]]; then
     echo "Opening rebuild in tmux window: ${win}" >&2
     echo "  Detach from tmux:  Ctrl-b  then  d" >&2
     echo "  Stop rebuild:      Ctrl+C in the new window" >&2
-    tmux new-window -n "${win}" -c "${REPO_ROOT}" bash "${SELF_SCRIPT}" --no-tmux "${rebuild_args[@]}"
+    echo "  Verbose log:       ${TF2LS_MAINT_LOG_FILE}" >&2
+    tmux new-window -n "${win}" -c "${REPO_ROOT}" \
+      env TF2LS_MAINT_LOG_FILE="${TF2LS_MAINT_LOG_FILE}" bash "${SELF_SCRIPT}" --no-tmux "${rebuild_args[@]}"
     exit 0
   elif [[ -t 0 ]] && [[ -t 1 ]]; then
     sess="${TF2LS_TMUX_SESSION:-tf2ls-rebuild-agg-$(date +%Y%m%d-%H%M%S)}"
@@ -98,22 +137,37 @@ if [[ "${use_tmux}" -eq 1 ]]; then
     echo "  Detach (leave it running):  Ctrl-b  then  d" >&2
     echo "  Reattach later:              tmux attach -t ${sess}" >&2
     echo "  Stop rebuild:                Ctrl+C" >&2
-    exec tmux new-session -s "${sess}" -c "${REPO_ROOT}" bash "${SELF_SCRIPT}" --no-tmux "${rebuild_args[@]}"
+    echo "  Verbose log:                 ${TF2LS_MAINT_LOG_FILE}" >&2
+    exec tmux new-session -s "${sess}" -c "${REPO_ROOT}" \
+      env TF2LS_MAINT_LOG_FILE="${TF2LS_MAINT_LOG_FILE}" bash "${SELF_SCRIPT}" --no-tmux "${rebuild_args[@]}"
   else
     echo "warning: not a TTY; running without tmux. Pass --no-tmux to silence this." >&2
   fi
 fi
 
-DC="$(resolve_compose)"
+COMPOSE_CMD=()
+resolve_compose
+compose_display="${COMPOSE_CMD[*]}"
+started_at_epoch="$(date +%s)"
 
 echo "[1/3] Stopping downloader (avoids concurrent writes to stats.db)..."
-${DC} stop downloader 2>/dev/null || true
+set +e
+"${COMPOSE_CMD[@]}" stop downloader
+stop_ec=$?
+set -e
+if [[ "${stop_ec}" -eq 0 ]]; then
+  echo "[ok] Downloader stopped (or was already stopped)."
+else
+  echo "[warning] Downloader stop returned ${stop_ec}; continuing because rebuild_agg is the only intended writer now." >&2
+fi
 
 echo "[2/3] Rebuilding stats leaderboard aggregates..."
 echo "      Running: python -m app.rebuild_agg ${rebuild_args[*]}" >&2
+echo "      Compose command: ${compose_display}" >&2
+echo "      Full command: ${compose_display} run --rm downloader python -m app.rebuild_agg ${rebuild_args[*]}" >&2
 
 set +e
-${DC} run --rm downloader python -m app.rebuild_agg "${rebuild_args[@]}" &
+"${COMPOSE_CMD[@]}" run --rm downloader python -m app.rebuild_agg "${rebuild_args[@]}" &
 dc_pid=$!
 set -e
 
@@ -129,7 +183,8 @@ cleanup_trap() {
   wait "$dc_pid" 2>/dev/null || true
   trap - INT TERM
   echo "" >&2
-  echo "[info] Interrupted. Downloader is still stopped; when ready: ${DC} up -d downloader" >&2
+  echo "[info] Interrupted. Downloader is still stopped; when ready: ${compose_display} up -d downloader" >&2
+  echo "[info] Verbose log: ${TF2LS_MAINT_LOG_FILE}" >&2
   exit 130
 }
 
@@ -138,7 +193,8 @@ term_trap() {
   wait "$dc_pid" 2>/dev/null || true
   trap - INT TERM
   echo "" >&2
-  echo "[info] Terminated during rebuild. Downloader is still stopped; when ready: ${DC} up -d downloader" >&2
+  echo "[info] Terminated during rebuild. Downloader is still stopped; when ready: ${compose_display} up -d downloader" >&2
+  echo "[info] Verbose log: ${TF2LS_MAINT_LOG_FILE}" >&2
   exit 143
 }
 
@@ -153,11 +209,31 @@ trap - INT TERM
 
 if [[ "$rebuild_ec" -ne 0 ]]; then
   echo "[error] app.rebuild_agg exited with code ${rebuild_ec}" >&2
-  echo "[info] Downloader is still stopped; when ready: ${DC} up -d downloader" >&2
+  echo "[summary] Rebuild failed. Downloader was not restarted automatically." >&2
+  echo "[summary] Review this log before retrying: ${TF2LS_MAINT_LOG_FILE}" >&2
+  echo "[info] Downloader is still stopped; when ready: ${compose_display} up -d downloader" >&2
   exit "$rebuild_ec"
 fi
 
 echo "[3/3] Starting downloader..."
-${DC} up -d downloader
+set +e
+"${COMPOSE_CMD[@]}" up -d downloader
+up_ec=$?
+set -e
+ended_at_epoch="$(date +%s)"
+elapsed=$((ended_at_epoch - started_at_epoch))
 
-echo "Done. player_stats_agg was rebuilt and downloader is running."
+if [[ "${up_ec}" -ne 0 ]]; then
+  echo "[error] Aggregate rebuild succeeded, but restarting downloader failed with code ${up_ec}." >&2
+  echo "[summary] Worked: app.rebuild_agg rebuilt player_stats_agg successfully." >&2
+  echo "[summary] Did not work: downloader restart failed; start it manually with: ${compose_display} up -d downloader" >&2
+  echo "[summary] Elapsed: ${elapsed}s" >&2
+  echo "[summary] Verbose log: ${TF2LS_MAINT_LOG_FILE}" >&2
+  exit "${up_ec}"
+fi
+
+echo "[summary] Aggregate rebuild complete."
+echo "[summary] Worked: app.rebuild_agg rebuilt player_stats_agg successfully."
+echo "[summary] Worked: downloader restarted successfully."
+echo "[summary] Elapsed: ${elapsed}s"
+echo "[summary] Verbose log: ${TF2LS_MAINT_LOG_FILE}"

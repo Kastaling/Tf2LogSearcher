@@ -9,7 +9,16 @@ const HOME_IDS = [
   'chat', 'profile', 'coplayers', 'logmatch', 'stats', 'leaderboard', 'playername', 'log_library',
 ];
 const PROFILE_IDS = [
-  'trend', 'top_logs', 'coplayers', 'top_maps', 'classes', 'weapons', 'class_kills', 'rounds', 'healspread',
+  'trend',
+  'favorite_words',
+  'coplayers',
+  'top_maps',
+  'classes',
+  'top_logs',
+  'rounds',
+  'weapons',
+  'healspread',
+  'class_kills',
 ];
 
 function defaultHome() {

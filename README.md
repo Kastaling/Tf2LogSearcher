@@ -109,13 +109,21 @@ For long interactive runs, the wrapper handles stopping/starting the downloader 
 ./scripts/rebuild_stats_agg_tmux.sh
 ```
 
+The wrapper writes a verbose ignored log file under `maintenance_logs/` (override with
+`TF2LS_MAINT_LOG_DIR`) so results remain available after the tmux window/session closes.
+
 ### Re-ingest Stats
 
-Use this when importer logic changes and existing JSON logs need to be parsed into `stats.db` again:
+Use this when importer logic changes and existing JSON logs need to be parsed into `stats.db` again
+(for example damage taken, class-stats weapon breakdowns, root healspread, or root classkills):
 
 ```bash
 ./scripts/reingest_stats_damage_taken.sh
 ```
+
+The wrapper stops the downloader, runs `app.stats_backfill` with the current importer, lets
+`stats_backfill` rebuild `player_stats_agg`, then restarts the downloader on success. It also
+writes a verbose ignored log file under `maintenance_logs/` (override with `TF2LS_MAINT_LOG_DIR`).
 
 Pass `--no-tmux` / `--foreground` for CI, cron, or non-interactive terminals.
 

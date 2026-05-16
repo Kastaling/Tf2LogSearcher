@@ -687,6 +687,40 @@
     .stats-summary-item.aliases {
       grid-column: 1 / -1;
     }
+    .profile-word-cloud {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem 0.7rem;
+      align-items: baseline;
+      padding: 0.75rem 0;
+      line-height: 1.4;
+    }
+    .profile-word-cloud-item {
+      cursor: default;
+      color: var(--accent, #0969da);
+      font-weight: 500;
+      transition: opacity 0.1s;
+      overflow-wrap: anywhere;
+    }
+    .profile-word-cloud-item:hover {
+      opacity: 0.7;
+    }
+    .profile-word-table-details {
+      margin-top: 0.5rem;
+    }
+    .profile-word-table-details summary {
+      cursor: pointer;
+      font-size: 0.875rem;
+      color: var(--text-muted, #666);
+      margin-bottom: 0.4rem;
+    }
+    .profile-word-table {
+      font-size: 0.875rem;
+      width: 100%;
+      max-width: 100%;
+      min-width: 18rem;
+      table-layout: auto;
+    }
     .logmatch-h2h {
       margin: 0 0 0.75rem;
       padding: 0.6rem 0.75rem;

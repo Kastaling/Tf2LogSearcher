@@ -8,6 +8,27 @@ function profileFormatUnixDate(ts) {
   }
 }
 
+/** Safe link element to logs.tf log page; null/invalid id renders an em dash (security). */
+function profileLogsTfLogIdLinkEl(logId) {
+  var td = document.createElement('td');
+  if (logId == null || logId === '') {
+    td.textContent = '\u2014';
+    return td;
+  }
+  var idStr = String(logId).trim();
+  if (!/^\d+$/.test(idStr)) {
+    td.textContent = '\u2014';
+    return td;
+  }
+  var a = document.createElement('a');
+  a.href = 'https://logs.tf/' + encodeURIComponent(idStr);
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.textContent = '#' + idStr;
+  td.appendChild(a);
+  return td;
+}
+
 /** Link to logs.tf for a numeric log id; otherwise escape label as plain text (security). */
 function profileLogsTfDateLink(logId, dateLabel) {
   var label = dateLabel != null ? String(dateLabel) : '\u2014';
@@ -270,6 +291,104 @@ function bindProfileCoplayersToggle(root) {
       if (p) show(p);
     });
   });
+}
+
+function renderFavoriteWords(words, container) {
+  if (!Array.isArray(words) || words.length === 0 || !container) {
+    return;
+  }
+
+  var normalized = words.map(function(w) {
+    var word = w && w.word != null ? String(w.word).trim() : '';
+    var count = w && w.count != null ? Number(w.count) : 0;
+    var pct = w && w.pct != null ? Number(w.pct) : 0;
+    var latestLid = w && w.latest_log_id != null ? Number(w.latest_log_id) : NaN;
+    var peakLid = w && w.peak_log_id != null ? Number(w.peak_log_id) : NaN;
+    return {
+      word: word,
+      count: Number.isFinite(count) ? count : 0,
+      pct: Number.isFinite(pct) ? pct : 0,
+      latest_log_id: Number.isFinite(latestLid) ? latestLid : null,
+      peak_log_id: Number.isFinite(peakLid) ? peakLid : null
+    };
+  }).filter(function(w) {
+    return w.word && w.count > 0;
+  });
+  if (!normalized.length) {
+    return;
+  }
+
+  var section = document.createElement('div');
+  section.className = 'stats-summary profile-favorite-words';
+
+  var h3 = document.createElement('p');
+  h3.className = 'stats-summary-title';
+  h3.textContent = 'Favorite Words';
+  section.appendChild(h3);
+
+  var meta = document.createElement('p');
+  meta.className = 'stats-summary-meta';
+  meta.textContent = 'Most-used non-filler words across all indexed chat messages for this player.';
+  section.appendChild(meta);
+
+  var maxCount = Math.max(1, normalized[0].count);
+  var cloud = document.createElement('div');
+  cloud.className = 'profile-word-cloud';
+
+  normalized.forEach(function(w) {
+    var span = document.createElement('span');
+    span.className = 'profile-word-cloud-item';
+    var scale = Math.max(0, Math.min(1, w.count / maxCount));
+    var size = 0.85 + (scale * (2.2 - 0.85));
+    span.style.fontSize = size.toFixed(2) + 'rem';
+    span.title = w.word + ': ' + w.count.toLocaleString() + ' use' + (w.count !== 1 ? 's' : '') + ' (' + w.pct + '% of words)';
+    span.textContent = w.word;
+    cloud.appendChild(span);
+  });
+  section.appendChild(cloud);
+
+  var details = document.createElement('details');
+  details.className = 'profile-word-table-details';
+  var summary = document.createElement('summary');
+  summary.textContent = 'Show ranked list';
+  details.appendChild(summary);
+
+  var tableWrap = document.createElement('div');
+  tableWrap.className = 'stats-table-wrap';
+  var table = document.createElement('table');
+  table.className = 'stats-table profile-word-table';
+  var thead = document.createElement('thead');
+  thead.innerHTML = '<tr><th>#</th><th>Word</th><th>Count</th><th>% of words</th>'
+    + '<th title="Log with the most recent chat line containing this word">Latest</th>'
+    + '<th title="Log where this word appears most often (ties: more recent log)">Peak</th></tr>';
+  table.appendChild(thead);
+  var tbody = document.createElement('tbody');
+  normalized.forEach(function(w, i) {
+    var tr = document.createElement('tr');
+    var rankTd = document.createElement('td');
+    rankTd.textContent = String(i + 1);
+    var wordTd = document.createElement('td');
+    var strong = document.createElement('strong');
+    strong.textContent = w.word;
+    wordTd.appendChild(strong);
+    var countTd = document.createElement('td');
+    countTd.textContent = w.count.toLocaleString();
+    var pctTd = document.createElement('td');
+    pctTd.textContent = w.pct + '%';
+    tr.appendChild(rankTd);
+    tr.appendChild(wordTd);
+    tr.appendChild(countTd);
+    tr.appendChild(pctTd);
+    tr.appendChild(profileLogsTfLogIdLinkEl(w.latest_log_id));
+    tr.appendChild(profileLogsTfLogIdLinkEl(w.peak_log_id));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  tableWrap.appendChild(table);
+  details.appendChild(tableWrap);
+  section.appendChild(details);
+
+  container.appendChild(section);
 }
 
 function profileMapsPctDisplay(pct) {
@@ -694,13 +813,24 @@ function bindProfileMapsTable(table) {
 
 var PROFILE_LAYOUT_COOKIE = 'tf2ls_profile_layout_v1';
 var PROFILE_LAYOUT_COOKIE_MAX_AGE = 31536000;
+// Default order (new users / no cookie). Keep in sync with layout-share.js PROFILE_SECTION_IDS.
 var PROFILE_LAYOUT_SECTION_IDS = window.TF2LS_PROFILE_SECTION_IDS || [
-  'trend', 'top_logs', 'coplayers', 'top_maps', 'classes', 'weapons', 'class_kills', 'rounds', 'healspread'
+  'trend',
+  'favorite_words',
+  'coplayers',
+  'top_maps',
+  'classes',
+  'top_logs',
+  'rounds',
+  'weapons',
+  'healspread',
+  'class_kills',
 ];
 var PROFILE_LAYOUT_LABELS = {
   trend: 'DPM / KDR over time',
   top_logs: 'Top logs',
   coplayers: 'Most frequent co-players',
+  favorite_words: 'Favorite Words',
   top_maps: 'Most played maps',
   classes: 'Class statistics',
   weapons: 'Weapons',
@@ -1148,6 +1278,13 @@ function renderProfileResult(el, data, elapsedMs) {
   }
 
   var topCoplayersBlock = profileTopCoplayersBlock(data);
+  var favoriteWords = Array.isArray(data.favorite_words) ? data.favorite_words : [];
+  var favoriteWordsBlock = '';
+  if (favoriteWords.length) {
+    var favoriteWordsScratch = document.createElement('div');
+    renderFavoriteWords(favoriteWords, favoriteWordsScratch);
+    favoriteWordsBlock = favoriteWordsScratch.innerHTML;
+  }
 
   var mapRows = Array.isArray(data.top_maps) ? data.top_maps : [];
   var topMapsBlock = '';
@@ -1233,6 +1370,7 @@ function renderProfileResult(el, data, elapsedMs) {
     trend: trendBlock,
     top_logs: topLogsBlock,
     coplayers: topCoplayersBlock,
+    favorite_words: favoriteWordsBlock,
     top_maps: topMapsBlock,
     classes: classesTable,
     weapons: weaponsTable,

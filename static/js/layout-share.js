@@ -14,7 +14,16 @@
     'chat', 'profile', 'coplayers', 'logmatch', 'stats', 'leaderboard', 'playername', 'log_library',
   ];
   var PROFILE_SECTION_IDS = [
-    'trend', 'top_logs', 'coplayers', 'top_maps', 'classes', 'weapons', 'class_kills', 'rounds', 'healspread',
+    'trend',
+    'favorite_words',
+    'coplayers',
+    'top_maps',
+    'classes',
+    'top_logs',
+    'rounds',
+    'weapons',
+    'healspread',
+    'class_kills',
   ];
 
   global.TF2LS_HOME_ENDPOINT_IDS = HOME_ENDPOINT_IDS;

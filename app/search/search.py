@@ -4,6 +4,7 @@ import logging
 import re
 import sqlite3
 import time
+from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -2442,6 +2443,193 @@ def _profile_fetch_top_coplayers_opposing(
             combined_logs.detach_chat_db(conn)
 
 
+_PROFILE_FAVORITE_WORDS_LIMIT = 30
+_PROFILE_FAVORITE_WORDS_MIN_COUNT = 2  # ignore words said only once
+_PROFILE_WORD_STOPWORDS: frozenset[str] = frozenset({
+    # Common English filler words not worth surfacing.
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "of",
+    "with",
+    "is",
+    "it",
+    "i",
+    "you",
+    "we",
+    "he",
+    "she",
+    "they",
+    "my",
+    "your",
+    "his",
+    "her",
+    "our",
+    "their",
+    "this",
+    "that",
+    "was",
+    "be",
+    "as",
+    "are",
+    "not",
+    "so",
+    "do",
+    "if",
+    "by",
+    "up",
+    "no",
+    "me",
+    "im",
+    "its",
+    "dont",
+    "cant",
+    "ill",
+    "ive",
+    "thats",
+})
+_PROFILE_WORD_BOUNDARY_STRIP_CHARS = ".,!?;:()[]{}\"'`~@#$%^&*-_=+<>/\\|"
+
+
+def _profile_countable_words_in_message(msg: str) -> Counter[str]:
+    """Token counts for one chat line using the same rules as favorite-word aggregation."""
+    c: Counter[str] = Counter()
+    for raw_tok in str(msg).split():
+        tok = raw_tok.strip(_PROFILE_WORD_BOUNDARY_STRIP_CHARS).lower()
+        if len(tok) < 2:
+            continue
+        if tok in _PROFILE_WORD_STOPWORDS:
+            continue
+        if not any(ch.isalpha() for ch in tok):
+            continue
+        c[tok] += 1
+    return c
+
+
+def _profile_peak_log_id_for_word(
+    per_log: dict[int, int],
+    log_date_ts_by_log: dict[int, int | None],
+    latest_log_id: int,
+) -> int:
+    """
+    Log where ``word`` appears most often; ties break toward the most recent log
+    (prefer real ``log_date_ts``, then higher timestamp, then higher ``log_id``).
+    """
+    if not per_log:
+        return latest_log_id
+    best_lid = latest_log_id
+    best_key: tuple[int, int, int, int] = (-1, -1, -1, -1)
+    for lid, cnt in per_log.items():
+        ts = log_date_ts_by_log.get(lid)
+        key = (cnt, 1 if ts is not None else 0, ts if ts is not None else 0, lid)
+        if key > best_key:
+            best_key = key
+            best_lid = lid
+    return best_lid
+
+
+def _profile_fetch_favorite_words(
+    steamid64: str,
+) -> list[dict[str, Any]]:
+    """
+    Top words used by a player across all their chat messages, ranked by count.
+
+    Runs directly against the chat DB (no stats DB connection needed). Returns up to
+    ``_PROFILE_FAVORITE_WORDS_LIMIT`` rows:
+      [{"word": str, "count": int, "pct": float, "latest_log_id": int, "peak_log_id": int}, ...]
+    where pct is this word's share of total words the player has typed (0.0-100.0).
+    ``latest_log_id`` is the log containing the chronologically latest message with that word;
+    ``peak_log_id`` is the log with the highest per-log count (tie: most recent log).
+    Returns [] if chat DB is unavailable or player has no messages.
+    """
+    path = Path(CHAT_DB_PATH)
+    if not path.is_file():
+        return []
+    sid = (steamid64 or "").strip()
+    if not sid:
+        return []
+    try:
+        conn = _sqlite_connect_ro(path)
+        try:
+            conn.execute("PRAGMA cache_size=-32768")
+            rows = conn.execute(
+                """
+                SELECT m.log_id, m.message_idx, m.msg, cl.log_date_ts
+                FROM chat_messages m
+                JOIN chat_logs cl ON cl.log_id = m.log_id
+                WHERE m.steamid64 = ?
+                ORDER BY COALESCE(cl.log_date_ts, 0) ASC, m.log_id ASC, m.message_idx ASC
+                """,
+                (sid,),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+    if not rows:
+        return []
+
+    counts: Counter[str] = Counter()
+    total_words = 0
+    per_log_word: dict[str, dict[int, int]] = {}
+    log_date_ts_by_log: dict[int, int | None] = {}
+    latest_log_for_word: dict[str, int] = {}
+
+    for log_id_raw, _message_idx_raw, msg, log_date_ts in rows:
+        try:
+            log_id = int(log_id_raw)
+        except (TypeError, ValueError):
+            continue
+        log_date_ts_by_log[log_id] = int(log_date_ts) if log_date_ts is not None else None
+        if not msg:
+            continue
+        wcount = _profile_countable_words_in_message(msg)
+        if not wcount:
+            continue
+        total_words += int(sum(wcount.values()))
+        counts.update(wcount)
+        for tok, n in wcount.items():
+            by_log = per_log_word.setdefault(tok, {})
+            by_log[log_id] = by_log.get(log_id, 0) + n
+            latest_log_for_word[tok] = log_id
+
+    if not counts or total_words <= 0:
+        return []
+
+    sorted_words = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    out: list[dict[str, Any]] = []
+    for word, count in sorted_words:
+        if count < _PROFILE_FAVORITE_WORDS_MIN_COUNT:
+            break
+        pct = round((count / total_words) * 100, 2) if total_words > 0 else 0.0
+        latest_lid = latest_log_for_word.get(word, 0)
+        peak_lid = _profile_peak_log_id_for_word(
+            per_log_word.get(word) or {},
+            log_date_ts_by_log,
+            latest_lid,
+        )
+        out.append({
+            "word": word,
+            "count": count,
+            "pct": pct,
+            "latest_log_id": latest_lid,
+            "peak_log_id": peak_lid,
+        })
+        if len(out) >= _PROFILE_FAVORITE_WORDS_LIMIT:
+            break
+
+    return out
+
+
 def _leaderboard_scope_sql(
     gamemode: str,
     date_from: date | None,
@@ -2899,6 +3087,7 @@ def player_profile(
     top_maps: list[dict[str, Any]] = []
     top_coplayers: list[dict[str, Any]] = []
     top_coplayers_opposing: list[dict[str, Any]] = []
+    favorite_words: list[dict[str, Any]] = []
     try:
         # --- Overview ---
         overview_sql = f"""
@@ -3239,6 +3428,8 @@ def player_profile(
     finally:
         conn.close()
 
+    favorite_words = _profile_fetch_favorite_words(sid)
+
     partner_ids: list[str] = []
     for p, _, _ in healed_to_raw:
         partner_ids.append(p)
@@ -3289,6 +3480,7 @@ def player_profile(
         "top_maps": top_maps,
         "top_coplayers": top_coplayers,
         "top_coplayers_opposing": top_coplayers_opposing,
+        "favorite_words": favorite_words,
     }
     return profile, log_ids
 

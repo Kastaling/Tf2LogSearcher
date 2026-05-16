@@ -2,14 +2,16 @@
 import pytest
 
 from app.chat_db import connect_chat_db, init_chat_db, replace_chat_for_log
+from app.logs_tf import steamid3_to_steamid64
 from app.stats_db import connect_stats_db, init_stats_db, replace_stats_for_log
-from app.search.search import player_profile
+from app.search.search import _profile_fetch_favorite_words, player_profile
 
-PLAYER_A = "76561198000000001"
-PLAYER_B = "76561198000000002"
-# SteamID3 = [U:1:(steamid64 - 76561197960265728)]
+# SteamID3 keys in logtext must convert to the same steamid64 used in profile/chat queries.
 PLAYER_A_3 = "[U:1:39734273]"
 PLAYER_B_3 = "[U:1:39734274]"
+PLAYER_A = steamid3_to_steamid64(PLAYER_A_3)
+PLAYER_B = steamid3_to_steamid64(PLAYER_B_3)
+assert PLAYER_A and PLAYER_B
 
 
 def _make_logtext(
@@ -132,6 +134,40 @@ def populated_db(stats_db):
     return stats_db
 
 
+@pytest.fixture()
+def populated_chat_db(tmp_path):
+    db_path = tmp_path / "chat.db"
+    conn = connect_chat_db(db_path)
+    init_chat_db(conn)
+    logtext = {
+        "info": {"map": "cp_process_final", "date": 1_700_000_000},
+        "players": {
+            PLAYER_A_3: {"team": "Red"},
+            PLAYER_B_3: {"team": "Blue"},
+        },
+        "chat": [
+            {"steamid": PLAYER_A_3, "name": "PlayerA", "msg": "gg gg nice push! the THE 123"},
+            {"steamid": PLAYER_A_3, "name": "PlayerA", "msg": "nice nice uber? dont lol, lol!"},
+            {"steamid": PLAYER_B_3, "name": "PlayerB", "msg": "gg gg nice"},
+        ],
+    }
+    logtext2 = {
+        "info": {"map": "cp_process_final", "date": 1_700_050_000},
+        "players": {
+            PLAYER_A_3: {"team": "Red"},
+            PLAYER_B_3: {"team": "Blue"},
+        },
+        "chat": [
+            {"steamid": PLAYER_A_3, "name": "PlayerA", "msg": "nice"},
+        ],
+    }
+    with conn:
+        replace_chat_for_log(conn, 1001, logtext)
+        replace_chat_for_log(conn, 1002, logtext2)
+    conn.close()
+    return db_path
+
+
 def test_profile_overview_counts(populated_db, monkeypatch):
     monkeypatch.setattr("app.search.search.STATS_DB_PATH", populated_db)
     monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {PLAYER_A: "PlayerA"})
@@ -158,6 +194,23 @@ def test_profile_overview_counts(populated_db, monkeypatch):
     assert ov["first_log_id"] == 1001
     assert ov["last_log_id"] == 1002
     assert 1001 in log_ids and 1002 in log_ids
+
+
+def test_profile_favorite_words_from_chat_db(populated_db, populated_chat_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", populated_db)
+    monkeypatch.setattr("app.search.search.CHAT_DB_PATH", populated_chat_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    rows = _profile_fetch_favorite_words(PLAYER_A)
+    assert rows[:3] == [
+        {"word": "nice", "count": 4, "pct": 40.0, "latest_log_id": 1002, "peak_log_id": 1001},
+        {"word": "gg", "count": 2, "pct": 20.0, "latest_log_id": 1001, "peak_log_id": 1001},
+        {"word": "lol", "count": 2, "pct": 20.0, "latest_log_id": 1001, "peak_log_id": 1001},
+    ]
+    assert all(r["word"] not in {"the", "dont", "push", "uber"} for r in rows)
+
+    profile, _ = player_profile(PLAYER_A)
+    assert profile["favorite_words"][:3] == rows[:3]
 
 
 def test_profile_top_logs_damage_taken_prefers_logs_tf_dt(stats_db, monkeypatch):
