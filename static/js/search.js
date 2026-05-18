@@ -822,6 +822,81 @@ function completeResultsPageTitle(loadSucceeded) {
   }
 }
 
+/** Lazily created; same-origin path only (no user-controlled URL). */
+var _resultsNotifyAudio = null;
+
+function _resultsReadyNotifyAudioUrl() {
+  try {
+    return new URL('/static/notification.mp3', window.location.origin).href;
+  } catch (e) {
+    return '';
+  }
+}
+
+function primeResultsReadyNotificationSound() {
+  if (_resultsNotifyAudio || typeof Audio === 'undefined') {
+    return;
+  }
+  var href = _resultsReadyNotifyAudioUrl();
+  if (!href) {
+    return;
+  }
+  try {
+    var a = new Audio();
+    a.preload = 'auto';
+    a.src = href;
+    _resultsNotifyAudio = a;
+    a.load();
+  } catch (e) {
+    _resultsNotifyAudio = null;
+  }
+}
+
+/**
+ * When a /results fetch finishes successfully and the document is not visible (another tab, window
+ * in background, etc.), play a short notification. Skipped if the tab is visible, on error, or if
+ * the user prefers reduced motion (matches non-flashing title behavior). play() failures are
+ * ignored (autoplay policy).
+ */
+function notifyResultsReadyIfBackground(loadSucceeded) {
+  if (!loadSucceeded || typeof document === 'undefined') {
+    return;
+  }
+  if (!document.hidden) {
+    return;
+  }
+  if (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    return;
+  }
+  if (typeof Audio === 'undefined') {
+    return;
+  }
+  var href = _resultsReadyNotifyAudioUrl();
+  if (!href) {
+    return;
+  }
+  if (!_resultsNotifyAudio) {
+    try {
+      var a = new Audio();
+      a.preload = 'auto';
+      a.src = href;
+      _resultsNotifyAudio = a;
+    } catch (e) {
+      return;
+    }
+  }
+  var audio = _resultsNotifyAudio;
+  try {
+    audio.muted = false;
+    audio.volume = 0.85;
+    audio.currentTime = 0;
+  } catch (e) {}
+  var p = audio.play();
+  if (p && typeof p.catch === 'function') {
+    p.catch(function() {});
+  }
+}
+
 /** Optional mini-game in place of loading dots; torn down when loading finishes (see ``stopLoadingTitleAnimation``). */
 var _loadingSnakeCtl = null;
 
@@ -1416,6 +1491,7 @@ if (frmLb) {
   if (persisted) persistSearchState(persisted);
   var t0 = performance.now();
   showResultsLoading(resultsContent);
+  primeResultsReadyNotificationSound();
   var apiUrl = '';
   if (mode === 'chat') {
     apiUrl = '/api/search/chat?' + new URLSearchParams({
@@ -1581,5 +1657,6 @@ if (frmLb) {
     })
     .finally(function() {
       completeResultsPageTitle(resultsLoadSucceeded);
+      notifyResultsReadyIfBackground(resultsLoadSucceeded);
     });
 })();

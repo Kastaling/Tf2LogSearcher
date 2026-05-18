@@ -1355,6 +1355,13 @@
       align-items: flex-start;
     }
     .profile-heal-col { flex: 1 1 14rem; min-width: 12rem; }
+    .profile-heal-table-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      max-width: 100%;
+    }
+    .profile-healspread-wrap .stats-table th { white-space: normal; }
+    .profile-heal-peak-cell { line-height: 1.4; max-width: 22rem; }
     .profile-heal-list { margin: 0.5rem 0 0; padding-left: 1.25rem; }
     details.profile-classes-other { margin-top: 1rem; }
     details.profile-classes-other > summary { cursor: pointer; font-weight: 600; }

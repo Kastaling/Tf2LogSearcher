@@ -27,3 +27,6 @@ examples/
 .cursor/
 node_modules/
 maintenance_logs/
+static/items_game.txt
+static/tf_english.txt
+static/notification.mp3

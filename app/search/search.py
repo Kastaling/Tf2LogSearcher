@@ -15,6 +15,7 @@ from app.config import CHAT_DB_PATH, CHAT_SEARCH_MAX_RESULTS_STEAMID, STATS_DB_P
 from app.log_utils import winner_team_from_log as _winner_team_from_log
 from app.stats_db import player_stats_agg_nonempty, stats_log_ids_for_player
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
+from app.weapon_names import get_weapon_name
 
 logger = logging.getLogger(__name__)
 
@@ -3054,6 +3055,103 @@ def _split_profile_class_rows(
     return main, other
 
 
+def _profile_healspread_partner_peaks(
+    conn: sqlite3.Connection,
+    *,
+    subject_sid: str,
+    partner_ids: list[str],
+    filter_sql: str,
+    filter_params: list[Any],
+    subject_is_healer: bool,
+) -> dict[str, dict[str, Any | None]]:
+    """
+    For each partner steamid64, find (1) the log with highest total healing in that log for this pair,
+    and (2) the log with highest healing per minute (uses ``logs.duration_secs``; partners with no
+    log having duration are omitted for (2)).
+    """
+    if not partner_ids:
+        return {}
+    placeholders = ",".join("?" * len(partner_ids))
+    if subject_is_healer:
+        partner_col = "lph.patient_steamid64"
+        subject_clause = "lph.healer_steamid64 = ?"
+    else:
+        partner_col = "lph.healer_steamid64"
+        subject_clause = "lph.patient_steamid64 = ?"
+    sql = f"""
+        WITH agg AS (
+          SELECT
+            {partner_col} AS partner,
+            lph.log_id,
+            SUM(lph.healing) AS heal_log,
+            MAX(l.duration_secs) AS dur
+          FROM log_player_healspread lph
+          JOIN logs l ON l.log_id = lph.log_id
+          WHERE {subject_clause}
+            AND {partner_col} IN ({placeholders})
+            {filter_sql}
+          GROUP BY {partner_col}, lph.log_id
+        ),
+        heal_pick AS (
+          SELECT partner, log_id, heal_log, dur,
+            ROW_NUMBER() OVER (
+              PARTITION BY partner ORDER BY heal_log DESC, log_id DESC
+            ) AS rn
+          FROM agg
+        ),
+        hpm_pick AS (
+          SELECT partner, log_id, heal_log, dur,
+            ROW_NUMBER() OVER (
+              PARTITION BY partner
+              ORDER BY (CAST(heal_log AS REAL) * 60.0 / CAST(dur AS REAL)) DESC, log_id DESC
+            ) AS rn
+          FROM agg
+          WHERE dur IS NOT NULL AND CAST(dur AS REAL) > 0
+        )
+        SELECT
+          h.partner,
+          h.log_id AS heal_log_id,
+          h.heal_log AS heal_amount,
+          h.dur AS heal_dur,
+          p.log_id AS hpm_log_id,
+          p.heal_log AS hpm_amount,
+          p.dur AS hpm_dur
+        FROM heal_pick h
+        LEFT JOIN hpm_pick p ON p.partner = h.partner AND p.rn = 1
+        WHERE h.rn = 1
+    """
+    params: list[Any] = [subject_sid, *partner_ids, *filter_params]
+    out: dict[str, dict[str, Any | None]] = {}
+    for row in conn.execute(sql, params).fetchall():
+        pid = str(row[0])
+        th_id, th_amt, th_dur = row[1], int(row[2] or 0), row[3]
+        hpm_id, hpm_amt_r, hpm_dur_r = row[4], row[5], row[6]
+
+        peak_total: dict[str, Any] | None = None
+        if th_id is not None:
+            dur_i = int(th_dur) if th_dur is not None else None
+            hpm_here = round(th_amt * 60.0 / dur_i, 2) if dur_i and dur_i > 0 else None
+            peak_total = {
+                "log_id": int(th_id),
+                "healing": th_amt,
+                "duration_secs": dur_i,
+                "heals_per_min": hpm_here,
+            }
+        peak_hpm: dict[str, Any] | None = None
+        if hpm_id is not None:
+            ha = int(hpm_amt_r or 0)
+            hd = int(hpm_dur_r) if hpm_dur_r is not None else 0
+            hv = round(ha * 60.0 / hd, 2) if hd > 0 else None
+            peak_hpm = {
+                "log_id": int(hpm_id),
+                "healing": ha,
+                "duration_secs": hd if hd > 0 else None,
+                "heals_per_min": hv,
+            }
+        out[pid] = {"peak_total_heal": peak_total, "peak_heals_per_min": peak_hpm}
+    return out
+
+
 def player_profile(
     steamid64: str,
     *,
@@ -3082,6 +3180,8 @@ def player_profile(
     conn = _sqlite_connect_ro(path)
     healed_to_raw: list[tuple[str, int, int]] = []
     healed_by_raw: list[tuple[str, int, int]] = []
+    peaks_healed_to: dict[str, dict[str, Any | None]] = {}
+    peaks_healed_by: dict[str, dict[str, Any | None]] = {}
     trend_rows: list[dict[str, Any]] = []
     top_logs: list[dict[str, Any]] = []
     top_maps: list[dict[str, Any]] = []
@@ -3282,8 +3382,10 @@ def player_profile(
             lcw = int(wr[5] or 0)
             acc = round(th / ts, 4) if ts > 0 else None
             adph = round(tdmg / th, 2) if th > 0 else None
+            w_int = str(wr[0])
             weapons_out.append({
-                "weapon": str(wr[0]),
+                "weapon": w_int,
+                "weapon_display": get_weapon_name(w_int),
                 "total_kills": tk,
                 "total_damage": tdmg,
                 "total_shots": ts,
@@ -3393,6 +3495,22 @@ def player_profile(
             (str(a[0]), int(a[1] or 0), int(a[2] or 0))
             for a in conn.execute(hb_sql, (sid, *filter_params)).fetchall()
         ]
+        peaks_healed_to = _profile_healspread_partner_peaks(
+            conn,
+            subject_sid=sid,
+            partner_ids=[p for p, _, _ in healed_to_raw],
+            filter_sql=filter_sql,
+            filter_params=filter_params,
+            subject_is_healer=True,
+        )
+        peaks_healed_by = _profile_healspread_partner_peaks(
+            conn,
+            subject_sid=sid,
+            partner_ids=[p for p, _, _ in healed_by_raw],
+            filter_sql=filter_sql,
+            filter_params=filter_params,
+            subject_is_healer=False,
+        )
 
         # Per-log DPM/KDR/KADR for profile trend chart (newest first in subquery, then chronological).
         _trend_limit = 10000
@@ -3444,6 +3562,9 @@ def player_profile(
             "name": (name_map.get(p) or "").strip(),
             "total_healing": h,
             "logs_count": lc,
+            "heals_per_log": round(h / lc, 2) if lc else None,
+            "peak_total_heal": (peaks_healed_to.get(p) or {}).get("peak_total_heal"),
+            "peak_heals_per_min": (peaks_healed_to.get(p) or {}).get("peak_heals_per_min"),
         }
         for p, h, lc in healed_to_raw
     ]
@@ -3453,6 +3574,9 @@ def player_profile(
             "name": (name_map.get(p) or "").strip(),
             "total_healing": h,
             "logs_count": lc,
+            "heals_per_log": round(h / lc, 2) if lc else None,
+            "peak_total_heal": (peaks_healed_by.get(p) or {}).get("peak_total_heal"),
+            "peak_heals_per_min": (peaks_healed_by.get(p) or {}).get("peak_heals_per_min"),
         }
         for p, h, lc in healed_by_raw
     ]

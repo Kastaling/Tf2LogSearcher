@@ -262,6 +262,50 @@ function profileTopCoplayersBlock(data) {
     '</div>';
 }
 
+/** One log peak for heal spread: logs.tf link + healing, duration, HP/min (server fields only). */
+function profileHealspreadPeakHtml(peak) {
+  if (!peak || peak.log_id == null || peak.log_id === '') return '\u2014';
+  var lid = Number(peak.log_id);
+  if (!Number.isFinite(lid) || lid < 1) return '\u2014';
+  var idStr = String(Math.floor(lid));
+  if (!/^\d+$/.test(idStr)) return '\u2014';
+  var h = peak.healing;
+  var hStr = h != null && Number.isFinite(Number(h)) ? profileFormatHealing(Number(h)) : '\u2014';
+  var link = profileLogsTfDateLink(idStr, '#' + idStr);
+  var parts = [link + ' <span class="stats-summary-meta">(' + escapeHtml(hStr) + ')</span>'];
+  var d = peak.duration_secs;
+  if (d != null && Number.isFinite(Number(d)) && Number(d) > 0) {
+    parts.push('<span class="stats-summary-meta">' + escapeHtml(profileFormatDurationMinSec(d)) + '</span>');
+  }
+  var hpm = peak.heals_per_min;
+  if (hpm != null && Number.isFinite(Number(hpm))) {
+    parts.push('<span class="stats-summary-meta">' + escapeHtml(String(Math.round(Number(hpm) * 100) / 100)) + ' HP/min</span>');
+  }
+  return '<div class="profile-heal-peak-cell">' + parts.join(' ') + '</div>';
+}
+
+function profileHealspreadTableRow(r) {
+  var name = r.name != null ? String(r.name) : '';
+  var sid = r.steamid64 != null ? String(r.steamid64).trim() : '';
+  var display = name.trim() ? name : sid;
+  var avatar = steamAvatarPlaceholder(sid);
+  var nameCell;
+  if (/^\d{17}$/.test(sid)) {
+    var phref = internalProfileHref(sid);
+    nameCell = avatar + '<a href="' + escapeAttr(phref) + '">' + escapeHtml(display) + '</a>';
+  } else {
+    nameCell = avatar + escapeHtml(display || '\u2014');
+  }
+  var totalH = r.total_healing != null ? profileFormatHealing(r.total_healing) : '\u2014';
+  var logs = r.logs_count != null ? String(r.logs_count) : '\u2014';
+  var hpl = r.heals_per_log != null && Number.isFinite(Number(r.heals_per_log))
+    ? String(Math.round(Number(r.heals_per_log) * 100) / 100)
+    : '\u2014';
+  return '<tr><td>' + nameCell + '</td><td>' + escapeHtml(totalH) + '</td><td>' + escapeHtml(logs) + '</td><td>' + escapeHtml(hpl) + '</td><td>' +
+    profileHealspreadPeakHtml(r.peak_total_heal) + '</td><td>' +
+    profileHealspreadPeakHtml(r.peak_heals_per_min) + '</td></tr>';
+}
+
 function bindProfileCoplayersToggle(root) {
   var wrap = root.querySelector('.js-profile-coplayers');
   if (!wrap) return;
@@ -820,11 +864,11 @@ var PROFILE_LAYOUT_SECTION_IDS = window.TF2LS_PROFILE_SECTION_IDS || [
   'coplayers',
   'top_maps',
   'classes',
+  'class_kills',
   'top_logs',
-  'rounds',
   'weapons',
   'healspread',
-  'class_kills',
+  'rounds',
 ];
 var PROFILE_LAYOUT_LABELS = {
   trend: 'DPM / KDR over time',
@@ -1315,7 +1359,8 @@ function renderProfileResult(el, data, elapsedMs) {
     var wbody = weapons.map(function(w) {
       var acc = w.accuracy != null ? (Math.round(Number(w.accuracy) * 10000) / 100 + '%') : '\u2014';
       var adh = w.avg_damage_per_shot != null ? String(w.avg_damage_per_shot) : '\u2014';
-      return '<tr><td>' + escapeHtml(String(w.weapon)) + '</td><td>' + escapeHtml(String(w.logs_count)) + '</td><td>' +
+      var wname = (w.weapon_display && String(w.weapon_display).trim()) ? String(w.weapon_display) : String(w.weapon);
+      return '<tr><td>' + escapeHtml(wname) + '</td><td>' + escapeHtml(String(w.logs_count)) + '</td><td>' +
         escapeHtml(String(w.total_kills)) + '</td><td>' + escapeHtml(String(w.total_damage)) + '</td><td>' + escapeHtml(acc) + '</td><td>' + escapeHtml(adh) + '</td></tr>';
     }).join('');
     weaponsTable = '<div class="stats-summary"><p class="stats-summary-title">Weapons</p><div class="stats-table-wrap"><table class="stats-table"><thead>' + wthead + '</thead><tbody>' + wbody + '</tbody></table></div></div>';
@@ -1354,15 +1399,16 @@ function renderProfileResult(el, data, elapsedMs) {
   var hb = hs.healed_by || [];
   var healCard = '';
   if (ht.length || hb.length) {
-    function healList(title, rows) {
-      var lis = rows.map(function(r) {
-        var nm = r.name && String(r.name).trim() ? escapeHtml(String(r.name)) : escapeHtml(String(r.steamid64));
-        return '<li>' + nm + ' &mdash; ' + escapeHtml(profileFormatHealing(r.total_healing)) + ' <span class="stats-summary-meta">(' + escapeHtml(String(r.logs_count)) + ' logs)</span></li>';
-      }).join('');
-      return '<div class="profile-heal-col"><h3 class="stats-summary-title">' + escapeHtml(title) + '</h3><ul class="profile-heal-list">' + lis + '</ul></div>';
-    }
-    healCard = '<div class="stats-summary profile-healspread-wrap"><p class="stats-summary-title">Heal spread</p><div class="profile-healspread-cols">' +
-      healList('Healed to', ht) + healList('Healed by', hb) + '</div></div>';
+    var thead = '<tr><th>Player</th><th>Total healing</th><th>Logs</th><th>Heals/log</th><th>Most healing (log)</th><th>Highest HP/min (log)</th></tr>';
+    var emptyRow = '<tr><td colspan="6" class="stats-summary-meta">\u2014</td></tr>';
+    var toBody = ht.length ? ht.map(profileHealspreadTableRow).join('') : emptyRow;
+    var byBody = hb.length ? hb.map(profileHealspreadTableRow).join('') : emptyRow;
+    healCard = '<div class="stats-summary profile-healspread-wrap"><p class="stats-summary-title">Heal spread</p><p class="stats-summary-meta">Per-log peaks use logs.tf match length when available. HP/min = healing in that log &divide; log duration.</p><div class="profile-healspread-cols">' +
+      '<div class="profile-heal-col"><h3 class="stats-summary-title">Healed to</h3>' +
+      '<div class="stats-table-wrap profile-heal-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + toBody + '</tbody></table></div></div>' +
+      '<div class="profile-heal-col"><h3 class="stats-summary-title">Healed by</h3>' +
+      '<div class="stats-table-wrap profile-heal-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + byBody + '</tbody></table></div></div>' +
+      '</div></div>';
   }
 
   var layoutSettings = readProfileLayoutSettings();

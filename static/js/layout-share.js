@@ -19,11 +19,11 @@
     'coplayers',
     'top_maps',
     'classes',
+    'class_kills',
     'top_logs',
-    'rounds',
     'weapons',
     'healspread',
-    'class_kills',
+    'rounds',
   ];
 
   global.TF2LS_HOME_ENDPOINT_IDS = HOME_ENDPOINT_IDS;

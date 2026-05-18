@@ -168,6 +168,85 @@ def populated_chat_db(tmp_path):
     return db_path
 
 
+@pytest.fixture()
+def healspread_peaks_db(stats_db):
+    """A heals B across three logs; B heals A in two — peak totals and peak HPM differ."""
+    conn = connect_stats_db(stats_db)
+    with conn:
+        replace_stats_for_log(conn, 5001, _make_logtext(PLAYER_A_3, PLAYER_B_3, date_ts=1_700_000_000))
+        replace_stats_for_log(conn, 5002, _make_logtext(PLAYER_A_3, PLAYER_B_3, date_ts=1_700_050_000))
+        replace_stats_for_log(conn, 5003, _make_logtext(PLAYER_A_3, PLAYER_B_3, date_ts=1_700_100_000))
+        conn.executemany(
+            """
+            INSERT INTO log_player_healspread (log_id, healer_steamid64, patient_steamid64, healing)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (5001, PLAYER_A, PLAYER_B, 1000),
+                (5002, PLAYER_A, PLAYER_B, 3000),
+                (5003, PLAYER_A, PLAYER_B, 5000),
+                (5001, PLAYER_B, PLAYER_A, 800),
+                (5002, PLAYER_B, PLAYER_A, 1600),
+            ],
+        )
+        conn.execute("UPDATE logs SET duration_secs = 600 WHERE log_id = ?", (5002,))
+        conn.execute("UPDATE logs SET duration_secs = 2000 WHERE log_id = ?", (5003,))
+    conn.close()
+    return stats_db
+
+
+def test_profile_healspread_peaks_and_per_log(healspread_peaks_db, monkeypatch):
+    _conn_chk = connect_stats_db(healspread_peaks_db)
+    try:
+        durs = dict(_conn_chk.execute("SELECT log_id, duration_secs FROM logs WHERE log_id IN (5001,5002,5003)").fetchall())
+        simple = _conn_chk.execute(
+            """
+            SELECT lph.log_id, SUM(lph.healing) AS heal_log, MAX(l.duration_secs) AS dur
+            FROM log_player_healspread lph
+            JOIN logs l ON l.log_id = lph.log_id
+            WHERE lph.healer_steamid64 = ? AND lph.patient_steamid64 = ?
+            GROUP BY lph.log_id
+            ORDER BY (SUM(lph.healing) * 60.0 / MAX(l.duration_secs)) DESC, lph.log_id DESC
+            """,
+            (PLAYER_A, PLAYER_B),
+        ).fetchall()
+    finally:
+        _conn_chk.close()
+    assert durs == {5001: 300, 5002: 600, 5003: 2000}
+    assert simple[0][0] == 5002
+
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", healspread_peaks_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    profile, _ = player_profile(PLAYER_A)
+    ht = profile["healspread"]["healed_to"]
+    hb = profile["healspread"]["healed_by"]
+    assert len(ht) == 1
+    assert ht[0]["steamid64"] == PLAYER_B
+    assert ht[0]["total_healing"] == 9000
+    assert ht[0]["logs_count"] == 3
+    assert ht[0]["heals_per_log"] == 3000.0
+    pt = ht[0]["peak_total_heal"]
+    assert pt is not None
+    assert pt["log_id"] == 5003
+    assert pt["healing"] == 5000
+    ph = ht[0]["peak_heals_per_min"]
+    assert ph is not None
+    assert ph["log_id"] == 5002
+    assert ph["healing"] == 3000
+    assert ph["heals_per_min"] == 300.0
+
+    assert len(hb) == 1
+    assert hb[0]["steamid64"] == PLAYER_B
+    assert hb[0]["total_healing"] == 2400
+    assert hb[0]["logs_count"] == 2
+    assert hb[0]["heals_per_log"] == 1200.0
+    assert hb[0]["peak_total_heal"]["log_id"] == 5002
+    assert hb[0]["peak_total_heal"]["healing"] == 1600
+    assert hb[0]["peak_heals_per_min"]["log_id"] == 5002
+    assert hb[0]["peak_heals_per_min"]["heals_per_min"] == 160.0
+
+
 def test_profile_overview_counts(populated_db, monkeypatch):
     monkeypatch.setattr("app.search.search.STATS_DB_PATH", populated_db)
     monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {PLAYER_A: "PlayerA"})
@@ -649,6 +728,7 @@ def test_profile_weapons_section(populated_db, monkeypatch):
     assert len(weapons) >= 1
     rocket = next((w for w in weapons if w["weapon"] == "tf_projectile_rocket"), None)
     assert rocket is not None
+    assert rocket["weapon_display"] == "Rocket Launcher"
     assert rocket["total_kills"] == 24
     assert rocket["logs_count"] == 2
 

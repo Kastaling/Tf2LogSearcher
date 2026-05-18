@@ -14,11 +14,11 @@ const PROFILE_IDS = [
   'coplayers',
   'top_maps',
   'classes',
+  'class_kills',
   'top_logs',
-  'rounds',
   'weapons',
   'healspread',
-  'class_kills',
+  'rounds',
 ];
 
 function defaultHome() {
