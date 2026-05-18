@@ -27,9 +27,62 @@ def _iter_log_files(logs_dir: Path) -> list[Path]:
     return out
 
 
-def run_backfill(logs_dir: Path, db_path: Path, batch_size: int) -> None:
-    files = _iter_log_files(logs_dir)
-    logger.info("Found %s local log file(s) to scan in %s", len(files), logs_dir)
+def _filter_log_paths_for_backfill(
+    files: list[Path],
+    *,
+    min_log_id: int | None,
+    max_log_id: int | None,
+    skip_files: int,
+) -> list[Path]:
+    """
+    Sub-sequence of sorted ``<id>.json`` paths.
+
+    Filters apply in order: ``min_log_id``, ``max_log_id`` (on numeric stem), then drop the
+    first ``skip_files`` entries (used to resume using the first number from a Progress line).
+    """
+    out = files
+    if min_log_id is not None:
+        out = [p for p in out if int(p.stem) >= min_log_id]
+    if max_log_id is not None:
+        out = [p for p in out if int(p.stem) <= max_log_id]
+    sk = max(0, int(skip_files))
+    if sk:
+        if sk >= len(out):
+            return []
+        out = out[sk:]
+    return out
+
+
+def run_backfill(
+    logs_dir: Path,
+    db_path: Path,
+    batch_size: int,
+    *,
+    min_log_id: int | None = None,
+    max_log_id: int | None = None,
+    skip_files: int = 0,
+) -> None:
+    files_all = _iter_log_files(logs_dir)
+    files = _filter_log_paths_for_backfill(
+        files_all,
+        min_log_id=min_log_id,
+        max_log_id=max_log_id,
+        skip_files=skip_files,
+    )
+    logger.info(
+        "Found %s local log JSON file(s) under %s; %s to process "
+        "(min_log_id=%s max_log_id=%s skip_files=%s)",
+        len(files_all),
+        logs_dir,
+        len(files),
+        min_log_id,
+        max_log_id,
+        skip_files,
+    )
+    if not files:
+        logger.warning("No log files match filters; nothing to do (stats DB unchanged).")
+        return
+
     conn = connect_stats_db(db_path)
     try:
         init_stats_db(conn)
@@ -63,7 +116,7 @@ def run_backfill(logs_dir: Path, db_path: Path, batch_size: int) -> None:
                 conn.commit()
                 elapsed = max(0.001, time.time() - start)
                 logger.info(
-                    "Progress: %s/%s logs processed, %s player rows inserted (%.1f logs/s)",
+                    "Progress: %s/%s logs in this run, %s player rows inserted (%.1f logs/s)",
                     processed,
                     len(files),
                     player_rows_total,
@@ -105,15 +158,52 @@ def main() -> None:
         default=500,
         help="How many logs per transaction commit (higher is faster, lower uses less rollback work on failure)",
     )
+    parser.add_argument(
+        "--min-log-id",
+        type=int,
+        default=None,
+        metavar="ID",
+        help="Only import JSON logs whose numeric id is >= ID (after sorting)",
+    )
+    parser.add_argument(
+        "--max-log-id",
+        type=int,
+        default=None,
+        metavar="ID",
+        help="Only import JSON logs whose numeric id is <= ID (after sorting)",
+    )
+    parser.add_argument(
+        "--skip-files",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Skip the first N files after sorting and min/max filters — use this to resume: "
+            "set N to the first number from the last successful Progress line "
+            "(logs in this run / …) so already-imported logs are not re-read"
+        ),
+    )
     args = parser.parse_args()
 
     logs_dir = Path(args.logs_dir)
     db_path = Path(args.db_path)
     batch_size = max(1, int(args.batch_size))
+    if args.skip_files < 0:
+        raise SystemExit("--skip-files must be >= 0")
+    if args.min_log_id is not None and args.max_log_id is not None:
+        if args.min_log_id > args.max_log_id:
+            raise SystemExit("--min-log-id must be <= --max-log-id")
     if not logs_dir.exists() or not logs_dir.is_dir():
         raise SystemExit(f"Invalid --logs-dir: {logs_dir}")
 
-    run_backfill(logs_dir, db_path, batch_size)
+    run_backfill(
+        logs_dir,
+        db_path,
+        batch_size,
+        min_log_id=args.min_log_id,
+        max_log_id=args.max_log_id,
+        skip_files=args.skip_files,
+    )
 
 
 if __name__ == "__main__":

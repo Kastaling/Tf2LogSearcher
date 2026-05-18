@@ -26,3 +26,4 @@ examples/
 .cursorrules
 .cursor/
 node_modules/
+maintenance_logs/

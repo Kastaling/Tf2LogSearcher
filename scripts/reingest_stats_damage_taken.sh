@@ -13,6 +13,12 @@
 #   ./scripts/reingest_stats_damage_taken.sh --no-tmux    # CI / cron / no tmux installed
 #   BATCH_SIZE=750 ./scripts/reingest_stats_damage_taken.sh
 #
+# Resume without re-reading earlier JSON (use first number from last good Progress line):
+#   ./scripts/reingest_stats_damage_taken.sh --skip-files 2409500
+# Only logs.tf ids in a numeric band (after sorting filenames):
+#   ./scripts/reingest_stats_damage_taken.sh --min-log-id 3000000
+#   ./scripts/reingest_stats_damage_taken.sh --min-log-id 3000000 --max-log-id 4000000
+#
 # Environment:
 #   DOCKER_COMPOSE_CMD  Override compose command (e.g. "docker compose -f prod.yml")
 #   TF2LS_TMUX_SESSION  tmux session name (default: tf2ls-reingest-YYYYMMDD-HHMMSS)
@@ -26,7 +32,7 @@
 set -euo pipefail
 
 usage() {
-  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

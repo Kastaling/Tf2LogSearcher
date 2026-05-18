@@ -95,6 +95,20 @@ Import per-log player stats from existing JSON logs. Re-running is safe; rows ar
 docker compose run --rm downloader python -m app.stats_backfill --batch-size 500
 ```
 
+Resume without re-reading earlier JSON files (set `N` to the **first number** from the last successful
+`Progress: … logs in this run …` line — that is how many sorted files were already committed, not
+necessarily the logs.tf numeric id of the last file):
+
+```bash
+docker compose run --rm downloader python -m app.stats_backfill --skip-files 2409500
+```
+
+Only import logs whose **filename id** falls in a numeric range (after sorting):
+
+```bash
+docker compose run --rm downloader python -m app.stats_backfill --min-log-id 3000000 --max-log-id 3999999
+```
+
 ### Rebuild Leaderboard Aggregates
 
 Rebuild `player_stats_agg` after adding or changing aggregate leaderboard columns:
@@ -126,6 +140,9 @@ The wrapper stops the downloader, runs `app.stats_backfill` with the current imp
 writes a verbose ignored log file under `maintenance_logs/` (override with `TF2LS_MAINT_LOG_DIR`).
 
 Pass `--no-tmux` / `--foreground` for CI, cron, or non-interactive terminals.
+
+`app.stats_backfill` options `--skip-files`, `--min-log-id`, and `--max-log-id` are forwarded when
+you append them to the wrapper (see the **Backfill Stats DB** section above).
 
 ### Backfill Raw Events DB
 
