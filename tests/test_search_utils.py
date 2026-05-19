@@ -245,6 +245,10 @@ def test_map_empty_name():
         (4, "ud", True),
         (6, "ud", True),
         (7, "ud", False),
+        (8, "4s", True),
+        (11, "4s", True),
+        (12, "4s", False),
+        (6, "4s", False),
         (12, "hl", False),
     ],
 )

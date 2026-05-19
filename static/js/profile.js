@@ -284,6 +284,105 @@ function profileHealspreadPeakHtml(peak) {
   return '<div class="profile-heal-peak-cell">' + parts.join(' ') + '</div>';
 }
 
+var PROFILE_HEALSPREAD_COLUMNS = [
+  { key: 'player', label: 'Player', kind: 'text' },
+  { key: 'total_healing', label: 'Total healing', kind: 'number' },
+  { key: 'logs_count', label: 'Logs', kind: 'number' },
+  { key: 'heals_per_log', label: 'Heals/log', kind: 'number' },
+  { key: 'peak_total_heal', label: 'Most healing (log)', kind: 'peak_healing' },
+  { key: 'peak_heals_per_min', label: 'Highest HP/min (log)', kind: 'peak_hpm' }
+];
+var PROFILE_HEALSPREAD_COLSPAN = String(PROFILE_HEALSPREAD_COLUMNS.length);
+
+function profileHealspreadSortValue(row, colDef) {
+  if (colDef.kind === 'text') {
+    var name = row.name != null ? String(row.name) : '';
+    var sid = row.steamid64 != null ? String(row.steamid64).trim() : '';
+    var display = name.trim() ? name : sid;
+    return display.toLowerCase();
+  }
+  if (colDef.kind === 'peak_healing') {
+    var pt = row.peak_total_heal;
+    if (!pt || pt.healing == null) return null;
+    var ph = Number(pt.healing);
+    return Number.isFinite(ph) ? ph : null;
+  }
+  if (colDef.kind === 'peak_hpm') {
+    var pm = row.peak_heals_per_min;
+    if (!pm || pm.heals_per_min == null) return null;
+    var pv = Number(pm.heals_per_min);
+    return Number.isFinite(pv) ? pv : null;
+  }
+  var v = row[colDef.key];
+  var n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function profileHealspreadSortedRows(rows, sortCol, sortDir) {
+  var colDef = PROFILE_HEALSPREAD_COLUMNS.find(function(c) { return c.key === sortCol; });
+  if (!colDef) return rows.slice();
+  var sorted = rows.slice();
+  sorted.sort(function(a, b) {
+    var va = profileHealspreadSortValue(a, colDef);
+    var vb = profileHealspreadSortValue(b, colDef);
+    if (va === null && vb === null) return 0;
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    if (colDef.kind === 'text') {
+      if (va < vb) return -sortDir;
+      if (va > vb) return sortDir;
+      return 0;
+    }
+    if (va < vb) return -sortDir;
+    if (va > vb) return sortDir;
+    return 0;
+  });
+  return sorted;
+}
+
+function profileHealspreadTableInnerHtml(rows, sortCol, sortDir) {
+  var thead = '<tr>';
+  PROFILE_HEALSPREAD_COLUMNS.forEach(function(c) {
+    var cls = 'sortable';
+    if (c.key === sortCol) cls += sortDir === 1 ? ' sorted-asc' : ' sorted-desc';
+    thead += '<th class="' + cls + '" data-col="' + escapeHtml(c.key) + '" scope="col">' + escapeHtml(c.label) + '</th>';
+  });
+  thead += '</tr>';
+  var bodyRows = profileHealspreadSortedRows(rows, sortCol, sortDir);
+  var tbody = bodyRows.length
+    ? bodyRows.map(profileHealspreadTableRow).join('')
+    : '<tr><td colspan="' + escapeHtml(PROFILE_HEALSPREAD_COLSPAN) + '" class="stats-summary-meta">\u2014</td></tr>';
+  return '<thead>' + thead + '</thead><tbody>' + tbody + '</tbody>';
+}
+
+function profileHealspreadEmptyTableInnerHtml() {
+  var thead = '<tr>';
+  PROFILE_HEALSPREAD_COLUMNS.forEach(function(c) {
+    thead += '<th scope="col">' + escapeHtml(c.label) + '</th>';
+  });
+  thead += '</tr>';
+  return '<thead>' + thead + '</thead><tbody><tr><td colspan="' + escapeHtml(PROFILE_HEALSPREAD_COLSPAN) + '" class="stats-summary-meta">\u2014</td></tr></tbody>';
+}
+
+function bindProfileHealspreadTableSort(table) {
+  table.addEventListener('click', function(ev) {
+    var th = ev.target.closest('th.sortable');
+    if (!th || !table.contains(th)) return;
+    var col = th.getAttribute('data-col');
+    if (!col) return;
+    var rows = table._profileHealspreadRows;
+    if (!rows || !rows.length) return;
+    if (table._sortCol === col) {
+      table._sortDir *= -1;
+    } else {
+      table._sortCol = col;
+      table._sortDir = col === 'player' ? 1 : -1;
+    }
+    table.innerHTML = profileHealspreadTableInnerHtml(rows, table._sortCol, table._sortDir);
+    loadAvatarsInContainer(table);
+  });
+}
+
 function profileHealspreadTableRow(r) {
   var name = r.name != null ? String(r.name) : '';
   var sid = r.steamid64 != null ? String(r.steamid64).trim() : '';
@@ -1399,15 +1498,11 @@ function renderProfileResult(el, data, elapsedMs) {
   var hb = hs.healed_by || [];
   var healCard = '';
   if (ht.length || hb.length) {
-    var thead = '<tr><th>Player</th><th>Total healing</th><th>Logs</th><th>Heals/log</th><th>Most healing (log)</th><th>Highest HP/min (log)</th></tr>';
-    var emptyRow = '<tr><td colspan="6" class="stats-summary-meta">\u2014</td></tr>';
-    var toBody = ht.length ? ht.map(profileHealspreadTableRow).join('') : emptyRow;
-    var byBody = hb.length ? hb.map(profileHealspreadTableRow).join('') : emptyRow;
-    healCard = '<div class="stats-summary profile-healspread-wrap"><p class="stats-summary-title">Heal spread</p><p class="stats-summary-meta">Per-log peaks use logs.tf match length when available. HP/min = healing in that log &divide; log duration.</p><div class="profile-healspread-cols">' +
+    healCard = '<div class="stats-summary profile-healspread-wrap"><p class="stats-summary-title">Heal spread</p><p class="stats-summary-meta">Per-log peaks use logs.tf match length when available. HP/min = healing in that log &divide; log duration. Click column headers to sort.</p><div class="profile-healspread-cols">' +
       '<div class="profile-heal-col"><h3 class="stats-summary-title">Healed to</h3>' +
-      '<div class="stats-table-wrap profile-heal-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + toBody + '</tbody></table></div></div>' +
+      '<div class="stats-table-wrap profile-heal-table-wrap"><table class="stats-table js-profile-healspread-to"></table></div></div>' +
       '<div class="profile-heal-col"><h3 class="stats-summary-title">Healed by</h3>' +
-      '<div class="stats-table-wrap profile-heal-table-wrap"><table class="stats-table"><thead>' + thead + '</thead><tbody>' + byBody + '</tbody></table></div></div>' +
+      '<div class="stats-table-wrap profile-heal-table-wrap"><table class="stats-table js-profile-healspread-by"></table></div></div>' +
       '</div></div>';
   }
 
@@ -1459,6 +1554,31 @@ function renderProfileResult(el, data, elapsedMs) {
   }
 
   bindProfileCoplayersToggle(el);
+
+  var healToTable = el.querySelector('table.js-profile-healspread-to');
+  if (healToTable) {
+    if (ht.length) {
+      healToTable._profileHealspreadRows = ht;
+      healToTable._sortCol = 'total_healing';
+      healToTable._sortDir = -1;
+      healToTable.innerHTML = profileHealspreadTableInnerHtml(ht, healToTable._sortCol, healToTable._sortDir);
+      bindProfileHealspreadTableSort(healToTable);
+    } else {
+      healToTable.innerHTML = profileHealspreadEmptyTableInnerHtml();
+    }
+  }
+  var healByTable = el.querySelector('table.js-profile-healspread-by');
+  if (healByTable) {
+    if (hb.length) {
+      healByTable._profileHealspreadRows = hb;
+      healByTable._sortCol = 'total_healing';
+      healByTable._sortDir = -1;
+      healByTable.innerHTML = profileHealspreadTableInnerHtml(hb, healByTable._sortCol, healByTable._sortDir);
+      bindProfileHealspreadTableSort(healByTable);
+    } else {
+      healByTable.innerHTML = profileHealspreadEmptyTableInnerHtml();
+    }
+  }
 
   var mapTable = el.querySelector('table.js-profile-maps');
   if (mapTable && mapRows.length) {

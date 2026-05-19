@@ -14,6 +14,7 @@ import httpx
 from fastapi import APIRouter, Request, Form, Query
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 
+from app.gamemodes import is_valid_gamemode_optional, normalize_gamemode
 from app.config import (
     AVATAR_DB_PATH,
     CHAT_DB_PATH,
@@ -626,6 +627,7 @@ def _api_search_stats_impl(
     steamid_input = (steamid or "").strip()
     if not steamid_input:
         return JSONResponse({"rows": [], "error": "Steam ID is required."}, status_code=400)
+    gm = normalize_gamemode(gamemode) or "hl"
     steamid64, resolve_error, vanity_rl = _resolve_steamid64_for_api(request, steamid_input)
     if vanity_rl is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
@@ -635,7 +637,7 @@ def _api_search_stats_impl(
             429,
             duration_ms,
             steamid=steamid_input,
-            gamemode=gamemode,
+            gamemode=gm,
             classes=classes,
         )
         return JSONResponse(
@@ -667,7 +669,7 @@ def _api_search_stats_impl(
     class_tuple = tuple(sorted(c.lower() for c in class_list))
     cache_key = (
         steamid64,
-        gamemode,
+        gm,
         class_tuple,
         date_from.isoformat() if date_from else "",
         date_to.isoformat() if date_to else "",
@@ -683,7 +685,7 @@ def _api_search_stats_impl(
             duration_ms,
             result_count=len(cached.get("rows", [])),
             steamid=steamid64,
-            gamemode=gamemode,
+            gamemode=gm,
             classes=classes,
             date_from=_req_log_date_iso(date_from),
             date_to=_req_log_date_iso(date_to),
@@ -693,7 +695,7 @@ def _api_search_stats_impl(
     try:
         rows, log_ids_used = stats_search(
             steamid64,
-            gamemode,
+            gm,
             class_list,
             LOGS_DIR,
             date_from=date_from,
@@ -710,7 +712,7 @@ def _api_search_stats_impl(
             duration_ms,
             result_count=len(rows),
             steamid=steamid64,
-            gamemode=gamemode,
+            gamemode=gm,
             classes=classes,
             date_from=_req_log_date_iso(date_from),
             date_to=_req_log_date_iso(date_to),
@@ -725,7 +727,7 @@ def _api_search_stats_impl(
             500,
             duration_ms,
             steamid=steamid64,
-            gamemode=gamemode,
+            gamemode=gm,
             classes=classes,
             date_from=_req_log_date_iso(date_from),
             date_to=_req_log_date_iso(date_to),
@@ -771,9 +773,7 @@ def _api_search_coplayers_impl(
     map_query = (map_query_raw or "").strip()
     if len(map_query) > MAP_QUERY_MAX_LENGTH:
         return JSONResponse({"rows": [], "error": "Map filter is too long."}, status_code=400)
-    gm = (gamemode or "").strip()
-    if gm not in ("", "hl", "7s", "6s", "ud"):
-        gm = ""
+    gm = normalize_gamemode(gamemode)
     cache_key = (steamid64, gm, map_query.lower())
     cached = cache_get("coplayers", cache_key)
     if cached is not None:
@@ -1559,7 +1559,7 @@ def _api_profile_impl(
     if not steamid_input:
         return JSONResponse({"error": "Steam ID is required."}, status_code=400)
     gm = (gamemode or "").strip()
-    if gm not in ("", "hl", "7s", "6s", "ud"):
+    if not is_valid_gamemode_optional(gm):
         return JSONResponse({"error": "Invalid gamemode."}, status_code=400)
     try:
         steamid64, resolve_error = resolve_to_steamid64(
@@ -1765,9 +1765,7 @@ def _api_leaderboard_impl(
     map_query = (map_query_raw or "").strip()
     if len(map_query) > MAP_QUERY_MAX_LENGTH:
         return JSONResponse({"error": "Map filter is too long."}, status_code=400)
-    gm = (gamemode or "").strip()
-    if gm not in ("", "hl", "7s", "6s", "ud"):
-        gm = ""
+    gm = normalize_gamemode(gamemode)
     cf = (class_filter or "").strip().lower()
     if cf and cf not in _LOGMATCH_CLASS_TYPES:
         return JSONResponse({"error": "Invalid class filter."}, status_code=400)
@@ -2004,7 +2002,7 @@ def _build_results_embed_meta(request: Request) -> str:
                     desc = "Chat search results."
         elif mode == "stats":
             steamid_in = (qp.get("steamid") or "").strip()
-            gamemode = (qp.get("gamemode") or "").strip()
+            gamemode = normalize_gamemode(qp.get("gamemode")) or "hl"
             classes = (qp.get("classes") or "").strip()
             date_from = (qp.get("date_from") or "").strip()
             date_to = (qp.get("date_to") or "").strip()
@@ -2044,7 +2042,7 @@ def _build_results_embed_meta(request: Request) -> str:
                 steamid64, err = _resolve_steamid64_for_embed(request, steamid_in)
                 if err is None and steamid64:
                     og_image_url = _steam_profile_image_url(steamid64)
-                    gm = gamemode if gamemode in ("", "hl", "7s", "6s", "ud") else ""
+                    gm = normalize_gamemode(gamemode)
                     ck = (steamid64, gm, map_query.lower())
                     cached = cache_get("coplayers", ck) or {}
                     n = len(cached.get("rows") or [])
@@ -2089,9 +2087,7 @@ def _build_results_embed_meta(request: Request) -> str:
                 steamid64, err = _resolve_steamid64_for_embed(request, steamid_in)
                 if err is None and steamid64:
                     og_image_url = _steam_profile_image_url(steamid64)
-                    gm = (qp.get("gamemode") or "").strip()
-                    if gm not in ("", "hl", "7s", "6s", "ud"):
-                        gm = ""
+                    gm = normalize_gamemode(qp.get("gamemode"))
                     date_from = (qp.get("date_from") or "").strip()
                     date_to = (qp.get("date_to") or "").strip()
                     map_query = (qp.get("map_query") or "").strip()
@@ -2126,9 +2122,7 @@ def _build_results_embed_meta(request: Request) -> str:
             if lb_t not in LEADERBOARD_TYPE_KEYS:
                 lb_t = "dpm"
             class_filter_e = (qp.get("class_filter") or "").strip().lower()
-            gamemode_e = (qp.get("gamemode") or "").strip()
-            if gamemode_e not in ("", "hl", "7s", "6s", "ud"):
-                gamemode_e = ""
+            gamemode_e = normalize_gamemode(qp.get("gamemode"))
             title = f"Stats Leaderboard — {lb_t.upper()}"
             try:
                 ml_e = int((qp.get("min_logs") or "").strip() or str(LEADERBOARD_MIN_LOGS_DEFAULT))

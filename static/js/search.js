@@ -30,7 +30,7 @@ var MAX_MAP_QUERY_LEN = 100;
 var MAX_PLAYER_NAME_QUERY_LEN = 64;
 var MIN_PLAYER_NAME_QUERY_LEN = 3;
 var MAX_LOGMATCH_STEAMIDS_LEN = 32768;
-var VALID_STATS_GAMEMODES = { hl: 1, '7s': 1, '6s': 1, ud: 1 };
+var VALID_STATS_GAMEMODES = { hl: 1, '7s': 1, '6s': 1, ud: 1, '4s': 1 };
 var VALID_STATS_CLASSES = { scout: 1, soldier: 1, pyro: 1, demoman: 1, heavyweapons: 1, engineer: 1, medic: 1, sniper: 1, spy: 1 };
 
 function sanitizeDateInput(s) {

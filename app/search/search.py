@@ -12,6 +12,7 @@ from typing import Any
 from app import combined_logs
 from app.chat_db import CHAT_ALIAS_FTS_READY_META_KEY
 from app.config import CHAT_DB_PATH, CHAT_SEARCH_MAX_RESULTS_STEAMID, STATS_DB_PATH
+from app.gamemodes import gamemode_sql_filter, normalize_gamemode, player_count_matches_gamemode
 from app.log_utils import winner_team_from_log as _winner_team_from_log
 from app.stats_db import player_stats_agg_nonempty, stats_log_ids_for_player
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
@@ -298,16 +299,8 @@ def local_log_ids_for_player(steamid64: str, logs_dir: str | Path) -> frozenset[
 
 
 def _player_count_filter(player_count: int, gamemode: str) -> bool:
-    """True if player count matches gamemode (hl, 7s, 6s, ud)."""
-    if gamemode == "hl":
-        return player_count >= 18
-    if gamemode == "7s":
-        return 14 <= player_count <= 17
-    if gamemode == "6s":
-        return 12 <= player_count <= 13
-    if gamemode == "ud":
-        return 4 <= player_count <= 6
-    return False
+    """True if player count matches gamemode (hl, 7s, 6s, 4s, ud)."""
+    return player_count_matches_gamemode(player_count, gamemode)
 
 
 def _log_in_date_range(
@@ -400,24 +393,15 @@ def _stats_db_available_for_player(steamid64: str) -> bool:
 
 def _gamemode_sql_stats(gamemode: str) -> tuple[str, list[Any]]:
     """Optional AND clause for logs.num_players (stats DB path). Empty/other = no filter."""
-    gm = (gamemode or "").strip()
-    if gm == "hl":
-        return " AND l.num_players >= ?", [18]
-    if gm == "7s":
-        return " AND l.num_players BETWEEN ? AND ?", [14, 17]
-    if gm == "6s":
-        return " AND l.num_players BETWEEN ? AND ?", [12, 13]
-    if gm == "ud":
-        return " AND l.num_players BETWEEN ? AND ?", [4, 6]
-    return "", []
+    return gamemode_sql_filter(gamemode)
 
 
 def _gamemode_sql_coplayers(gamemode: str) -> tuple[str, list[Any]]:
-    """Same numeric ranges as file coplayers_search when gamemode is hl/7s/6s/ud; else no filter."""
-    gm = (gamemode or "").strip()
-    if gm not in ("hl", "7s", "6s", "ud"):
+    """Same numeric ranges as file coplayers_search when gamemode is whitelisted; else no filter."""
+    gm = normalize_gamemode(gamemode)
+    if not gm:
         return "", []
-    return _gamemode_sql_stats(gm)
+    return gamemode_sql_filter(gm)
 
 
 def _sql_float(v: Any) -> float:
@@ -1154,9 +1138,7 @@ def _coplayers_search_files(
     """
     logs_dir = Path(logs_dir)
     steamid3 = steamid64_to_steamid3(steamid)
-    gm = (gamemode or "").strip()
-    if gm not in ("hl", "7s", "6s", "ud"):
-        gm = ""
+    gm = normalize_gamemode(gamemode)
     mq = map_query or ""
     log_ids_used: set[int] = set()
     agg: dict[str, dict[str, Any]] = {}
@@ -3173,9 +3155,7 @@ def player_profile(
 
     path = Path(STATS_DB_PATH)
     filter_sql, filter_params = _profile_filter_sql(gamemode, date_from, date_to, map_query)
-    gm_used = (gamemode or "").strip()
-    if gm_used not in ("", "hl", "7s", "6s", "ud"):
-        gm_used = ""
+    gm_used = normalize_gamemode(gamemode)
 
     conn = _sqlite_connect_ro(path)
     healed_to_raw: list[tuple[str, int, int]] = []
