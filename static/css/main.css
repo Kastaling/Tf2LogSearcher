@@ -25,6 +25,8 @@
       --code: #c7254e;
       --preformatted: #444;
       --marked: #ffdd33;
+      --word-cloud-fill: #1a1a1a;
+      --word-cloud-outline: #ffffff;
       --sans-font: "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --heading-font: "Archivo Black", var(--sans-font);
     }
@@ -49,6 +51,8 @@
       --code: #e88;
       --preformatted: #ccc;
       --marked: #665200;
+      --word-cloud-fill: #f2f4f6;
+      --word-cloud-outline: #000000;
     }
     /* Theme is controlled by data-theme (set in head script). color-scheme for form controls/scrollbars. */
     html { color-scheme: light; }
@@ -76,12 +80,12 @@
     [data-theme="dark"] h2 { color: #6eb5c0; }
     a, a:visited { color: var(--link); }
     /* Explicit button text color so it stays visible in Vivaldi/browser dark mode */
-    button:not(.theme-toggle), input[type="submit"], input[type="button"], input[type="reset"], .back-button, .js-chat-subscribe {
+    button:not(.theme-toggle):not(.profile-word-cloud-item), input[type="submit"], input[type="button"], input[type="reset"], .back-button, .js-chat-subscribe {
       background-color: var(--accent);
       border-color: var(--accent);
       color: #fff;
     }
-    button:not(.theme-toggle):hover, input[type="submit"]:hover, input[type="button"]:hover, input[type="reset"]:hover, .back-button:hover, .js-chat-subscribe:hover {
+    button:not(.theme-toggle):not(.profile-word-cloud-item):hover, input[type="submit"]:hover, input[type="button"]:hover, input[type="reset"]:hover, .back-button:hover, .js-chat-subscribe:hover {
       background-color: var(--accent-hover);
       border-color: var(--accent-hover);
       color: #fff;
@@ -100,7 +104,7 @@
     a.back-button:visited:hover {
       color: var(--accent-text);
     }
-    [data-theme="dark"] button:not(.theme-toggle), [data-theme="dark"] input[type="submit"], [data-theme="dark"] input[type="button"], [data-theme="dark"] input[type="reset"], [data-theme="dark"] .back-button, [data-theme="dark"] .js-chat-subscribe {
+    [data-theme="dark"] button:not(.theme-toggle):not(.profile-word-cloud-item), [data-theme="dark"] input[type="submit"], [data-theme="dark"] input[type="button"], [data-theme="dark"] input[type="reset"], [data-theme="dark"] .back-button, [data-theme="dark"] .js-chat-subscribe {
       color: #1a1a1a;
     }
     [data-theme="dark"] a.back-button,
@@ -108,7 +112,7 @@
     [data-theme="dark"] a.back-button:visited {
       color: #1a1a1a;
     }
-    [data-theme="dark"] button:not(.theme-toggle):hover, [data-theme="dark"] input[type="submit"]:hover, [data-theme="dark"] input[type="button"]:hover, [data-theme="dark"] input[type="reset"]:hover, [data-theme="dark"] .back-button:hover, [data-theme="dark"] .js-chat-subscribe:hover {
+    [data-theme="dark"] button:not(.theme-toggle):not(.profile-word-cloud-item):hover, [data-theme="dark"] input[type="submit"]:hover, [data-theme="dark"] input[type="button"]:hover, [data-theme="dark"] input[type="reset"]:hover, [data-theme="dark"] .back-button:hover, [data-theme="dark"] .js-chat-subscribe:hover {
       color: #1a1a1a;
     }
     [data-theme="dark"] a.back-button:hover,
@@ -687,26 +691,93 @@
     .stats-summary-item.aliases {
       grid-column: 1 / -1;
     }
-    .profile-word-cloud {
+    .profile-word-cloud-host.profile-word-cloud {
       display: flex;
-      flex-wrap: wrap;
-      gap: 0.4rem 0.7rem;
-      align-items: baseline;
-      padding: 0.75rem 0;
-      line-height: 1.4;
+      justify-content: center;
+      align-items: flex-start;
+      width: 100%;
+      margin: 0.75rem 0 1.75rem;
+      overflow: visible;
+      border-radius: var(--standard-border-radius, 5px);
+      background: color-mix(in srgb, var(--text, #111) 4%, transparent);
+      box-sizing: border-box;
+    }
+    .profile-word-cloud-inner {
+      position: relative;
+      flex: 0 0 auto;
+      max-width: 100%;
+      margin: 0 auto;
     }
     .profile-word-cloud-item {
-      cursor: default;
-      color: var(--accent, #0969da);
-      font-weight: 500;
-      transition: opacity 0.1s;
-      overflow-wrap: anywhere;
+      position: absolute;
+      margin: 0;
+      padding: 0;
+      border: none;
+      background: transparent !important;
+      background-color: transparent !important;
+      box-shadow: none !important;
+      appearance: none;
+      -webkit-appearance: none;
+      font-family: inherit;
+      font-weight: 600;
+      line-height: 1.1;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      white-space: nowrap;
+      color: var(--word-cloud-fill, var(--text));
+      text-shadow:
+        0 1px 2px color-mix(in srgb, var(--word-cloud-outline) 55%, transparent),
+        0 0 8px color-mix(in srgb, var(--word-cloud-outline) 35%, transparent),
+        -1px -1px 0 var(--word-cloud-outline),
+        1px -1px 0 var(--word-cloud-outline),
+        -1px 1px 0 var(--word-cloud-outline),
+        1px 1px 0 var(--word-cloud-outline);
+      transition: transform 0.14s ease, opacity 0.14s ease, color 0.14s ease;
     }
-    .profile-word-cloud-item:hover {
-      opacity: 0.7;
+    .profile-word-cloud-item:hover,
+    .profile-word-cloud-item:focus-visible {
+      outline: none;
+      z-index: 2;
+      transform: scale(1.05);
+      color: var(--word-cloud-fill, var(--text));
+      background: transparent !important;
+    }
+    .profile-word-cloud-item.is-linked-hover {
+      transform: scale(1.07);
+      z-index: 3;
+      color: var(--word-cloud-fill, var(--text));
+      background: transparent !important;
+      text-shadow:
+        0 2px 4px color-mix(in srgb, var(--word-cloud-outline) 70%, transparent),
+        0 0 12px color-mix(in srgb, var(--accent) 45%, transparent),
+        -1px -1px 0 var(--word-cloud-outline),
+        1px -1px 0 var(--word-cloud-outline),
+        -1px 1px 0 var(--word-cloud-outline),
+        1px 1px 0 var(--word-cloud-outline);
+    }
+    .profile-word-cloud:has(.profile-word-cloud-item.is-linked-hover) .profile-word-cloud-item:not(.is-linked-hover) {
+      opacity: 0.38;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .profile-word-cloud-item,
+      .profile-word-cloud-item:hover,
+      .profile-word-cloud-item.is-linked-hover {
+        transition: none;
+        transform: none;
+      }
+    }
+    .profile-word-table tbody tr.profile-word-table-row.is-linked-hover td {
+      background: var(--table-hover, rgba(9, 105, 218, 0.12));
+    }
+    .profile-word-table tbody tr.profile-word-table-row.is-linked-hover td strong {
+      color: var(--accent, #0969da);
+    }
+    .profile-word-table:has(tbody tr.profile-word-table-row.is-linked-hover) tbody tr.profile-word-table-row:not(.is-linked-hover) {
+      opacity: 0.55;
     }
     .profile-word-table-details {
-      margin-top: 0.5rem;
+      margin-top: 0.25rem;
+      clear: both;
     }
     .profile-word-table-details summary {
       cursor: pointer;
@@ -1126,6 +1197,56 @@
     }
     .profile-layout-settings-details[open] > .profile-layout-settings-summary::before {
       content: '\25BC';
+    }
+    .browser-settings-heading {
+      margin: 1.25rem 0 0.35rem;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+    .browser-settings-heading:first-of-type {
+      margin-top: 0.5rem;
+    }
+    .browser-settings-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      margin: 0.5rem 0;
+      cursor: pointer;
+    }
+    .browser-settings-row input {
+      margin-top: 0.2rem;
+    }
+    .browser-settings-actions {
+      margin: 0.35rem 0 0.75rem;
+    }
+    .browser-settings-volume-wrap {
+      margin: 0.5rem 0 0.25rem;
+    }
+    .browser-settings-volume {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 0.75rem;
+      cursor: default;
+    }
+    .browser-settings-volume-text {
+      flex: 0 0 auto;
+      min-width: 9rem;
+    }
+    .browser-settings-volume input[type="range"] {
+      flex: 1 1 8rem;
+      min-width: 6rem;
+      max-width: 14rem;
+      margin: 0;
+    }
+    .browser-settings-volume-value {
+      flex: 0 0 3rem;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .browser-settings-volume-value.is-muted,
+    .browser-settings-volume input[type="range"]:disabled {
+      opacity: 0.55;
     }
     .profile-layout-settings-body {
       padding: 0.5rem 0.35rem 0;

@@ -722,6 +722,82 @@ function restoreHomeForms() {
   }
 })();
 
+/** Cookie-backed notification sound preference (home page settings panel). */
+(function initHomeNotifySettings() {
+  var home = document.getElementById('homePage');
+  if (!home) return;
+  var cb = home.querySelector('.js-notify-sound-enabled');
+  if (!cb) return;
+  var volRange = home.querySelector('.js-notify-sound-volume');
+  var volLabel = home.querySelector('.js-notify-sound-volume-label');
+  var prefs = readNotifyPrefs();
+
+  function volumePctFromPrefs(p) {
+    return Math.round(sanitizeNotifyVolume(p.soundVolume) * 100);
+  }
+
+  function syncVolumeUi(enabled) {
+    var on = enabled !== false && !!cb.checked;
+    if (volRange) {
+      volRange.disabled = !on;
+      volRange.setAttribute('aria-disabled', on ? 'false' : 'true');
+    }
+    if (volLabel) {
+      volLabel.classList.toggle('is-muted', !on);
+    }
+  }
+
+  function applyVolumeLabel(pct) {
+    if (volLabel) volLabel.textContent = pct + '%';
+    if (volRange) volRange.setAttribute('aria-valuenow', String(pct));
+  }
+
+  cb.checked = !!prefs.soundEnabled;
+  var pct = volumePctFromPrefs(prefs);
+  if (volRange) volRange.value = String(pct);
+  applyVolumeLabel(pct);
+  syncVolumeUi(true);
+
+  cb.addEventListener('change', function() {
+    writeNotifyPrefs({ soundEnabled: !!cb.checked });
+    syncVolumeUi(true);
+    if (cb.checked && typeof primeResultsReadyNotificationSound === 'function') {
+      primeResultsReadyNotificationSound();
+    }
+  });
+
+  if (volRange) {
+    volRange.addEventListener('input', function() {
+      var p = parseInt(volRange.value, 10);
+      if (!Number.isFinite(p)) p = Math.round(NOTIFY_SOUND_VOLUME_DEFAULT * 100);
+      p = Math.max(0, Math.min(100, p));
+      applyVolumeLabel(p);
+      writeNotifyPrefs({ soundVolume: p / 100 });
+    });
+    volRange.addEventListener('change', function() {
+      if (typeof primeResultsReadyNotificationSound === 'function') {
+        primeResultsReadyNotificationSound(true);
+      }
+    });
+  }
+
+  var testBtn = home.querySelector('.js-notify-sound-test');
+  if (testBtn) {
+    testBtn.addEventListener('click', function() {
+      if (typeof primeResultsReadyNotificationSound === 'function') {
+        primeResultsReadyNotificationSound(true);
+      }
+      if (typeof playResultsReadyNotificationSound === 'function') {
+        playResultsReadyNotificationSound({
+          ignoreSetting: true,
+          ignoreHidden: true,
+          ignoreReducedMotion: true,
+        });
+      }
+    });
+  }
+})();
+
 /** Tab title animation while /results API fetch runs (address bar text cannot be changed by script). */
 var _loadingTitleTimer = null;
 var _resultReadyTitleTimer = null;
@@ -833,7 +909,10 @@ function _resultsReadyNotifyAudioUrl() {
   }
 }
 
-function primeResultsReadyNotificationSound() {
+function primeResultsReadyNotificationSound(force) {
+  if (!force && typeof isNotifySoundEnabled === 'function' && !isNotifySoundEnabled()) {
+    return;
+  }
   if (_resultsNotifyAudio || typeof Audio === 'undefined') {
     return;
   }
@@ -853,19 +932,24 @@ function primeResultsReadyNotificationSound() {
 }
 
 /**
- * When a /results fetch finishes successfully and the document is not visible (another tab, window
- * in background, etc.), play a short notification. Skipped if the tab is visible, on error, or if
- * the user prefers reduced motion (matches non-flashing title behavior). play() failures are
- * ignored (autoplay policy).
+ * Play the fixed same-origin results notification sound.
+ * opts.ignoreSetting — for explicit user "Test" clicks.
+ * opts.ignoreHidden — play even when the tab is visible.
+ * opts.ignoreReducedMotion — play despite prefers-reduced-motion.
  */
-function notifyResultsReadyIfBackground(loadSucceeded) {
-  if (!loadSucceeded || typeof document === 'undefined') {
+function playResultsReadyNotificationSound(opts) {
+  opts = opts || {};
+  if (!opts.ignoreSetting && typeof isNotifySoundEnabled === 'function' && !isNotifySoundEnabled()) {
     return;
   }
-  if (!document.hidden) {
+  if (!opts.ignoreHidden && typeof document !== 'undefined' && !document.hidden) {
     return;
   }
-  if (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  if (
+    !opts.ignoreReducedMotion &&
+    typeof matchMedia === 'function' &&
+    matchMedia('(prefers-reduced-motion: reduce)').matches
+  ) {
     return;
   }
   if (typeof Audio === 'undefined') {
@@ -886,15 +970,33 @@ function notifyResultsReadyIfBackground(loadSucceeded) {
     }
   }
   var audio = _resultsNotifyAudio;
+  var vol = typeof getNotifySoundVolume === 'function'
+    ? getNotifySoundVolume()
+    : (typeof NOTIFY_SOUND_VOLUME_DEFAULT !== 'undefined' ? NOTIFY_SOUND_VOLUME_DEFAULT : 0.5);
   try {
     audio.muted = false;
-    audio.volume = 0.85;
+    audio.volume = vol;
     audio.currentTime = 0;
   } catch (e) {}
   var p = audio.play();
   if (p && typeof p.catch === 'function') {
     p.catch(function() {});
   }
+}
+
+/**
+ * When a /results fetch finishes successfully and the document is not visible (another tab, window
+ * in background, etc.), play a short notification. Skipped if disabled in browser settings, the tab
+ * is visible, on error, or if the user prefers reduced motion. play() failures are ignored.
+ */
+function notifyResultsReadyIfBackground(loadSucceeded) {
+  if (!loadSucceeded || typeof document === 'undefined') {
+    return;
+  }
+  if (!document.hidden) {
+    return;
+  }
+  playResultsReadyNotificationSound();
 }
 
 /** Optional mini-game in place of loading dots; torn down when loading finishes (see ``stopLoadingTitleAnimation``). */

@@ -440,6 +440,8 @@ function renderFavoriteWords(words, container) {
   if (!Array.isArray(words) || words.length === 0 || !container) {
     return;
   }
+  container.innerHTML = '';
+  container.className = 'stats-summary profile-favorite-words';
 
   var normalized = words.map(function(w) {
     var word = w && w.word != null ? String(w.word).trim() : '';
@@ -460,35 +462,26 @@ function renderFavoriteWords(words, container) {
   if (!normalized.length) {
     return;
   }
-
-  var section = document.createElement('div');
-  section.className = 'stats-summary profile-favorite-words';
+  normalized.sort(function(a, b) {
+    return b.count - a.count || (a.word < b.word ? -1 : a.word > b.word ? 1 : 0);
+  });
+  normalized.forEach(function(w, i) {
+    w.rank = i + 1;
+  });
 
   var h3 = document.createElement('p');
   h3.className = 'stats-summary-title';
   h3.textContent = 'Favorite Words';
-  section.appendChild(h3);
+  container.appendChild(h3);
 
   var meta = document.createElement('p');
   meta.className = 'stats-summary-meta';
-  meta.textContent = 'Most-used non-filler words across all indexed chat messages for this player.';
-  section.appendChild(meta);
+  meta.textContent = 'Most-used non-filler words across all indexed chat messages for this player. Hover a word to highlight its row in the table below.';
+  container.appendChild(meta);
 
-  var maxCount = Math.max(1, normalized[0].count);
-  var cloud = document.createElement('div');
-  cloud.className = 'profile-word-cloud';
-
-  normalized.forEach(function(w) {
-    var span = document.createElement('span');
-    span.className = 'profile-word-cloud-item';
-    var scale = Math.max(0, Math.min(1, w.count / maxCount));
-    var size = 0.85 + (scale * (2.2 - 0.85));
-    span.style.fontSize = size.toFixed(2) + 'rem';
-    span.title = w.word + ': ' + w.count.toLocaleString() + ' use' + (w.count !== 1 ? 's' : '') + ' (' + w.pct + '% of words)';
-    span.textContent = w.word;
-    cloud.appendChild(span);
-  });
-  section.appendChild(cloud);
+  var cloudHost = document.createElement('div');
+  cloudHost.className = 'profile-word-cloud-host';
+  container.appendChild(cloudHost);
 
   var details = document.createElement('details');
   details.className = 'profile-word-table-details';
@@ -506,8 +499,11 @@ function renderFavoriteWords(words, container) {
     + '<th title="Log where this word appears most often (ties: more recent log)">Peak</th></tr>';
   table.appendChild(thead);
   var tbody = document.createElement('tbody');
+
   normalized.forEach(function(w, i) {
     var tr = document.createElement('tr');
+    tr.className = 'profile-word-table-row';
+    tr.setAttribute('data-word', w.word);
     var rankTd = document.createElement('td');
     rankTd.textContent = String(i + 1);
     var wordTd = document.createElement('td');
@@ -529,9 +525,40 @@ function renderFavoriteWords(words, container) {
   table.appendChild(tbody);
   tableWrap.appendChild(table);
   details.appendChild(tableWrap);
-  section.appendChild(details);
+  container.appendChild(details);
 
-  container.appendChild(section);
+  function setTableRowHighlight(word) {
+    tbody.querySelectorAll('.profile-word-table-row').forEach(function(row) {
+      var on = word && row.getAttribute('data-word') === word;
+      row.classList.toggle('is-linked-hover', !!on);
+    });
+  }
+
+  tbody.querySelectorAll('.profile-word-table-row').forEach(function(row) {
+    row.addEventListener('mouseenter', function() {
+      var w = row.getAttribute('data-word');
+      setTableRowHighlight(w);
+      if (cloudHost._profileWordCloudSetActive) {
+        cloudHost._profileWordCloudSetActive(w);
+      }
+    });
+    row.addEventListener('mouseleave', function() {
+      setTableRowHighlight(null);
+      if (cloudHost._profileWordCloudSetActive) {
+        cloudHost._profileWordCloudSetActive(null);
+      }
+    });
+  });
+
+  if (typeof scheduleProfileWordCloudMount === 'function') {
+    scheduleProfileWordCloudMount(cloudHost, normalized, {
+      linkHover: setTableRowHighlight
+    });
+  } else if (typeof mountProfileWordCloud === 'function') {
+    mountProfileWordCloud(cloudHost, normalized, {
+      linkHover: setTableRowHighlight
+    });
+  }
 }
 
 function profileMapsPctDisplay(pct) {
@@ -1092,6 +1119,17 @@ function bindProfileSectionCollapsers(profileRoot) {
         renderProfileTrendChart(profileTrendHost, profileTrendRows, profileTrendMetric || 'dpm');
       } catch (e) {}
     }
+    if (next && sec.getAttribute('data-section') === 'favorite_words' &&
+        typeof scheduleProfileWordCloudMount === 'function') {
+      var cloudHost = sec.querySelector('.profile-word-cloud-host');
+      if (cloudHost && cloudHost._profileWordCloudWords) {
+        scheduleProfileWordCloudMount(
+          cloudHost,
+          cloudHost._profileWordCloudWords,
+          cloudHost._profileWordCloudOptions || {}
+        );
+      }
+    }
   });
 }
 
@@ -1422,12 +1460,9 @@ function renderProfileResult(el, data, elapsedMs) {
 
   var topCoplayersBlock = profileTopCoplayersBlock(data);
   var favoriteWords = Array.isArray(data.favorite_words) ? data.favorite_words : [];
-  var favoriteWordsBlock = '';
-  if (favoriteWords.length) {
-    var favoriteWordsScratch = document.createElement('div');
-    renderFavoriteWords(favoriteWords, favoriteWordsScratch);
-    favoriteWordsBlock = favoriteWordsScratch.innerHTML;
-  }
+  var favoriteWordsBlock = favoriteWords.length
+    ? '<div class="stats-summary profile-favorite-words js-profile-favorite-words"></div>'
+    : '';
 
   var mapRows = Array.isArray(data.top_maps) ? data.top_maps : [];
   var topMapsBlock = '';
@@ -1554,6 +1589,11 @@ function renderProfileResult(el, data, elapsedMs) {
   }
 
   bindProfileCoplayersToggle(el);
+
+  var favoriteWordsRoot = el.querySelector('.js-profile-favorite-words');
+  if (favoriteWordsRoot && favoriteWords.length) {
+    renderFavoriteWords(favoriteWords, favoriteWordsRoot);
+  }
 
   var healToTable = el.querySelector('table.js-profile-healspread-to');
   if (healToTable) {

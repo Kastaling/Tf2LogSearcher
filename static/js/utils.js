@@ -426,3 +426,61 @@ function getSortValue(row, key, type) {
   }
   return v != null ? String(v).toLowerCase() : '';
 }
+
+/** Browser-only notification prefs (same-origin cookie; no PII). */
+var NOTIFY_PREFS_COOKIE = 'tf2ls_notify_prefs';
+var NOTIFY_PREFS_COOKIE_MAX_AGE = 31536000;
+/** Default playback volume (0–1) for the results notification sound. */
+var NOTIFY_SOUND_VOLUME_DEFAULT = 0.5;
+
+function sanitizeNotifyVolume(raw) {
+  var n = Number(raw);
+  if (!Number.isFinite(n)) return NOTIFY_SOUND_VOLUME_DEFAULT;
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return Math.round(n * 100) / 100;
+}
+
+function readNotifyPrefs() {
+  var d = { soundEnabled: true, soundVolume: NOTIFY_SOUND_VOLUME_DEFAULT };
+  try {
+    var all = typeof document !== 'undefined' && document.cookie ? document.cookie : '';
+    if (!all) return d;
+    var prefix = NOTIFY_PREFS_COOKIE + '=';
+    var idx = all.indexOf(prefix);
+    if (idx < 0) return d;
+    var start = idx + prefix.length;
+    var end = all.indexOf(';', start);
+    var raw = decodeURIComponent(end < 0 ? all.slice(start) : all.slice(start, end));
+    var o = JSON.parse(raw);
+    if (o && typeof o === 'object') {
+      if (o.soundEnabled === false) d.soundEnabled = false;
+      if (o.soundVolume != null) d.soundVolume = sanitizeNotifyVolume(o.soundVolume);
+    }
+  } catch (e) {}
+  return d;
+}
+
+function writeNotifyPrefs(prefs) {
+  try {
+    var cur = readNotifyPrefs();
+    var soundEnabled = prefs && prefs.soundEnabled !== undefined ? !!prefs.soundEnabled : cur.soundEnabled;
+    var soundVolume = prefs && prefs.soundVolume !== undefined
+      ? sanitizeNotifyVolume(prefs.soundVolume)
+      : cur.soundVolume;
+    var payload = encodeURIComponent(JSON.stringify({
+      soundEnabled: soundEnabled,
+      soundVolume: soundVolume
+    }));
+    if (payload.length > 256) return;
+    document.cookie = NOTIFY_PREFS_COOKIE + '=' + payload + ';path=/;max-age=' + NOTIFY_PREFS_COOKIE_MAX_AGE + ';SameSite=Lax';
+  } catch (e) {}
+}
+
+function isNotifySoundEnabled() {
+  return !!readNotifyPrefs().soundEnabled;
+}
+
+function getNotifySoundVolume() {
+  return readNotifyPrefs().soundVolume;
+}

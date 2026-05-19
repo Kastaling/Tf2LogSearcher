@@ -44,7 +44,15 @@ from app.raw_log_parser import parse_raw_log
 from app.raw_zip_io import extract_log_content_from_zip, fetch_raw_log_zip_with_retry, save_raw_log_zip
 from app.logs_tf import fetch_log_list, fetch_log_json, steamid3_to_steamid64
 from app.subscriptions import check_log_for_subscriptions
-from app.download_eta_checkpoint import load_eta_checkpoint, maybe_save_eta_checkpoint
+from app.download_eta_checkpoint import (
+    load_eta_checkpoint,
+    maybe_save_eta_checkpoint,
+    rate_from_active_segments,
+    rate_from_recent_segments,
+    rate_from_trailing_burst,
+    reconcile_aggregate_window,
+    WRITE_GAP_THRESHOLD_SEC,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -196,20 +204,15 @@ def _log_dir_stats(logs_dir: Path) -> tuple[int, int, int | None, int | None]:
 
 
 def _format_eta(recent_writes: list[tuple[float, int]], min_id: int | None) -> str:
-    """Compute ETA from recent write rate. Target oldest = log 1; when done use min_id <= 1."""
+    """Compute ETA from gap-aware recent write rate. Target oldest = log 1."""
     if min_id is None:
         return "N/A (no logs yet)"
     remaining = max(0, min_id - 1)
     if remaining == 0:
         return "Complete"
-    if len(recent_writes) < 2:
+    rate = rate_from_recent_segments(recent_writes)
+    if rate is None:
         return "N/A (need more data)"
-    first_ts, _ = recent_writes[0]
-    last_ts, _ = recent_writes[-1]
-    elapsed = last_ts - first_ts
-    if elapsed <= 0:
-        return "N/A"
-    rate = len(recent_writes) / elapsed
     return _format_eta_from_rate(rate, remaining)
 
 
@@ -222,8 +225,15 @@ def _format_eta_from_rate(rate: float | None, remaining: int) -> str:
     return _human_duration(remaining / rate)
 
 
-def _aggregated_rate_logs_per_sec(wall_start_time: float, total_downloads: int) -> float | None:
-    """Long-run rate (logs/s) since ``wall_start_time`` (persisted across restarts)."""
+def _aggregated_rate_logs_per_sec(
+    wall_start_time: float,
+    total_downloads: int,
+    recent_writes: list[tuple[float, int]],
+) -> float | None:
+    """Gap-aware average rate across recent bursts; falls back to reconciled wall window."""
+    active_rate = rate_from_active_segments(recent_writes)
+    if active_rate is not None:
+        return active_rate
     if wall_start_time <= 0 or total_downloads <= 0:
         return None
     elapsed = time.time() - wall_start_time
@@ -241,14 +251,10 @@ def _log_stats_and_eta(logs_dir: Path, recent_writes: list[tuple[float, int]]) -
         return
     remaining = max(0, min_id - 1)
     eta_str = _format_eta(recent_writes, min_id)
-    # Rate for display (logs/s) from recent window
     rate_str = "N/A"
-    if len(recent_writes) >= 2:
-        first_ts, _ = recent_writes[0]
-        last_ts, _ = recent_writes[-1]
-        elapsed = last_ts - first_ts
-        if elapsed > 0:
-            rate_str = f"{len(recent_writes) / elapsed:.1f} logs/s"
+    burst_rate = rate_from_trailing_burst(recent_writes)
+    if burst_rate is not None:
+        rate_str = f"{burst_rate:.1f} logs/s"
     logger.info(
         "LOGS_DIR: %s (%s files) | range %s–%s | remaining: %s | %s | ETA: %s",
         size_str, count, min_id, max_id, remaining, rate_str, eta_str,
@@ -272,15 +278,8 @@ def _empty_progress_interval() -> dict[str, int]:
 
 
 def _rate_logs_per_sec(recent_writes: list[tuple[float, int]]) -> float | None:
-    """Return logs per second from recent window, or None if not enough data."""
-    if len(recent_writes) < 2:
-        return None
-    first_ts, _ = recent_writes[0]
-    last_ts, _ = recent_writes[-1]
-    elapsed = last_ts - first_ts
-    if elapsed <= 0:
-        return None
-    return len(recent_writes) / elapsed
+    """Return logs per second from recent window (gap-aware), or None if not enough data."""
+    return rate_from_recent_segments(recent_writes)
 
 
 def _bump_download_tracking(
@@ -289,22 +288,40 @@ def _bump_download_tracking(
     downloads_ref: list[int],
     *,
     state_dir: Path | None = None,
-    wall_start: float | None = None,
+    session_start_time_ref: list[float] | None = None,
     last_eta_ckpt_save_ref: list[float] | None = None,
 ) -> None:
     """Sliding window + monotonic download counter; optionally flush ETA checkpoint (rate-limited)."""
-    recent_writes.append((time.time(), log_id))
+    now = time.time()
+    resumed_after_gap = False
+    if (
+        recent_writes
+        and session_start_time_ref is not None
+        and now - recent_writes[-1][0] > WRITE_GAP_THRESHOLD_SEC
+    ):
+        session_start_time_ref[0] = now
+        downloads_ref[0] = 0
+        resumed_after_gap = True
+    recent_writes.append((now, log_id))
     downloads_ref[0] += 1
     if len(recent_writes) > RECENT_WRITES_SIZE:
         del recent_writes[: len(recent_writes) - RECENT_WRITES_SIZE]
+    if session_start_time_ref is not None and not resumed_after_gap:
+        wall_start, downloads_ref[0] = reconcile_aggregate_window(
+            session_start_time_ref[0],
+            downloads_ref[0],
+            recent_writes,
+            now=now,
+        )
+        session_start_time_ref[0] = wall_start
     if (
         state_dir is not None
-        and wall_start is not None
+        and session_start_time_ref is not None
         and last_eta_ckpt_save_ref is not None
     ):
         maybe_save_eta_checkpoint(
             state_dir,
-            wall_start,
+            session_start_time_ref[0],
             downloads_ref[0],
             recent_writes,
             last_eta_ckpt_save_ref,
@@ -362,9 +379,17 @@ def _write_progress_if_due(
     total_bytes, count, min_id, max_id = _log_dir_stats(logs_dir)
     remaining = max(0, min_id - 1) if min_id is not None else 0
     backfill_complete = min_id is not None and min_id <= 1
-    recent_rate = _rate_logs_per_sec(recent_writes)
-    aggregated_rate = _aggregated_rate_logs_per_sec(session_start_time_ref[0], session_downloads_ref[0])
-    preferred_rate = aggregated_rate if aggregated_rate is not None else recent_rate
+    recent_rate = rate_from_trailing_burst(recent_writes)
+    if recent_rate is None:
+        recent_rate = rate_from_recent_segments(recent_writes)
+    aggregated_rate = _aggregated_rate_logs_per_sec(
+        session_start_time_ref[0],
+        session_downloads_ref[0],
+        recent_writes,
+    )
+    preferred_rate = rate_from_recent_segments(recent_writes)
+    if preferred_rate is None:
+        preferred_rate = aggregated_rate if aggregated_rate is not None else recent_rate
     if min_id is None:
         eta_str = "N/A (no logs yet)"
     elif remaining == 0:
@@ -557,7 +582,7 @@ def try_raw_download_and_index(
     progress_interval_ref: list[dict[str, int]],
     session_downloads_ref: list[int],
     state_dir: Path | None = None,
-    checkpoint_wall_start: float | None = None,
+    session_start_time_ref: list[float] | None = None,
     last_eta_ckpt_save_ref: list[float] | None = None,
 ) -> bool:
     """
@@ -616,7 +641,7 @@ def try_raw_download_and_index(
         log_id,
         session_downloads_ref,
         state_dir=state_dir,
-        wall_start=checkpoint_wall_start,
+        session_start_time_ref=session_start_time_ref,
         last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
     )
     return True
@@ -672,7 +697,7 @@ def run_catch_up_newest(
                 progress_interval_ref,
                 session_downloads_ref,
                 state_dir=state_dir,
-                checkpoint_wall_start=session_start_time_ref[0],
+                session_start_time_ref=session_start_time_ref,
                 last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
             ):
                 downloaded += 1
@@ -710,7 +735,7 @@ def run_catch_up_newest(
                 log_id,
                 session_downloads_ref,
                 state_dir=state_dir,
-                wall_start=session_start_time_ref[0],
+                session_start_time_ref=session_start_time_ref,
                 last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
             )
             downloaded += 1
@@ -729,7 +754,7 @@ def run_catch_up_newest(
                 progress_interval_ref,
                 session_downloads_ref,
                 state_dir=state_dir,
-                checkpoint_wall_start=session_start_time_ref[0],
+                session_start_time_ref=session_start_time_ref,
                 last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
             )
         else:
@@ -819,7 +844,7 @@ def run_backfill_from_offset(
                     progress_interval_ref,
                     session_downloads_ref,
                     state_dir=state_dir,
-                    checkpoint_wall_start=session_start_time_ref[0],
+                    session_start_time_ref=session_start_time_ref,
                     last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
                 ):
                     downloaded += 1
@@ -858,7 +883,7 @@ def run_backfill_from_offset(
                     log_id,
                     session_downloads_ref,
                     state_dir=state_dir,
-                    wall_start=session_start_time_ref[0],
+                    session_start_time_ref=session_start_time_ref,
                     last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
                 )
                 downloaded += 1
@@ -877,7 +902,7 @@ def run_backfill_from_offset(
                     progress_interval_ref,
                     session_downloads_ref,
                     state_dir=state_dir,
-                    checkpoint_wall_start=session_start_time_ref[0],
+                    session_start_time_ref=session_start_time_ref,
                     last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
                 )
             else:
