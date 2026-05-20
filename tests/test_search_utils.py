@@ -8,13 +8,19 @@ from app.search.search import (
     _fts_phrase_query,
     _leaderboard_agg_order_clause,
     _leaderboard_resolve_spec,
+    _leaderboard_victim_class_from_lb_key,
     _log_in_date_range,
     _map_matches_query,
     _player_count_filter,
     _winner_team_from_log,
     stats_leaderboard,
 )
-from app.stats_db import connect_stats_db, init_stats_db, rebuild_player_stats_agg, replace_stats_for_log
+from app.stats_db import (
+    connect_stats_db,
+    init_stats_db,
+    rebuild_player_stats_agg,
+    replace_stats_for_log,
+)
 
 
 PLAYER_A = "76561198000000001"
@@ -32,8 +38,10 @@ def _leaderboard_log(
     a_backstabs: int = 0,
     b_headshots: int = 0,
     b_backstabs: int = 0,
+    healspread: dict | None = None,
+    classkills: dict | None = None,
 ) -> dict:
-    return {
+    out = {
         "info": {
             "map": "cp_process_final",
             "date": 1_700_000_000 + log_id,
@@ -80,6 +88,11 @@ def _leaderboard_log(
             PLAYER_B_3: "PlayerB",
         },
     }
+    if healspread is not None:
+        out["healspread"] = healspread
+    if classkills is not None:
+        out["classkills"] = classkills
+    return out
 
 
 @pytest.fixture()
@@ -117,12 +130,102 @@ def test_leaderboard_agg_order_clause_winrate():
     assert "ASC" in (_leaderboard_agg_order_clause("winrate", "lowest") or "").upper()
 
 
+def test_leaderboard_resolve_spec_dpm_kdr_scopes():
+    dpm_t = _leaderboard_resolve_spec("dpm", "total")
+    assert "SUM" in dpm_t["order_expr"].upper() and "DAMAGE" in dpm_t["order_expr"].upper()
+    dpm_p = _leaderboard_resolve_spec("dpm", "per_log")
+    assert "AVG" in dpm_p["select_expr"].upper() and "DAPM" in dpm_p["select_expr"].upper()
+    kdr_t = _leaderboard_resolve_spec("kdr", "total")
+    assert "SUM(LP.KILLS)" in kdr_t["order_expr"].upper().replace(" ", "")
+    kdr_p = _leaderboard_resolve_spec("kdr", "per_log")
+    assert kdr_p["value_key"] == "avg_kdr"
+
+
+def test_leaderboard_agg_order_clause_dpm_kdr_deaths_killstreak():
+    assert "total_damage" in (_leaderboard_agg_order_clause("dpm", "total") or "").lower()
+    assert "avg_dpm" in (_leaderboard_agg_order_clause("dpm", "per_log") or "").lower()
+    assert "total_kills" in (_leaderboard_agg_order_clause("kdr", "total") or "").lower()
+    assert "total_deaths" in (_leaderboard_agg_order_clause("avg_deaths", "total") or "").lower()
+    assert "total_killstreak" in (_leaderboard_agg_order_clause("avg_killstreak", "total") or "").lower()
+
+
 def test_leaderboard_resolve_spec_avg_killstreak():
     spec = _leaderboard_resolve_spec("avg_killstreak", "total")
-    assert "LONGEST_KILLSTREAK" in spec["order_expr"].upper()
-    assert spec["value_key"] == "avg_killstreak"
-    assert spec["format"] == "float2"
-    assert "DESC" in (_leaderboard_agg_order_clause("avg_killstreak", "total") or "").upper()
+    assert "SUM" in spec["order_expr"].upper()
+    assert spec["value_key"] == "total_killstreak"
+    spec_p = _leaderboard_resolve_spec("avg_killstreak", "per_log")
+    assert spec_p["value_key"] == "avg_killstreak"
+    assert spec_p["format"] == "float2"
+    assert "DESC" in (_leaderboard_agg_order_clause("avg_killstreak", "per_log") or "").upper()
+
+
+def test_stats_leaderboard_dpm_per_log_default_scope(stats_leaderboard_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", stats_leaderboard_db)
+    rows, _ = stats_leaderboard("dpm", stat_scope="per_log", min_logs=1)
+    assert rows[0]["steamid64"] == PLAYER_A
+    assert rows[0]["primary_value"] == 600.0
+
+
+def test_stats_leaderboard_dpm_total_scope(stats_leaderboard_db, monkeypatch):
+    """Agg fast path must SELECT ``total_damage`` (not only ``avg_dpm``)."""
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", stats_leaderboard_db)
+    rows, _ = stats_leaderboard("dpm", stat_scope="total", min_logs=1)
+    assert rows[0]["steamid64"] == PLAYER_A
+    assert rows[0]["primary_value"] == 6000
+
+
+def test_leaderboard_resolve_spec_heals():
+    ht = _leaderboard_resolve_spec("heals", "total")
+    assert "total_heals" in ht["order_expr"].lower() or "h.total_heals" in ht["order_expr"].lower()
+    assert ht["value_key"] == "total_heals"
+    hp = _leaderboard_resolve_spec("heals", "per_log")
+    assert "avg_heals_per_log" in hp["select_expr"].lower()
+
+
+@pytest.fixture()
+def stats_leaderboard_heals_db(tmp_path):
+    db_path = tmp_path / "stats_heals.db"
+    conn = connect_stats_db(db_path)
+    init_stats_db(conn)
+    with conn:
+        replace_stats_for_log(
+            conn,
+            1001,
+            _leaderboard_log(
+                10,
+                4,
+                log_id=1001,
+                healspread={PLAYER_A_3: {PLAYER_B_3: 1000}, PLAYER_B_3: {PLAYER_A_3: 500}},
+            ),
+        )
+        replace_stats_for_log(
+            conn,
+            1002,
+            _leaderboard_log(
+                2,
+                4,
+                log_id=1002,
+                healspread={PLAYER_A_3: {PLAYER_B_3: 3500}, PLAYER_B_3: {PLAYER_A_3: 200}},
+            ),
+        )
+        rebuild_player_stats_agg(conn)
+    conn.close()
+    return db_path
+
+
+def test_stats_leaderboard_heals_total_and_per_log(stats_leaderboard_heals_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", stats_leaderboard_heals_db)
+    rows_t, _ = stats_leaderboard("heals", min_logs=1)
+    assert rows_t[0]["steamid64"] == PLAYER_A
+    assert rows_t[0]["primary_value"] == 4500
+    assert rows_t[1]["primary_value"] == 700
+    rows_p, _ = stats_leaderboard("heals", stat_scope="per_log", min_logs=1)
+    assert rows_p[0]["steamid64"] == PLAYER_A
+    assert rows_p[0]["primary_value"] == 2250.0
+    assert rows_p[1]["primary_value"] == 350.0
+    # Global unfiltered + nonempty agg must not take the agg fast path (heals use healspread).
+    rows_agg_path, _ = stats_leaderboard("heals", min_logs=1)
+    assert rows_agg_path[0]["primary_value"] == 4500
 
 
 def test_leaderboard_resolve_spec_headshots_backstabs():
@@ -141,6 +244,11 @@ def test_leaderboard_agg_order_clause_headshots_backstabs():
     assert "log_count" in (_leaderboard_agg_order_clause("headshots", "per_log") or "").lower()
     assert "total_backstabs" in (_leaderboard_agg_order_clause("backstabs", "total") or "").lower()
     assert "log_count" in (_leaderboard_agg_order_clause("backstabs", "per_log") or "").lower()
+
+
+def test_leaderboard_agg_order_clause_heals():
+    assert "total_heals" in (_leaderboard_agg_order_clause("heals", "total") or "").lower()
+    assert "heal_log_count" in (_leaderboard_agg_order_clause("heals", "per_log") or "").lower()
 
 
 def test_stats_leaderboard_headshots_and_backstabs(stats_leaderboard_db, monkeypatch):
@@ -164,7 +272,7 @@ def test_stats_leaderboard_headshots_and_backstabs(stats_leaderboard_db, monkeyp
 def test_stats_leaderboard_avg_killstreak(stats_leaderboard_db, monkeypatch):
     monkeypatch.setattr("app.search.search.STATS_DB_PATH", stats_leaderboard_db)
 
-    rows, total_logs = stats_leaderboard("avg_killstreak", min_logs=1)
+    rows, total_logs = stats_leaderboard("avg_killstreak", stat_scope="per_log", min_logs=1)
 
     assert total_logs == 2
     assert rows[0]["steamid64"] == PLAYER_A
@@ -172,6 +280,76 @@ def test_stats_leaderboard_avg_killstreak(stats_leaderboard_db, monkeypatch):
     assert rows[0]["avg_killstreak"] == 6.0
     assert rows[1]["steamid64"] == PLAYER_B
     assert rows[1]["primary_value"] == 4.0
+
+
+@pytest.fixture()
+def stats_leaderboard_classkills_db(tmp_path):
+    db_path = tmp_path / "stats.db"
+    conn = connect_stats_db(db_path)
+    init_stats_db(conn)
+    with conn:
+        replace_stats_for_log(
+            conn,
+            1001,
+            _leaderboard_log(
+                10,
+                4,
+                log_id=1001,
+                classkills={
+                    PLAYER_A_3: {"soldier": 12, "scout": 3},
+                    PLAYER_B_3: {"soldier": 5, "medic": 2},
+                },
+            ),
+        )
+        replace_stats_for_log(
+            conn,
+            1002,
+            _leaderboard_log(
+                2,
+                4,
+                log_id=1002,
+                classkills={
+                    PLAYER_A_3: {"soldier": 4},
+                    PLAYER_B_3: {"soldier": 8, "scout": 1},
+                },
+            ),
+        )
+        rebuild_player_stats_agg(conn)
+    conn.close()
+    return db_path
+
+
+def test_leaderboard_victim_class_from_lb_key():
+    assert _leaderboard_victim_class_from_lb_key("kills_soldier") == "soldier"
+    assert _leaderboard_victim_class_from_lb_key("kills_heavyweapons") == "heavyweapons"
+    assert _leaderboard_victim_class_from_lb_key("kills_invalid") is None
+    assert _leaderboard_victim_class_from_lb_key("dpm") is None
+
+
+def test_leaderboard_resolve_spec_kills_soldier():
+    tot = _leaderboard_resolve_spec("kills_soldier", "total")
+    assert tot["value_key"] == "total_class_kills"
+    per = _leaderboard_resolve_spec("kills_soldier", "per_log")
+    assert per["value_key"] == "avg_class_kills_per_log"
+
+
+def test_leaderboard_agg_order_clause_kills_soldier():
+    assert "total_kills" in (_leaderboard_agg_order_clause("kills_soldier", "total") or "").lower()
+    assert "log_count" in (_leaderboard_agg_order_clause("kills_soldier", "per_log") or "").lower()
+
+
+def test_stats_leaderboard_kills_soldier_total_and_per_log(
+    stats_leaderboard_classkills_db, monkeypatch
+):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", stats_leaderboard_classkills_db)
+    rows_t, _ = stats_leaderboard("kills_soldier", min_logs=1)
+    assert rows_t[0]["steamid64"] == PLAYER_A
+    assert rows_t[0]["primary_value"] == 16
+    assert rows_t[1]["steamid64"] == PLAYER_B
+    assert rows_t[1]["primary_value"] == 13
+    rows_p, _ = stats_leaderboard("kills_soldier", stat_scope="per_log", min_logs=1)
+    assert rows_p[0]["primary_value"] == 8.0
+    assert rows_p[1]["primary_value"] == 6.5
 
 
 # --- _log_in_date_range ---

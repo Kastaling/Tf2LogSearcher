@@ -309,6 +309,7 @@ function mountProfileWordCloud(host, items, options) {
 
 /**
  * Mount when the host has measurable width (e.g. after a collapsed profile section opens).
+ * Re-layouts on resize via ResizeObserver (debounced).
  */
 function scheduleProfileWordCloudMount(host, items, options) {
   if (!host || !items || !items.length) {
@@ -317,35 +318,60 @@ function scheduleProfileWordCloudMount(host, items, options) {
   host._profileWordCloudWords = items;
   host._profileWordCloudOptions = options || {};
 
-  function tryMount() {
-    if (host.querySelector('.profile-word-cloud-item')) {
-      return true;
-    }
+  function remountIfSized() {
     var w = host.getBoundingClientRect().width;
     if (w < 48) {
-      return false;
+      return;
     }
-    mountProfileWordCloud(host, items, host._profileWordCloudOptions);
-    return true;
+    mountProfileWordCloud(host, host._profileWordCloudWords, host._profileWordCloudOptions);
   }
 
-  if (tryMount()) {
-    return;
+  if (host._profileWordCloudResizeObserver) {
+    host._profileWordCloudResizeObserver.disconnect();
+    host._profileWordCloudResizeObserver = null;
   }
+  if (host._profileWordCloudResizeRaf) {
+    cancelAnimationFrame(host._profileWordCloudResizeRaf);
+    host._profileWordCloudResizeRaf = 0;
+  }
+
+  remountIfSized();
+
   if (typeof ResizeObserver !== 'undefined') {
+    var lastWidth = 0;
     var ro = new ResizeObserver(function() {
-      if (tryMount()) {
-        ro.disconnect();
+      var w = host.getBoundingClientRect().width;
+      if (w < 48) {
+        return;
       }
+      if (lastWidth > 0 && Math.abs(w - lastWidth) < 12) {
+        return;
+      }
+      lastWidth = w;
+      if (host._profileWordCloudResizeRaf) {
+        cancelAnimationFrame(host._profileWordCloudResizeRaf);
+      }
+      host._profileWordCloudResizeRaf = requestAnimationFrame(function() {
+        host._profileWordCloudResizeRaf = 0;
+        remountIfSized();
+      });
     });
     ro.observe(host);
     var panel = host.closest('.profile-section-panel');
     if (panel) {
       ro.observe(panel);
     }
+    host._profileWordCloudResizeObserver = ro;
+  } else if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    var onResize = function() {
+      remountIfSized();
+    };
+    if (host._profileWordCloudWindowResize) {
+      window.removeEventListener('resize', host._profileWordCloudWindowResize);
+    }
+    host._profileWordCloudWindowResize = onResize;
+    window.addEventListener('resize', onResize);
   } else if (typeof requestAnimationFrame === 'function') {
-    requestAnimationFrame(function() {
-      tryMount();
-    });
+    requestAnimationFrame(remountIfSized);
   }
 }

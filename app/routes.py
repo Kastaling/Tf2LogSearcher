@@ -51,6 +51,7 @@ from app.search.search import (
     LEADERBOARD_TYPE_KEYS,
     PlayerNameIndexNotReadyError,
     _LOGMATCH_CLASS_TYPES,
+    _leaderboard_supports_total_per_log,
     STATS_SEARCH_DEFAULT_CLASSES,
     chat_leaderboard_search_sqlite,
     chat_search,
@@ -1779,7 +1780,7 @@ def _api_leaderboard_impl(
     ss = (stat_scope_raw or "").strip().lower()
     if ss not in LEADERBOARD_STAT_SCOPE_KEYS:
         ss = "total"
-    if lt in ("ubers", "drops", "damage_taken", "backstabs", "headshots"):
+    if _leaderboard_supports_total_per_log(lt):
         ss = ss if ss in ("total", "per_log") else "total"
     elif lt == "winrate":
         ss = ss if ss in ("highest", "lowest") else "highest"
@@ -2132,7 +2133,7 @@ def _build_results_embed_meta(request: Request) -> str:
             ss_e = (qp.get("stat_scope") or "total").strip().lower()
             if ss_e not in LEADERBOARD_STAT_SCOPE_KEYS:
                 ss_e = "total"
-            if lb_t in ("ubers", "drops", "damage_taken", "backstabs", "headshots"):
+            if _leaderboard_supports_total_per_log(lb_t):
                 ss_e = ss_e if ss_e in ("total", "per_log") else "total"
             elif lb_t == "winrate":
                 ss_e = ss_e if ss_e in ("highest", "lowest") else "highest"

@@ -19,7 +19,31 @@ var VALID_LB_TYPES = {
   avg_killstreak: 1,
   backstabs: 1,
   headshots: 1,
+  heals: 1,
 };
+var KILLS_BY_CLASS_VICTIMS = [
+  { id: 'scout', label: 'Scout' },
+  { id: 'soldier', label: 'Soldier' },
+  { id: 'pyro', label: 'Pyro' },
+  { id: 'demoman', label: 'Demoman' },
+  { id: 'heavyweapons', label: 'Heavy' },
+  { id: 'engineer', label: 'Engineer' },
+  { id: 'medic', label: 'Medic' },
+  { id: 'sniper', label: 'Sniper' },
+  { id: 'spy', label: 'Spy' },
+];
+KILLS_BY_CLASS_VICTIMS.forEach(function(c) {
+  VALID_LB_TYPES['kills_' + c.id] = 1;
+});
+function killsLbType(classId) {
+  return 'kills_' + String(classId || '').trim().toLowerCase();
+}
+function victimClassFromLbType(lbType) {
+  var t = sanitizeLbTypeInput(lbType);
+  if (t.indexOf('kills_') !== 0) return '';
+  var vc = t.slice(6);
+  return VALID_LB_TYPES[t] ? vc : '';
+}
 function sanitizeLbTypeInput(v) {
   var s = (v == null ? '' : String(v)).trim().toLowerCase();
   return VALID_LB_TYPES[s] ? s : 'dpm';
@@ -58,7 +82,11 @@ function syncLeaderboardClassSelectForMedicLeaderboards(form) {
 function sanitizeLeaderboardStatScopeInput(raw, lbType) {
   var s = (raw == null ? '' : String(raw)).trim().toLowerCase();
   var t = sanitizeLbTypeInput(lbType || 'dpm');
-  if (t === 'ubers' || t === 'drops' || t === 'damage_taken' || t === 'backstabs' || t === 'headshots') {
+  if (
+    t === 'dpm' || t === 'kdr' || t === 'ubers' || t === 'drops' || t === 'damage_taken'
+    || t === 'backstabs' || t === 'headshots' || t === 'heals' || t === 'avg_deaths'
+    || t === 'avg_killstreak' || victimClassFromLbType(t)
+  ) {
     if (s === 'total' || s === 'per_log') return s;
     return 'total';
   }
@@ -67,6 +95,263 @@ function sanitizeLeaderboardStatScopeInput(raw, lbType) {
     return 'highest';
   }
   return 'total';
+}
+
+/** Leaderboard dropdown visual indent (native ``<option>`` has no nested markup). */
+function leaderboardStatIndentPrefix(level) {
+  var n = Math.max(0, Math.min(3, Number(level) || 0));
+  var em = '\u2003';
+  var out = '';
+  for (var i = 0; i < n; i++) out += em + em;
+  return out;
+}
+
+function leaderboardStatIconStyle(indentLevel, iconClass) {
+  if (!iconClass || !LOGMATCH_CLASS_ICON[iconClass]) return null;
+  var pad = 0.35 + indentLevel * 1.25;
+  return {
+    backgroundImage: 'url(' + LOGMATCH_CLASS_ICON[iconClass] + ')',
+    backgroundRepeat: 'no-repeat',
+    backgroundPosition: pad + 'rem center',
+    backgroundSize: '18px 18px',
+    paddingLeft: (pad + 1.3) + 'rem',
+  };
+}
+
+var LEADERBOARD_SCOPE_LABELS = { total: 1, per_log: 1, highest: 1, lowest: 1 };
+
+/** Full path shown on the closed dropdown only (not in the open option list). */
+function leaderboardStatSelectionLabel(catLabel, sectionHeading, subHeading, ent) {
+  var parts = [catLabel];
+  if (sectionHeading) parts.push(sectionHeading);
+  if (subHeading) parts.push(subHeading);
+  if (LEADERBOARD_SCOPE_LABELS[ent.scope]) {
+    parts.push(ent.label);
+  } else if (!sectionHeading) {
+    parts.push(ent.label);
+  }
+  return parts.join(' - ');
+}
+
+function killsByClassMenuEntries() {
+  var out = [{ kind: 'heading', label: 'Kills by Class' }];
+  KILLS_BY_CLASS_VICTIMS.forEach(function(c) {
+    out.push({ kind: 'heading', label: c.label, iconClass: c.id, indent: 1 });
+    out.push({ kind: 'stat', lb: killsLbType(c.id), scope: 'total', label: 'Total', indent: 2, iconClass: c.id });
+    out.push({ kind: 'stat', lb: killsLbType(c.id), scope: 'per_log', label: 'Per log', indent: 2, iconClass: c.id });
+  });
+  return out;
+}
+
+function leaderboardClassIconImg(classId) {
+  if (!classId) return '';
+  var key = String(classId).toLowerCase();
+  var src = LOGMATCH_CLASS_ICON[key];
+  if (!src) return '';
+  var label = LOGMATCH_CLASS_LABEL[key] || classId;
+  return '<img class="logmatch-class-icon lb-stat-class-icon" src="' + escapeAttr(src) + '" alt="" width="22" height="22" loading="lazy" title="' + escapeAttr(label) + '">';
+}
+
+function syncLeaderboardStatIconPreview(form) {
+  if (!form) return;
+  var preview = form.querySelector('.js-lb-stat-icon-preview');
+  if (!preview) return;
+  var lb = form.elements.lb_type && form.elements.lb_type.value
+    ? form.elements.lb_type.value
+    : 'dpm';
+  var vc = victimClassFromLbType(lb);
+  preview.innerHTML = vc ? leaderboardClassIconImg(vc) : '';
+  preview.hidden = !vc;
+}
+
+function syncLeaderboardStatClosedDisplay(form) {
+  if (!form) return;
+  var sel = form.elements.lb_stat;
+  var display = form.querySelector('.js-lb-stat-display');
+  if (!sel || !display) return;
+  var opt = sel.options[sel.selectedIndex];
+  var full = opt && opt.getAttribute('data-full-label');
+  display.textContent = full || '';
+  display.hidden = !full;
+}
+
+function initLeaderboardStatSelectUi(form) {
+  if (!form || !form.elements.lb_stat) return;
+  if (form.dataset.lbStatSelectUiInit === '1') {
+    syncLeaderboardStatClosedDisplay(form);
+    return;
+  }
+  form.dataset.lbStatSelectUiInit = '1';
+  var sel = form.elements.lb_stat;
+  var inner = form.querySelector('.lb-stat-select-inner');
+  if (inner) {
+    sel.addEventListener('focus', function() {
+      inner.classList.add('is-open');
+    });
+    sel.addEventListener('blur', function() {
+      inner.classList.remove('is-open');
+      syncLeaderboardStatClosedDisplay(form);
+    });
+  }
+  syncLeaderboardStatClosedDisplay(form);
+}
+
+/** Leaderboard stat picker: optgroup categories, disabled sub-headings, indented leaf options. */
+var LEADERBOARD_STAT_MENU = [
+  {
+    label: 'General',
+    entries: [
+      { kind: 'stat', lb: 'logs', scope: 'total', label: 'Most Logs' },
+      { kind: 'heading', label: 'Win Rate' },
+      { kind: 'stat', lb: 'winrate', scope: 'highest', label: 'Highest', indent: 1 },
+      { kind: 'stat', lb: 'winrate', scope: 'lowest', label: 'Lowest', indent: 1 },
+    ],
+  },
+  {
+    label: 'Support',
+    entries: [
+      { kind: 'heading', label: 'Ubers' },
+      { kind: 'stat', lb: 'ubers', scope: 'total', label: 'Total', indent: 1 },
+      { kind: 'stat', lb: 'ubers', scope: 'per_log', label: 'Per log', indent: 1 },
+      { kind: 'heading', label: 'Drops' },
+      { kind: 'stat', lb: 'drops', scope: 'total', label: 'Total', indent: 1 },
+      { kind: 'stat', lb: 'drops', scope: 'per_log', label: 'Per log', indent: 1 },
+      { kind: 'heading', label: 'Heals' },
+      { kind: 'stat', lb: 'heals', scope: 'total', label: 'Total', indent: 1 },
+      { kind: 'stat', lb: 'heals', scope: 'per_log', label: 'Per log', indent: 1 },
+    ],
+  },
+  {
+    label: 'Offensive',
+    entries: [
+      { kind: 'heading', label: 'DPM' },
+      { kind: 'stat', lb: 'dpm', scope: 'total', label: 'Total', indent: 1 },
+      { kind: 'stat', lb: 'dpm', scope: 'per_log', label: 'Per log', indent: 1 },
+      { kind: 'heading', label: 'Damage taken' },
+      { kind: 'stat', lb: 'damage_taken', scope: 'total', label: 'Total', indent: 1 },
+      { kind: 'stat', lb: 'damage_taken', scope: 'per_log', label: 'Per log', indent: 1 },
+      { kind: 'heading', label: 'KDR' },
+      { kind: 'stat', lb: 'kdr', scope: 'total', label: 'Total', indent: 1 },
+      { kind: 'stat', lb: 'kdr', scope: 'per_log', label: 'Per log', indent: 1 },
+      { kind: 'heading', label: 'Deaths' },
+      { kind: 'stat', lb: 'avg_deaths', scope: 'total', label: 'Total', indent: 1 },
+      { kind: 'stat', lb: 'avg_deaths', scope: 'per_log', label: 'Per log', indent: 1 },
+      { kind: 'heading', label: 'Killstreak' },
+      { kind: 'stat', lb: 'avg_killstreak', scope: 'total', label: 'Total', indent: 1 },
+      { kind: 'stat', lb: 'avg_killstreak', scope: 'per_log', label: 'Per log', indent: 1 },
+    ].concat(killsByClassMenuEntries()).concat([
+      { kind: 'heading', label: 'Headshots' },
+      { kind: 'stat', lb: 'headshots', scope: 'total', label: 'Total', indent: 1 },
+      { kind: 'stat', lb: 'headshots', scope: 'per_log', label: 'Per log', indent: 1 },
+      { kind: 'heading', label: 'Backstabs' },
+      { kind: 'stat', lb: 'backstabs', scope: 'total', label: 'Total', indent: 1 },
+      { kind: 'stat', lb: 'backstabs', scope: 'per_log', label: 'Per log', indent: 1 },
+    ]),
+  },
+];
+
+function leaderboardStatOptionValue(lbType, statScope) {
+  var lb = sanitizeLbTypeInput(lbType);
+  var scope = sanitizeLeaderboardStatScopeInput(statScope, lb);
+  return lb + '|' + scope;
+}
+
+function parseLeaderboardStatOptionValue(raw) {
+  var s = (raw == null ? '' : String(raw)).trim();
+  var pipe = s.indexOf('|');
+  var lbRaw = pipe >= 0 ? s.slice(0, pipe) : s;
+  var scopeRaw = pipe >= 0 ? s.slice(pipe + 1) : '';
+  var lb = sanitizeLbTypeInput(lbRaw);
+  return {
+    lb_type: lb,
+    stat_scope: sanitizeLeaderboardStatScopeInput(scopeRaw, lb),
+  };
+}
+
+function populateLeaderboardStatSelect(select) {
+  if (!select) return;
+  select.innerHTML = '';
+  LEADERBOARD_STAT_MENU.forEach(function(cat) {
+    var og = document.createElement('optgroup');
+    og.label = cat.label;
+    var sectionHeading = '';
+    var subHeading = '';
+    cat.entries.forEach(function(ent) {
+      var opt = document.createElement('option');
+      var indentLvl = ent.indent != null ? Number(ent.indent) : 0;
+      var prefix = leaderboardStatIndentPrefix(indentLvl);
+      var iconStyle = leaderboardStatIconStyle(indentLvl, ent.iconClass);
+      if (ent.kind === 'heading') {
+        if (indentLvl <= 0) {
+          sectionHeading = ent.label;
+          subHeading = '';
+        } else if (indentLvl === 1) {
+          subHeading = ent.label;
+        }
+        opt.disabled = true;
+        opt.textContent = prefix + ent.label;
+        opt.className = 'lb-stat-heading' + (indentLvl ? ' lb-stat-indent-' + indentLvl : '');
+        if (iconStyle) {
+          opt.style.backgroundImage = iconStyle.backgroundImage;
+          opt.style.backgroundRepeat = iconStyle.backgroundRepeat;
+          opt.style.backgroundPosition = iconStyle.backgroundPosition;
+          opt.style.backgroundSize = iconStyle.backgroundSize;
+          opt.style.paddingLeft = iconStyle.paddingLeft;
+        }
+      } else {
+        var fullLabel = leaderboardStatSelectionLabel(
+          cat.label, sectionHeading, subHeading, ent
+        );
+        opt.value = leaderboardStatOptionValue(ent.lb, ent.scope);
+        opt.textContent = prefix + ent.label;
+        opt.setAttribute('data-full-label', fullLabel);
+        opt.title = fullLabel;
+        if (indentLvl) opt.className = 'lb-stat-indent lb-stat-indent-' + indentLvl;
+        if (iconStyle) {
+          opt.style.backgroundImage = iconStyle.backgroundImage;
+          opt.style.backgroundRepeat = iconStyle.backgroundRepeat;
+          opt.style.backgroundPosition = iconStyle.backgroundPosition;
+          opt.style.backgroundSize = iconStyle.backgroundSize;
+          opt.style.paddingLeft = iconStyle.paddingLeft;
+        }
+      }
+      og.appendChild(opt);
+    });
+    select.appendChild(og);
+  });
+}
+
+function setLeaderboardStatSelectValue(select, lbType, statScope) {
+  if (!select) return;
+  if (!select.options.length) populateLeaderboardStatSelect(select);
+  var want = leaderboardStatOptionValue(lbType, statScope);
+  select.value = want;
+  if (select.value !== want) {
+    select.value = leaderboardStatOptionValue('dpm', 'total');
+  }
+  var form = select.closest && select.closest('form');
+  if (form) syncLeaderboardStatClosedDisplay(form);
+}
+
+function applyLeaderboardStatSelectToForm(form) {
+  if (!form) return { lb_type: 'dpm', stat_scope: 'total' };
+  var sel = form.elements.lb_stat;
+  if (!sel) {
+    return {
+      lb_type: sanitizeLbTypeInput(form.elements.lb_type && form.elements.lb_type.value),
+      stat_scope: sanitizeLeaderboardStatScopeInput(
+        form.elements.stat_scope && form.elements.stat_scope.value,
+        form.elements.lb_type && form.elements.lb_type.value
+      ),
+    };
+  }
+  var parsed = parseLeaderboardStatOptionValue(sel.value);
+  if (form.elements.lb_type) form.elements.lb_type.value = parsed.lb_type;
+  if (form.elements.stat_scope) form.elements.stat_scope.value = parsed.stat_scope;
+  syncLeaderboardClassSelectForMedicLeaderboards(form);
+  syncLeaderboardStatIconPreview(form);
+  syncLeaderboardStatClosedDisplay(form);
+  return parsed;
 }
 
 function escapeHtml(str) {

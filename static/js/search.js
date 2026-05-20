@@ -73,41 +73,6 @@ function sanitizeMapQueryInput(s) {
 }
 
 
-function syncLeaderboardStatScopeStrip(form) {
-  if (!form) return;
-  var stripTp = form.querySelector('.js-lb-stat-scope-strip');
-  var stripWr = form.querySelector('.js-lb-winrate-scope-strip');
-  var hidden = form.elements.stat_scope;
-  var lb = sanitizeLbTypeInput(form.elements.lb_type && form.elements.lb_type.value ? form.elements.lb_type.value : 'dpm');
-  var showTp = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken' || lb === 'backstabs' || lb === 'headshots');
-  var showWr = (lb === 'winrate');
-  if (stripTp) {
-    if (showTp) stripTp.removeAttribute('hidden');
-    else stripTp.setAttribute('hidden', '');
-  }
-  if (stripWr) {
-    if (showWr) stripWr.removeAttribute('hidden');
-    else stripWr.setAttribute('hidden', '');
-  }
-  var cur = hidden ? sanitizeLeaderboardStatScopeInput(hidden.value, lb) : 'total';
-  if (hidden) hidden.value = cur;
-  if (stripTp) {
-    stripTp.querySelectorAll('.js-lb-stat-scope-btn').forEach(function(b) {
-      var sc = b.getAttribute('data-stat-scope');
-      var on = showTp && sc === cur;
-      b.classList.toggle('active', on);
-      b.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-  }
-  if (stripWr) {
-    stripWr.querySelectorAll('.js-lb-winrate-scope-btn').forEach(function(b) {
-      var sc = b.getAttribute('data-stat-scope');
-      var on = showWr && sc === cur;
-      b.classList.toggle('active', on);
-      b.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-  }
-}
 function sanitizeLeaderboardMinLogs(v) {
   var n = parseInt(String(v == null ? '' : v).trim(), 10);
   if (!Number.isFinite(n)) return '10';
@@ -271,17 +236,11 @@ function applySearchStateToForms(state) {
     var flb = document.getElementById('frmLeaderboard');
     if (!flb) return;
     var lbt = sanitizeLbTypeInput(state.lb_type);
+    var lbScope = sanitizeLeaderboardStatScopeInput(state.stat_scope, lbt);
     if (flb.elements.lb_type) flb.elements.lb_type.value = lbt;
-    flb.querySelectorAll('.js-lb-type-btn').forEach(function(b) {
-      var on = b.getAttribute('data-lb-type') === lbt;
-      b.classList.toggle('active', on);
-      b.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
+    if (flb.elements.stat_scope) flb.elements.stat_scope.value = lbScope;
+    setLeaderboardStatSelectValue(flb.elements.lb_stat, lbt, lbScope);
     if (flb.gamemode) flb.gamemode.value = sanitizeCoplayersGamemodeInput(state.gamemode);
-    if (flb.elements.stat_scope) {
-      flb.elements.stat_scope.value = sanitizeLeaderboardStatScopeInput(state.stat_scope, state.lb_type);
-    }
-    syncLeaderboardStatScopeStrip(flb);
     if (flb.elements.class_filter) {
       flb.elements.class_filter.value = sanitizeLeaderboardClassFilter(state.class_filter, state.lb_type);
     }
@@ -393,12 +352,7 @@ function flashDeepLinkFilledFields(state) {
   if (state.mode === 'leaderboard') {
     var flb = document.getElementById('frmLeaderboard');
     if (!flb) return;
-    var activeLb = flb.querySelector('.js-lb-type-btn.active');
-    if (activeLb) pulseDeepLinkEl(activeLb);
-    var scopeStrip = flb.querySelector('.js-lb-stat-scope-strip');
-    if (scopeStrip && !scopeStrip.hasAttribute('hidden')) pulseDeepLinkEl(scopeStrip);
-    var wrStrip = flb.querySelector('.js-lb-winrate-scope-strip');
-    if (wrStrip && !wrStrip.hasAttribute('hidden')) pulseDeepLinkEl(wrStrip);
+    if (flb.elements.lb_stat) pulseDeepLinkEl(flb.elements.lb_stat);
     if (ne(state.gamemode) && flb.gamemode) pulseDeepLinkEl(flb.gamemode);
     if (ne(state.class_filter) && flb.elements.class_filter) pulseDeepLinkEl(flb.elements.class_filter);
     if (ne(state.map_query) && flb.elements.map_query) pulseDeepLinkEl(flb.elements.map_query);
@@ -499,6 +453,22 @@ function restoreHomeForms() {
   var again = buildSanitizedSearchState(parsed.mode, p2);
   if (again) applySearchStateToForms(again);
 }
+
+(function initLeaderboardStatSelect() {
+  var form = document.getElementById('frmLeaderboard');
+  if (!form || !form.elements.lb_stat) return;
+  populateLeaderboardStatSelect(form.elements.lb_stat);
+  setLeaderboardStatSelectValue(
+    form.elements.lb_stat,
+    form.elements.lb_type && form.elements.lb_type.value ? form.elements.lb_type.value : 'dpm',
+    form.elements.stat_scope && form.elements.stat_scope.value ? form.elements.stat_scope.value : 'total'
+  );
+  applyLeaderboardStatSelectToForm(form);
+  form.elements.lb_stat.addEventListener('change', function() {
+    applyLeaderboardStatSelectToForm(form);
+  });
+  initLeaderboardStatSelectUi(form);
+})();
 
 (function initHomeFormRestore() {
   restoreHomeForms();
@@ -1478,54 +1448,6 @@ document.getElementById('frmPlayerName').addEventListener('submit', function(e) 
   window.location.href = '/results?' + params.toString();
 });
 
-(function initLeaderboardTypeStrip() {
-  var form = document.getElementById('frmLeaderboard');
-  if (!form) return;
-  form.querySelectorAll('.js-lb-type-btn').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      var t = btn.getAttribute('data-lb-type');
-      if (!t) return;
-      t = sanitizeLbTypeInput(t);
-      if (form.elements.lb_type) form.elements.lb_type.value = t;
-      form.querySelectorAll('.js-lb-type-btn').forEach(function(b) {
-        var on = b.getAttribute('data-lb-type') === t;
-        b.classList.toggle('active', on);
-        b.setAttribute('aria-selected', on ? 'true' : 'false');
-      });
-      syncLeaderboardClassSelectForMedicLeaderboards(form);
-      syncLeaderboardStatScopeStrip(form);
-    });
-  });
-  syncLeaderboardClassSelectForMedicLeaderboards(form);
-  syncLeaderboardStatScopeStrip(form);
-})();
-
-(function initLeaderboardStatScopeStrips() {
-  var form = document.getElementById('frmLeaderboard');
-  if (!form) return;
-  function bindScopeButtons(btnSelector, stripSelector) {
-    form.querySelectorAll(btnSelector).forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        var sc = btn.getAttribute('data-stat-scope');
-        if (!sc) return;
-        var lb = sanitizeLbTypeInput(form.elements.lb_type && form.elements.lb_type.value ? form.elements.lb_type.value : 'dpm');
-        sc = sanitizeLeaderboardStatScopeInput(sc, lb);
-        if (form.elements.stat_scope) form.elements.stat_scope.value = sc;
-        var strip = form.querySelector(stripSelector);
-        if (strip) {
-          strip.querySelectorAll(btnSelector).forEach(function(b) {
-            var on = b.getAttribute('data-stat-scope') === sc;
-            b.classList.toggle('active', on);
-            b.setAttribute('aria-selected', on ? 'true' : 'false');
-          });
-        }
-      });
-    });
-  }
-  bindScopeButtons('.js-lb-stat-scope-btn', '.js-lb-stat-scope-strip');
-  bindScopeButtons('.js-lb-winrate-scope-btn', '.js-lb-winrate-scope-strip');
-})();
-
 var frmLb = document.getElementById('frmLeaderboard');
 if (frmLb) {
   frmLb.addEventListener('submit', function(e) {
@@ -1538,11 +1460,9 @@ if (frmLb) {
       document.getElementById('leaderboardResults').innerHTML = '<span class="error">Date from must be before or equal to date to.</span>';
       return;
     }
-    var lbForClass = sanitizeLbTypeInput(frmLb.elements.lb_type && frmLb.elements.lb_type.value ? frmLb.elements.lb_type.value : 'dpm');
-    var statScopeVal = sanitizeLeaderboardStatScopeInput(
-      frmLb.elements.stat_scope && frmLb.elements.stat_scope.value ? frmLb.elements.stat_scope.value : (lbForClass === 'winrate' ? 'highest' : 'total'),
-      lbForClass
-    );
+    var lbParsed = applyLeaderboardStatSelectToForm(frmLb);
+    var lbForClass = lbParsed.lb_type;
+    var statScopeVal = lbParsed.stat_scope;
     var classFilterVal = sanitizeLeaderboardClassFilter(
       frmLb.elements.class_filter && frmLb.elements.class_filter.value ? frmLb.elements.class_filter.value : '',
       lbForClass

@@ -338,6 +338,83 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
     _migrate_player_stats_agg_avg_killstreak(conn)
     _migrate_player_stats_agg_total_damage_taken(conn)
     _migrate_player_stats_agg_headshots_backstabs(conn)
+    _migrate_player_stats_agg_heals(conn)
+    _migrate_player_stats_agg_total_deaths_killstreak(conn)
+    _migrate_player_classkills_agg(conn)
+
+
+def _migrate_player_stats_agg_total_deaths_killstreak(conn: sqlite3.Connection) -> None:
+    """Add ``total_deaths`` and ``total_killstreak`` for leaderboard total scopes."""
+    cur = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='player_stats_agg' LIMIT 1"
+    )
+    if cur.fetchone() is None:
+        return
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(player_stats_agg)").fetchall()}
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if "total_deaths" not in cols:
+            conn.execute(
+                "ALTER TABLE player_stats_agg ADD COLUMN total_deaths INTEGER NOT NULL DEFAULT 0"
+            )
+        if "total_killstreak" not in cols:
+            conn.execute(
+                "ALTER TABLE player_stats_agg ADD COLUMN total_killstreak INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_psa_total_damage ON player_stats_agg(total_damage DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_psa_total_deaths ON player_stats_agg(total_deaths DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_psa_total_killstreak ON player_stats_agg(total_killstreak DESC)"
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_psa_aggregate_kdr ON player_stats_agg(
+              (CAST(total_kills AS REAL) / NULLIF(total_deaths, 0))
+            )
+            """
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def _migrate_player_stats_agg_heals(conn: sqlite3.Connection) -> None:
+    """Add ``heal_log_count`` and ``total_heals`` for heals leaderboard fast path."""
+    cur = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='player_stats_agg' LIMIT 1"
+    )
+    if cur.fetchone() is None:
+        return
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(player_stats_agg)").fetchall()}
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if "heal_log_count" not in cols:
+            conn.execute(
+                "ALTER TABLE player_stats_agg ADD COLUMN heal_log_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "total_heals" not in cols:
+            conn.execute(
+                "ALTER TABLE player_stats_agg ADD COLUMN total_heals INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_psa_total_heals ON player_stats_agg(total_heals DESC)"
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_psa_avg_heals_per_log ON player_stats_agg(
+              (CAST(total_heals AS REAL) / NULLIF(heal_log_count, 0))
+            )
+            """
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _migrate_player_stats_agg_headshots_backstabs(conn: sqlite3.Connection) -> None:
@@ -1083,12 +1160,178 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
     return len(pr)
 
 
+def _player_stats_agg_healspread_subquery_sql(healer_in_clause: str = "") -> str:
+    """Per-healer heal totals (non-combined logs only). Embed as ``hs`` in agg rebuild/refresh."""
+    return f"""
+        SELECT
+          lph.healer_steamid64 AS steamid64,
+          COUNT(DISTINCT lph.log_id) AS heal_log_count,
+          SUM(lph.healing) AS total_heals
+        FROM log_player_healspread lph
+        INNER JOIN logs l ON l.log_id = lph.log_id
+        WHERE 1=1{healer_in_clause}{_combined_logs.stats_log_exclusion_sql("l")}
+        GROUP BY lph.healer_steamid64
+    """
+
+
+def _migrate_player_classkills_agg(conn: sqlite3.Connection) -> None:
+    """Per-player per-victim-class kill totals for kills-by-class leaderboards."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS player_classkills_agg (
+          steamid64     TEXT NOT NULL,
+          victim_class  TEXT NOT NULL,
+          log_count     INTEGER NOT NULL DEFAULT 0,
+          total_kills   INTEGER NOT NULL DEFAULT 0,
+          updated_at    INTEGER NOT NULL,
+          PRIMARY KEY (steamid64, victim_class)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pca_victim_total_kills
+        ON player_classkills_agg(victim_class, total_kills DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pca_victim_avg_kills
+        ON player_classkills_agg(
+          victim_class,
+          (CAST(total_kills AS REAL) / NULLIF(log_count, 0))
+        )
+        """
+    )
+    conn.commit()
+
+
+def rebuild_player_classkills_agg(conn: sqlite3.Connection) -> int:
+    """Full rebuild of ``player_classkills_agg`` (run with ``rebuild_player_stats_agg``)."""
+    ts = int(time.time())
+    _excl = _combined_logs.stats_log_exclusion_sql("l")
+    with conn:
+        conn.execute("DELETE FROM player_classkills_agg")
+        conn.execute(
+            f"""
+            INSERT INTO player_classkills_agg (
+              steamid64, victim_class, log_count, total_kills, updated_at
+            )
+            SELECT
+              lpck.steamid64,
+              lpck.victim_class,
+              COUNT(DISTINCT lpck.log_id),
+              SUM(lpck.kills),
+              ?
+            FROM log_player_classkills lpck
+            INNER JOIN logs l ON l.log_id = lpck.log_id
+            WHERE 1=1{_excl}
+            GROUP BY lpck.steamid64, lpck.victim_class
+            """,
+            (ts,),
+        )
+    row = conn.execute("SELECT COUNT(*) FROM player_classkills_agg").fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def _refresh_player_classkills_agg_for_steamids_impl(
+    conn: sqlite3.Connection,
+    uniq: list[str],
+    ts: int,
+) -> None:
+    _excl = _combined_logs.stats_log_exclusion_sql("l")
+    sel_prefix = """
+        SELECT
+          lpck.steamid64,
+          lpck.victim_class,
+          COUNT(DISTINCT lpck.log_id),
+          SUM(lpck.kills)
+        FROM log_player_classkills lpck
+        INNER JOIN logs l ON l.log_id = lpck.log_id
+        WHERE lpck.steamid64 IN (
+    """
+    sel_suffix = f"""
+        ){_excl}
+        GROUP BY lpck.steamid64, lpck.victim_class
+    """
+    upsert = """
+        INSERT OR REPLACE INTO player_classkills_agg (
+          steamid64, victim_class, log_count, total_kills, updated_at
+        ) VALUES (?, ?, ?, ?, ?)
+    """
+    for i in range(0, len(uniq), _PSA_CHUNK):
+        chunk = uniq[i : i + _PSA_CHUNK]
+        placeholders = ",".join("?" * len(chunk))
+        rows = conn.execute(sel_prefix + placeholders + sel_suffix, chunk).fetchall()
+        seen_sids: set[str] = set()
+        for row in rows:
+            if not row or not row[0] or not row[1]:
+                continue
+            sid = str(row[0]).strip()
+            vc = str(row[1]).strip().lower()
+            if not sid or not vc:
+                continue
+            seen_sids.add(sid)
+            conn.execute(
+                upsert,
+                (sid, vc, int(row[2] or 0), int(row[3] or 0), ts),
+            )
+        for sid in chunk:
+            if sid not in seen_sids:
+                conn.execute("DELETE FROM player_classkills_agg WHERE steamid64 = ?", (sid,))
+            else:
+                conn.execute(
+                    """
+                    DELETE FROM player_classkills_agg
+                    WHERE steamid64 = ?
+                      AND victim_class NOT IN (
+                        SELECT DISTINCT victim_class
+                        FROM log_player_classkills
+                        WHERE steamid64 = ?
+                      )
+                    """,
+                    (sid, sid),
+                )
+
+
+def refresh_player_classkills_agg_for_steamids(
+    conn: sqlite3.Connection, steamids: Sequence[str]
+) -> None:
+    """Recompute class-kill aggregate rows for the given SteamID64s."""
+    uniq = list(dict.fromkeys(s.strip() for s in steamids if s and str(s).strip()))
+    if not uniq:
+        return
+    ts = int(time.time())
+    conn.execute(f"SAVEPOINT {_PSA_SAVEPOINT}_ck")
+    try:
+        _refresh_player_classkills_agg_for_steamids_impl(conn, uniq, ts)
+        conn.execute(f"RELEASE SAVEPOINT {_PSA_SAVEPOINT}_ck")
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {_PSA_SAVEPOINT}_ck")
+        conn.execute(f"RELEASE SAVEPOINT {_PSA_SAVEPOINT}_ck")
+        raise
+
+
+def player_classkills_agg_nonempty(db_path: str | Path) -> bool:
+    """True if ``player_classkills_agg`` has at least one row (fast path available)."""
+    path = Path(db_path)
+    if not path.is_file():
+        return False
+    conn = connect_stats_db(path)
+    try:
+        row = conn.execute("SELECT 1 FROM player_classkills_agg LIMIT 1").fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
     """
     Full rebuild of ``player_stats_agg`` from ``log_players`` + ``logs``, excluding combined/merged logs.
     Run after schema upgrades or via ``python -m app.rebuild_agg``.
     """
     ts = int(time.time())
+    heal_subq = _player_stats_agg_healspread_subquery_sql("")
     with conn:
         conn.execute("DELETE FROM player_stats_agg")
         conn.execute(
@@ -1096,8 +1339,9 @@ def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
             INSERT INTO player_stats_agg (
               steamid64, log_count, wins, decided_logs, avg_dpm, avg_kdr, avg_kadr,
               avg_deaths, avg_killstreak,
-              total_kills, total_damage, total_ubers, total_drops, total_headshots, total_backstabs,
-              total_damage_taken, updated_at
+              total_kills, total_damage, total_deaths, total_killstreak,
+              total_ubers, total_drops, total_headshots, total_backstabs,
+              total_damage_taken, heal_log_count, total_heals, updated_at
             )
             SELECT
               lp.steamid64,
@@ -1111,19 +1355,25 @@ def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
               AVG(CAST(lp.longest_killstreak AS REAL)),
               SUM(lp.kills),
               SUM(lp.damage),
+              SUM(lp.deaths),
+              SUM(lp.longest_killstreak),
               SUM(lp.ubers),
               SUM(lp.drops),
               SUM(COALESCE(lp.headshots, 0)),
               SUM(COALESCE(lp.backstabs, 0)),
               SUM(lp.damage_taken),
+              COALESCE(MAX(hs.heal_log_count), 0),
+              COALESCE(MAX(hs.total_heals), 0),
               ?
             FROM logs l
             INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
+            LEFT JOIN ({heal_subq}) hs ON hs.steamid64 = lp.steamid64
             WHERE 1=1{_combined_logs.stats_log_exclusion_sql("l")}
             GROUP BY lp.steamid64
             """,
             (ts,),
         )
+    rebuild_player_classkills_agg(conn)
     row = conn.execute("SELECT COUNT(*) FROM player_stats_agg").fetchone()
     return int(row[0] or 0) if row else 0
 
@@ -1143,6 +1393,7 @@ def refresh_player_stats_agg_for_steamids(conn: sqlite3.Connection, steamids: Se
     conn.execute(f"SAVEPOINT {_PSA_SAVEPOINT}")
     try:
         _refresh_player_stats_agg_for_steamids_impl(conn, uniq, ts)
+        _refresh_player_classkills_agg_for_steamids_impl(conn, uniq, ts)
         conn.execute(f"RELEASE SAVEPOINT {_PSA_SAVEPOINT}")
     except Exception:
         conn.execute(f"ROLLBACK TO SAVEPOINT {_PSA_SAVEPOINT}")
@@ -1156,8 +1407,8 @@ def _refresh_player_stats_agg_for_steamids_impl(
     ts: int,
 ) -> None:
     # Combined log exclusion applied here must match rebuild_player_stats_agg.
-    # After deploying this change, run: python -m app.rebuild_agg
-    sel_prefix = """
+    # After deploying heal columns, run: python -m app.rebuild_agg
+    sel_prefix = f"""
         SELECT
           lp.steamid64,
           COUNT(*),
@@ -1170,13 +1421,18 @@ def _refresh_player_stats_agg_for_steamids_impl(
           AVG(CAST(lp.longest_killstreak AS REAL)),
           SUM(lp.kills),
           SUM(lp.damage),
+          SUM(lp.deaths),
+          SUM(lp.longest_killstreak),
           SUM(lp.ubers),
           SUM(lp.drops),
           SUM(COALESCE(lp.headshots, 0)),
           SUM(COALESCE(lp.backstabs, 0)),
-          SUM(lp.damage_taken)
+          SUM(lp.damage_taken),
+          COALESCE(MAX(hs.heal_log_count), 0),
+          COALESCE(MAX(hs.total_heals), 0)
         FROM logs l
         INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
+        LEFT JOIN (__HEAL_SUBQ__) hs ON hs.steamid64 = lp.steamid64
         WHERE lp.steamid64 IN (
     """
     _excl = _combined_logs.stats_log_exclusion_sql("l")
@@ -1188,15 +1444,22 @@ def _refresh_player_stats_agg_for_steamids_impl(
         INSERT OR REPLACE INTO player_stats_agg (
           steamid64, log_count, wins, decided_logs, avg_dpm, avg_kdr, avg_kadr,
           avg_deaths, avg_killstreak,
-          total_kills, total_damage, total_ubers, total_drops, total_headshots, total_backstabs,
-          total_damage_taken, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          total_kills, total_damage, total_deaths, total_killstreak,
+          total_ubers, total_drops, total_headshots, total_backstabs,
+          total_damage_taken, heal_log_count, total_heals, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     for i in range(0, len(uniq), _PSA_CHUNK):
         chunk = uniq[i : i + _PSA_CHUNK]
         placeholders = ",".join("?" * len(chunk))
-        sql = sel_prefix + placeholders + sel_suffix
-        rows = conn.execute(sql, chunk).fetchall()
+        heal_in = f" AND lph.healer_steamid64 IN ({placeholders})"
+        heal_subq = _player_stats_agg_healspread_subquery_sql(heal_in)
+        sql = (
+            sel_prefix.replace("__HEAL_SUBQ__", heal_subq)
+            + placeholders
+            + sel_suffix
+        )
+        rows = conn.execute(sql, chunk + chunk).fetchall()
         seen: set[str] = set()
         for row in rows:
             if not row or not row[0]:
@@ -1227,6 +1490,10 @@ def _refresh_player_stats_agg_for_steamids_impl(
                     int(row[13] or 0),
                     int(row[14] or 0),
                     int(row[15] or 0),
+                    int(row[16] or 0),
+                    int(row[17] or 0),
+                    int(row[18] or 0),
+                    int(row[19] or 0),
                     ts,
                 ),
             )
@@ -1256,6 +1523,24 @@ def flush_player_stats_agg(
         return 0
     pending_steamids.clear()
     return len(ids)
+
+
+def player_stats_agg_heals_populated(db_path: str | Path) -> bool:
+    """True when agg heal columns have been filled (run ``rebuild_agg`` after adding heals)."""
+    path = Path(db_path)
+    if not path.is_file():
+        return False
+    conn = connect_stats_db(path)
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(player_stats_agg)").fetchall()}
+        if "total_heals" not in cols:
+            return False
+        row = conn.execute(
+            "SELECT 1 FROM player_stats_agg WHERE total_heals > 0 LIMIT 1"
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
 
 
 def player_stats_agg_nonempty(db_path: str | Path) -> bool:

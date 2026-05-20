@@ -6,7 +6,13 @@ function leaderboardDefaultSortKey(lbType) {
   if (t === 'kdr') return 'avg_kdr';
   if (t === 'winrate') return 'win_rate';
   if (t === 'logs') return 'log_count';
-  if (t === 'ubers' || t === 'drops' || t === 'damage_taken' || t === 'avg_deaths' || t === 'avg_killstreak' || t === 'backstabs' || t === 'headshots') return 'primary_value';
+  if (
+    t === 'dpm' || t === 'kdr' || t === 'ubers' || t === 'drops' || t === 'damage_taken'
+    || t === 'avg_deaths' || t === 'avg_killstreak' || t === 'backstabs' || t === 'headshots'
+    || t === 'heals' || victimClassFromLbType(t)
+  ) {
+    return 'primary_value';
+  }
   return 'avg_dpm';
 }
 
@@ -45,8 +51,34 @@ function getLeaderboardPrimaryColumn(lbType, statScope) {
     if (ss === 'per_log') return { key: 'primary_value', label: 'Headshots / log', type: 'decimal2' };
     return { key: 'primary_value', label: 'Total headshots', type: 'int' };
   }
-  if (t === 'avg_deaths') return { key: 'primary_value', label: 'Deaths/log', type: 'decimal2' };
-  if (t === 'avg_killstreak') return { key: 'primary_value', label: 'Avg killstreak', type: 'decimal2' };
+  if (t === 'heals') {
+    if (ss === 'per_log') return { key: 'primary_value', label: 'Heals / log', type: 'decimal2' };
+    return { key: 'primary_value', label: 'Heals (total)', type: 'number' };
+  }
+  if (t === 'dpm') {
+    if (ss === 'per_log') return { key: 'primary_value', label: 'DPM / log', type: 'decimal2' };
+    return { key: 'primary_value', label: 'Damage (total)', type: 'number' };
+  }
+  if (t === 'kdr') {
+    if (ss === 'per_log') return { key: 'primary_value', label: 'KDR / log', type: 'decimal2' };
+    return { key: 'primary_value', label: 'KDR (total)', type: 'decimal2' };
+  }
+  if (t === 'avg_deaths') {
+    if (ss === 'per_log') return { key: 'primary_value', label: 'Deaths / log', type: 'decimal2' };
+    return { key: 'primary_value', label: 'Deaths (total)', type: 'number' };
+  }
+  if (t === 'avg_killstreak') {
+    if (ss === 'per_log') return { key: 'primary_value', label: 'Killstreak / log', type: 'decimal2' };
+    return { key: 'primary_value', label: 'Killstreak (total)', type: 'number' };
+  }
+  var vc = victimClassFromLbType(t);
+  if (vc) {
+    var clsLabel = LOGMATCH_CLASS_LABEL[vc] || vc;
+    if (ss === 'per_log') {
+      return { key: 'primary_value', label: clsLabel + ' kills / log', type: 'decimal2' };
+    }
+    return { key: 'primary_value', label: clsLabel + ' kills (total)', type: 'number' };
+  }
   return null;
 }
 
@@ -189,7 +221,11 @@ function bindLeaderboardCsvDownload(container) {
     var sorted = getSortedLeaderboardRows(rows, lb, sc);
     var csv = buildLeaderboardCsvContent(sorted, lb, sc);
     var d = new Date();
-    var scopePart = (lb === 'ubers' || lb === 'drops' || lb === 'damage_taken' || lb === 'winrate' || lb === 'backstabs' || lb === 'headshots') ? '-' + String(sc).replace(/[^a-z0-9_-]/gi, '_') : '';
+    var scopePart = (
+      lb === 'dpm' || lb === 'kdr' || lb === 'ubers' || lb === 'drops' || lb === 'damage_taken'
+      || lb === 'winrate' || lb === 'backstabs' || lb === 'headshots' || lb === 'heals'
+      || lb === 'avg_deaths' || lb === 'avg_killstreak'
+    ) ? '-' + String(sc).replace(/[^a-z0-9_-]/gi, '_') : '';
     var fn = 'tf2-stats-leaderboard-' + lb + scopePart + '-' + d.getFullYear() + '-' + (d.getMonth() + 1 < 10 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate() + '.csv';
     triggerCsvDownload(fn, csv);
   });

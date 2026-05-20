@@ -27,6 +27,9 @@
       --marked: #ffdd33;
       --word-cloud-fill: #1a1a1a;
       --word-cloud-outline: #ffffff;
+      --tab-selected-bg: #111;
+      --tab-selected-text: #fff;
+      --tab-selected-border: #111;
       --sans-font: "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --heading-font: "Archivo Black", var(--sans-font);
     }
@@ -53,6 +56,9 @@
       --marked: #665200;
       --word-cloud-fill: #f2f4f6;
       --word-cloud-outline: #000000;
+      --tab-selected-bg: #000;
+      --tab-selected-text: #fff;
+      --tab-selected-border: #e8e8e8;
     }
     /* Theme is controlled by data-theme (set in head script). color-scheme for form controls/scrollbars. */
     html { color-scheme: light; }
@@ -868,7 +874,7 @@
       margin: 0 0 0.45rem;
       flex-wrap: wrap;
     }
-    /* Tab-like metric toggles: unselected = soft teal fill; selected = “inset” panel + ring (easy to read at a glance, esp. on mobile). */
+    /* Tab-like metric toggles: unselected = soft teal chip; selected = high-contrast black + white text. */
     .stats-trend-btn {
       margin: 0;
       padding: 0.3rem 0.55rem;
@@ -876,24 +882,16 @@
       font-weight: 500;
       border-radius: 6px;
       cursor: pointer;
-      /* Unselected — filled chip (distinct from the selected “inset” state) */
       background: color-mix(in srgb, var(--link) 22%, var(--bg));
       color: var(--text);
       border: 1px solid color-mix(in srgb, var(--link) 40%, var(--border));
     }
     .stats-trend-btn.active {
-      background: var(--input-bg);
-      color: var(--link);
-      border: 2px solid var(--link);
+      background: var(--tab-selected-bg);
+      color: var(--tab-selected-text);
+      border: 2px solid var(--tab-selected-border);
       font-weight: 700;
-      box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent);
-    }
-    [data-theme="dark"] .stats-trend-btn.active {
-      color: #f2fafb;
-      text-shadow: 0 0 0.5px color-mix(in srgb, var(--link) 50%, #000);
-      box-shadow:
-        inset 0 1px 0 color-mix(in srgb, #fff 7%, transparent),
-        inset 0 -1px 0 color-mix(in srgb, #000 25%, transparent);
+      box-shadow: 0 1px 2px color-mix(in srgb, #000 18%, transparent);
     }
     /* Fine pointers only: avoids sticky :hover on touch after tap (iOS / some WebKit). */
     @media (hover: hover) and (pointer: fine) {
@@ -902,24 +900,15 @@
         border-color: var(--link);
         color: var(--text);
       }
-      /* Hovered + selected: distinct from unselected chips and from the resting selected state */
       .stats-trend-btn.active:hover,
       .stats-trend-btn.active:focus-visible {
-        background: color-mix(in srgb, var(--link) 24%, var(--input-bg));
-        border-color: var(--link);
-        color: var(--text);
+        background: color-mix(in srgb, var(--link) 18%, var(--tab-selected-bg));
+        border-color: var(--tab-selected-border);
+        color: var(--tab-selected-text);
         font-weight: 700;
         box-shadow:
-          0 0 0 1px color-mix(in srgb, var(--link) 55%, transparent),
-          inset 0 1px 0 color-mix(in srgb, #fff 14%, transparent);
-      }
-      [data-theme="dark"] .stats-trend-btn.active:hover,
-      [data-theme="dark"] .stats-trend-btn.active:focus-visible {
-        color: #eaffff;
-        box-shadow:
-          0 0 0 1px color-mix(in srgb, var(--link) 65%, transparent),
-          0 0 12px color-mix(in srgb, var(--link) 25%, transparent),
-          inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent);
+          0 0 0 1px color-mix(in srgb, var(--link) 45%, transparent),
+          0 1px 3px color-mix(in srgb, #000 22%, transparent);
       }
     }
     .stats-trend-btn:focus-visible {
@@ -929,24 +918,70 @@
     .stats-trend-btn.active:focus-visible {
       outline-offset: 3px;
     }
-    .lb-type-strip {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.35rem;
+    .lb-stat-field {
+      display: block;
       margin-bottom: 0.75rem;
     }
-    /* Only lay out when visible; plain ``[hidden]`` is otherwise overridden by ``display: flex``. */
-    .lb-stat-scope-strip:not([hidden]) {
+    .lb-stat-select-wrap {
       display: flex;
-      flex-wrap: wrap;
       align-items: center;
-      gap: 0.35rem;
-      margin-bottom: 0.75rem;
+      gap: 0.4rem;
+      margin-top: 0.25rem;
+      max-width: 100%;
     }
-    .lb-stat-scope-strip .lb-stat-scope-label {
-      font-size: 0.92em;
-      color: var(--muted, #666);
-      margin-right: 0.15rem;
+    .lb-stat-icon-preview {
+      flex: 0 0 auto;
+      line-height: 0;
+    }
+    .lb-stat-icon-preview .lb-stat-class-icon {
+      display: block;
+    }
+    .lb-stat-select-inner {
+      position: relative;
+      flex: 1 1 auto;
+      min-width: 0;
+      max-width: 100%;
+    }
+    .lb-stat-display {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      padding: 0 1.75rem 0 0.45rem;
+      pointer-events: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      z-index: 1;
+    }
+    .lb-stat-select-inner.is-open .lb-stat-display {
+      display: none;
+    }
+    .lb-stat-select-inner:not(.is-open) .lb-stat-select {
+      color: transparent;
+    }
+    .lb-stat-select {
+      display: block;
+      width: 100%;
+      min-width: min(100%, 20rem);
+      max-width: 100%;
+    }
+    .lb-stat-select-inner.is-open .lb-stat-select {
+      color: var(--text);
+    }
+    .lb-stat-select option:not(:disabled) {
+      font-size: 0.95em;
+      color: var(--text);
+    }
+    .lb-stat-select option.lb-stat-heading {
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+    .lb-stat-select option.lb-stat-heading.lb-stat-indent-1 {
+      font-weight: 500;
+    }
+    .lb-stat-select option.lb-stat-indent-2 {
+      font-size: 0.96em;
     }
     .home-layout-sort-item .home-layout-sort-label {
       display: flex;

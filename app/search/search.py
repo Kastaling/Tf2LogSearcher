@@ -14,7 +14,12 @@ from app.chat_db import CHAT_ALIAS_FTS_READY_META_KEY
 from app.config import CHAT_DB_PATH, CHAT_SEARCH_MAX_RESULTS_STEAMID, STATS_DB_PATH
 from app.gamemodes import gamemode_sql_filter, normalize_gamemode, player_count_matches_gamemode
 from app.log_utils import winner_team_from_log as _winner_team_from_log
-from app.stats_db import player_stats_agg_nonempty, stats_log_ids_for_player
+from app.stats_db import (
+    player_classkills_agg_nonempty,
+    player_stats_agg_heals_populated,
+    player_stats_agg_nonempty,
+    stats_log_ids_for_player,
+)
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
 from app.weapon_names import get_weapon_name
 
@@ -48,18 +53,42 @@ STATS_SEARCH_DEFAULT_CLASSES: tuple[str, ...] = tuple(sorted(_LOGMATCH_CLASS_TYP
 # Stats leaderboard: extend `_LEADERBOARD_TYPES` to add new boards without changing query assembly.
 _LEADERBOARD_TYPES: dict[str, dict[str, Any]] = {
     "dpm": {
-        "label": "Avg DPM",
-        "order_expr": "AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END) DESC",
-        "select_expr": "AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END) AS primary_value",
-        "value_key": "avg_dpm",
-        "format": "float2",
+        "label": "DPM",
+        "scopes": {
+            "total": {
+                "order_expr": "SUM(lp.damage) DESC",
+                "select_expr": "SUM(lp.damage) AS primary_value",
+                "value_key": "total_damage",
+                "format": "int",
+            },
+            "per_log": {
+                "order_expr": "AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END) DESC",
+                "select_expr": "AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END) AS primary_value",
+                "value_key": "avg_dpm",
+                "format": "float2",
+            },
+        },
     },
     "kdr": {
-        "label": "Avg KDR",
-        "order_expr": "AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END) DESC",
-        "select_expr": "AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END) AS primary_value",
-        "value_key": "avg_kdr",
-        "format": "float2",
+        "label": "KDR",
+        "scopes": {
+            "total": {
+                "order_expr": """
+                    (CAST(SUM(lp.kills) AS REAL) / NULLIF(SUM(lp.deaths), 0)) DESC NULLS LAST
+                """,
+                "select_expr": """
+                    (CAST(SUM(lp.kills) AS REAL) / NULLIF(SUM(lp.deaths), 0)) AS primary_value
+                """,
+                "value_key": "aggregate_kdr",
+                "format": "float2",
+            },
+            "per_log": {
+                "order_expr": "AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END) DESC",
+                "select_expr": "AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END) AS primary_value",
+                "value_key": "avg_kdr",
+                "format": "float2",
+            },
+        },
     },
     "winrate": {
         "label": "Win Rate",
@@ -149,18 +178,38 @@ _LEADERBOARD_TYPES: dict[str, dict[str, Any]] = {
         },
     },
     "avg_deaths": {
-        "label": "Deaths per Log",
-        "order_expr": "AVG(CAST(lp.deaths AS REAL)) DESC",
-        "select_expr": "AVG(CAST(lp.deaths AS REAL)) AS primary_value",
-        "value_key": "avg_deaths",
-        "format": "float2",
+        "label": "Deaths",
+        "scopes": {
+            "total": {
+                "order_expr": "SUM(lp.deaths) DESC",
+                "select_expr": "SUM(lp.deaths) AS primary_value",
+                "value_key": "total_deaths",
+                "format": "int",
+            },
+            "per_log": {
+                "order_expr": "AVG(CAST(lp.deaths AS REAL)) DESC",
+                "select_expr": "AVG(CAST(lp.deaths AS REAL)) AS primary_value",
+                "value_key": "avg_deaths",
+                "format": "float2",
+            },
+        },
     },
     "avg_killstreak": {
-        "label": "Avg Killstreak",
-        "order_expr": "AVG(CAST(lp.longest_killstreak AS REAL)) DESC",
-        "select_expr": "AVG(CAST(lp.longest_killstreak AS REAL)) AS primary_value",
-        "value_key": "avg_killstreak",
-        "format": "float2",
+        "label": "Killstreak",
+        "scopes": {
+            "total": {
+                "order_expr": "SUM(lp.longest_killstreak) DESC",
+                "select_expr": "SUM(lp.longest_killstreak) AS primary_value",
+                "value_key": "total_killstreak",
+                "format": "int",
+            },
+            "per_log": {
+                "order_expr": "AVG(CAST(lp.longest_killstreak AS REAL)) DESC",
+                "select_expr": "AVG(CAST(lp.longest_killstreak AS REAL)) AS primary_value",
+                "value_key": "avg_killstreak",
+                "format": "float2",
+            },
+        },
     },
     "backstabs": {
         "label": "Backstabs",
@@ -196,7 +245,76 @@ _LEADERBOARD_TYPES: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "heals": {
+        "label": "Heals",
+        "scopes": {
+            "total": {
+                "order_expr": "h.total_heals DESC",
+                "select_expr": "h.total_heals AS primary_value",
+                "value_key": "total_heals",
+                "format": "int",
+            },
+            "per_log": {
+                "order_expr": "h.avg_heals_per_log DESC",
+                "select_expr": "h.avg_heals_per_log AS primary_value",
+                "value_key": "avg_heals_per_log",
+                "format": "float2",
+            },
+        },
+    },
 }
+
+_CLASSKILL_VICTIM_CLASSES: tuple[str, ...] = (
+    "scout",
+    "soldier",
+    "pyro",
+    "demoman",
+    "heavyweapons",
+    "engineer",
+    "medic",
+    "sniper",
+    "spy",
+)
+_CLASSKILL_VICTIM_LABELS: dict[str, str] = {
+    "scout": "Scout",
+    "soldier": "Soldier",
+    "pyro": "Pyro",
+    "demoman": "Demoman",
+    "heavyweapons": "Heavy",
+    "engineer": "Engineer",
+    "medic": "Medic",
+    "sniper": "Sniper",
+    "spy": "Spy",
+}
+
+
+def _classkill_leaderboard_types() -> dict[str, dict[str, Any]]:
+    """Nine victim-class kill boards (``kills_scout``, ``kills_soldier``, …)."""
+    out: dict[str, dict[str, Any]] = {}
+    for vc in _CLASSKILL_VICTIM_CLASSES:
+        label = f"{_CLASSKILL_VICTIM_LABELS[vc]} kills"
+        out[f"kills_{vc}"] = {
+            "label": label,
+            "victim_class": vc,
+            "scopes": {
+                "total": {
+                    "order_expr": "ck.total_kills DESC",
+                    "select_expr": "ck.total_kills AS primary_value",
+                    "value_key": "total_class_kills",
+                    "format": "int",
+                },
+                "per_log": {
+                    "order_expr": "ck.avg_kills_per_log DESC",
+                    "select_expr": "ck.avg_kills_per_log AS primary_value",
+                    "value_key": "avg_class_kills_per_log",
+                    "format": "float2",
+                },
+            },
+        }
+    return out
+
+
+_LEADERBOARD_TYPES.update(_classkill_leaderboard_types())
 
 LEADERBOARD_TYPE_KEYS: tuple[str, ...] = tuple(_LEADERBOARD_TYPES.keys())
 # Ubers/drops/damage_taken: ``total`` / ``per_log``. Win rate: ``highest`` (best first) / ``lowest`` (worst first).
@@ -225,7 +343,207 @@ def _leaderboard_resolve_spec(lb_type: str, stat_scope: str) -> dict[str, Any]:
             ss = next(iter(valid))
     out = {k: v for k, v in base.items() if k != "scopes"}
     out.update(scopes[ss])
+    if "victim_class" in base:
+        out["victim_class"] = base["victim_class"]
     return out
+
+
+def _leaderboard_victim_class_from_lb_key(lb_key: str) -> str | None:
+    """Whitelist victim class for ``kills_*`` leaderboard keys (no user-controlled SQL)."""
+    if not lb_key.startswith("kills_"):
+        return None
+    vc = lb_key[6:].strip().lower()
+    if vc in _CLASSKILL_VICTIM_CLASSES:
+        return vc
+    return None
+
+
+def _leaderboard_supports_total_per_log(lb_key: str) -> bool:
+    if _leaderboard_victim_class_from_lb_key(lb_key):
+        return True
+    return lb_key in (
+        "dpm",
+        "kdr",
+        "ubers",
+        "drops",
+        "damage_taken",
+        "backstabs",
+        "headshots",
+        "heals",
+        "avg_deaths",
+        "avg_killstreak",
+    )
+
+
+def _leaderboard_scope_sql_for_classkills(
+    gamemode: str,
+    date_from: date | None,
+    date_to: date | None,
+    map_query: str,
+    class_filter: str,
+) -> tuple[str, list[Any]]:
+    """Scope clauses for ``log_player_classkills`` (alias ``lpck``)."""
+    sql, params = _leaderboard_scope_sql(gamemode, date_from, date_to, map_query, class_filter)
+    return (
+        sql.replace("lp.log_id", "lpck.log_id").replace("lp.steamid64", "lpck.steamid64"),
+        params,
+    )
+
+
+def _stats_leaderboard_classkills_sql(
+    stat_scope: str,
+    ck_scope_sql: str,
+    lp_scope_sql: str,
+) -> str:
+    """Leaderboard SQL from ``log_player_classkills`` for one victim class (``?`` = victim_class)."""
+    if stat_scope == "per_log":
+        primary_sel = "ck.avg_kills_per_log AS primary_value"
+        order_expr = "ck.avg_kills_per_log DESC NULLS LAST"
+    else:
+        primary_sel = "ck.total_kills AS primary_value"
+        order_expr = "ck.total_kills DESC NULLS LAST"
+    return f"""
+        WITH classkill_per_log AS (
+          SELECT
+            lpck.steamid64,
+            lpck.log_id,
+            SUM(lpck.kills) AS kills_in_log
+          FROM log_player_classkills lpck
+          INNER JOIN logs l ON l.log_id = lpck.log_id
+          WHERE lpck.victim_class = ?
+            {ck_scope_sql}
+          GROUP BY lpck.steamid64, lpck.log_id
+        ),
+        ck_agg AS (
+          SELECT
+            steamid64,
+            COUNT(*) AS log_count,
+            SUM(kills_in_log) AS total_kills,
+            AVG(kills_in_log) AS avg_kills_per_log
+          FROM classkill_per_log
+          GROUP BY steamid64
+        ),
+        lp_stats AS (
+          SELECT
+            lp.steamid64,
+            AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END) AS avg_dpm,
+            AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END) AS avg_kdr,
+            AVG(CASE WHEN lp.kadr IS NOT NULL THEN lp.kadr END) AS avg_kadr,
+            SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END) AS decided_logs,
+            SUM(lp.ubers) AS total_ubers,
+            SUM(lp.drops) AS total_drops,
+            SUM(lp.headshots) AS total_headshots,
+            SUM(lp.backstabs) AS total_backstabs,
+            SUM(lp.damage_taken) AS total_damage_taken,
+            AVG(CAST(lp.deaths AS REAL)) AS avg_deaths,
+            AVG(CAST(lp.longest_killstreak AS REAL)) AS avg_killstreak
+          FROM logs l
+          INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
+          WHERE 1=1
+            {lp_scope_sql}
+          GROUP BY lp.steamid64
+        )
+        SELECT
+          ck.steamid64,
+          ck.log_count,
+          ls.avg_dpm,
+          ls.avg_kdr,
+          ls.avg_kadr,
+          ls.wins,
+          ls.decided_logs,
+          ls.total_ubers,
+          ls.total_drops,
+          ls.total_headshots,
+          ls.total_backstabs,
+          ls.total_damage_taken,
+          ls.avg_deaths,
+          ls.avg_killstreak,
+          {primary_sel}
+        FROM ck_agg ck
+        LEFT JOIN lp_stats ls ON ls.steamid64 = ck.steamid64
+        WHERE ck.log_count >= ?
+        ORDER BY {order_expr}
+        LIMIT ?
+    """
+
+
+def _stats_leaderboard_heals_sql(stat_scope: str, scope_sql: str) -> str:
+    """Leaderboard SQL from ``log_player_healspread`` (healing dealt, not taken)."""
+    if stat_scope == "per_log":
+        primary_sel = "h.avg_heals_per_log AS primary_value"
+        order_expr = "h.avg_heals_per_log DESC NULLS LAST"
+    else:
+        primary_sel = "h.total_heals AS primary_value"
+        order_expr = "h.total_heals DESC NULLS LAST"
+    return f"""
+        WITH heal_per_log AS (
+          SELECT
+            lph.healer_steamid64 AS steamid64,
+            lph.log_id,
+            SUM(lph.healing) AS heal_in_log
+          FROM log_player_healspread lph
+          INNER JOIN logs l ON l.log_id = lph.log_id
+          INNER JOIN log_players lp
+            ON lp.log_id = lph.log_id
+           AND lp.steamid64 = lph.healer_steamid64
+           AND lp.team IN ('Red', 'Blue')
+          WHERE 1=1
+            {scope_sql}
+          GROUP BY lph.healer_steamid64, lph.log_id
+        ),
+        heal_agg AS (
+          SELECT
+            steamid64,
+            COUNT(*) AS log_count,
+            SUM(heal_in_log) AS total_heals,
+            AVG(heal_in_log) AS avg_heals_per_log
+          FROM heal_per_log
+          GROUP BY steamid64
+        ),
+        lp_stats AS (
+          SELECT
+            lp.steamid64,
+            AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END) AS avg_dpm,
+            AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END) AS avg_kdr,
+            AVG(CASE WHEN lp.kadr IS NOT NULL THEN lp.kadr END) AS avg_kadr,
+            SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END) AS decided_logs,
+            SUM(lp.ubers) AS total_ubers,
+            SUM(lp.drops) AS total_drops,
+            SUM(lp.headshots) AS total_headshots,
+            SUM(lp.backstabs) AS total_backstabs,
+            SUM(lp.damage_taken) AS total_damage_taken,
+            AVG(CAST(lp.deaths AS REAL)) AS avg_deaths,
+            AVG(CAST(lp.longest_killstreak AS REAL)) AS avg_killstreak
+          FROM logs l
+          INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
+          WHERE 1=1
+            {scope_sql}
+          GROUP BY lp.steamid64
+        )
+        SELECT
+          h.steamid64,
+          h.log_count,
+          ls.avg_dpm,
+          ls.avg_kdr,
+          ls.avg_kadr,
+          ls.wins,
+          ls.decided_logs,
+          ls.total_ubers,
+          ls.total_drops,
+          ls.total_headshots,
+          ls.total_backstabs,
+          ls.total_damage_taken,
+          ls.avg_deaths,
+          ls.avg_killstreak,
+          {primary_sel}
+        FROM heal_agg h
+        LEFT JOIN lp_stats ls ON ls.steamid64 = h.steamid64
+        WHERE h.log_count >= ?
+        ORDER BY {order_expr}
+        LIMIT ?
+    """
 
 
 def _leaderboard_agg_order_clause(lb_key: str, stat_scope: str) -> str | None:
@@ -250,18 +568,40 @@ def _leaderboard_agg_order_clause(lb_key: str, stat_scope: str) -> str | None:
         if stat_scope == "per_log":
             return "(CAST(total_headshots AS REAL) / NULLIF(log_count, 0)) DESC NULLS LAST"
         return "total_headshots DESC NULLS LAST"
+    if lb_key == "heals":
+        if stat_scope == "per_log":
+            return "(CAST(total_heals AS REAL) / NULLIF(heal_log_count, 0)) DESC NULLS LAST"
+        return "total_heals DESC NULLS LAST"
     if lb_key == "winrate":
         if stat_scope == "lowest":
             return "(CAST(wins AS REAL) / NULLIF(decided_logs, 0)) ASC NULLS LAST"
         return "(CAST(wins AS REAL) / NULLIF(decided_logs, 0)) DESC NULLS LAST"
-    static: dict[str, str] = {
-        "dpm": "avg_dpm DESC NULLS LAST",
-        "kdr": "avg_kdr DESC NULLS LAST",
-        "logs": "log_count DESC",
-        "avg_deaths": "avg_deaths DESC NULLS LAST",
-        "avg_killstreak": "avg_killstreak DESC NULLS LAST",
-    }
-    return static.get(lb_key)
+    if lb_key == "dpm":
+        if stat_scope == "per_log":
+            return "avg_dpm DESC NULLS LAST"
+        return "total_damage DESC NULLS LAST"
+    if lb_key == "kdr":
+        if stat_scope == "per_log":
+            return "avg_kdr DESC NULLS LAST"
+        return "(CAST(total_kills AS REAL) / NULLIF(total_deaths, 0)) DESC NULLS LAST"
+    if lb_key == "avg_deaths":
+        if stat_scope == "per_log":
+            return "avg_deaths DESC NULLS LAST"
+        return "total_deaths DESC NULLS LAST"
+    if lb_key == "avg_killstreak":
+        if stat_scope == "per_log":
+            return "avg_killstreak DESC NULLS LAST"
+        return "total_killstreak DESC NULLS LAST"
+    if lb_key == "logs":
+        return "log_count DESC"
+    vc = _leaderboard_victim_class_from_lb_key(lb_key)
+    if vc:
+        if stat_scope == "per_log":
+            return (
+                "(CAST(total_kills AS REAL) / NULLIF(log_count, 0)) DESC NULLS LAST"
+            )
+        return "total_kills DESC NULLS LAST"
+    return None
 
 
 def _class_playtime_for_logmatch(stats: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2497,6 +2837,43 @@ def _profile_countable_words_in_message(msg: str) -> Counter[str]:
     return c
 
 
+def _profile_fetch_log_date_ts_by_log(
+    conn: sqlite3.Connection,
+    steamid64: str,
+) -> dict[int, int | None]:
+    """One row per log the player chatted in (no message scan, no sort)."""
+    rows = conn.execute(
+        """
+        SELECT cl.log_id, cl.log_date_ts
+        FROM chat_logs cl
+        WHERE EXISTS (
+            SELECT 1
+            FROM chat_messages m
+            WHERE m.log_id = cl.log_id AND m.steamid64 = ?
+        )
+        """,
+        (steamid64,),
+    ).fetchall()
+    out: dict[int, int | None] = {}
+    for log_id_raw, log_date_ts in rows:
+        try:
+            log_id = int(log_id_raw)
+        except (TypeError, ValueError):
+            continue
+        out[log_id] = int(log_date_ts) if log_date_ts is not None else None
+    return out
+
+
+def _profile_latest_message_key(
+    log_date_ts_by_log: dict[int, int | None],
+    log_id: int,
+    message_idx: int,
+) -> tuple[int, int, int, int]:
+    """Sortable key for the chronologically latest message (ties: higher log_id / message_idx)."""
+    ts = log_date_ts_by_log.get(log_id)
+    return (1 if ts is not None else 0, ts if ts is not None else 0, log_id, message_idx)
+
+
 def _profile_peak_log_id_for_word(
     per_log: dict[int, int],
     log_date_ts_by_log: dict[int, int | None],
@@ -2543,13 +2920,13 @@ def _profile_fetch_favorite_words(
         conn = _sqlite_connect_ro(path)
         try:
             conn.execute("PRAGMA cache_size=-32768")
+            log_date_ts_by_log = _profile_fetch_log_date_ts_by_log(conn, sid)
             rows = conn.execute(
                 """
-                SELECT m.log_id, m.message_idx, m.msg, cl.log_date_ts
-                FROM chat_messages m
-                JOIN chat_logs cl ON cl.log_id = m.log_id
-                WHERE m.steamid64 = ?
-                ORDER BY COALESCE(cl.log_date_ts, 0) ASC, m.log_id ASC, m.message_idx ASC
+                SELECT log_id, message_idx, msg
+                FROM chat_messages
+                WHERE steamid64 = ?
+                ORDER BY log_id ASC, message_idx ASC
                 """,
                 (sid,),
             ).fetchall()
@@ -2564,15 +2941,15 @@ def _profile_fetch_favorite_words(
     counts: Counter[str] = Counter()
     total_words = 0
     per_log_word: dict[str, dict[int, int]] = {}
-    log_date_ts_by_log: dict[int, int | None] = {}
     latest_log_for_word: dict[str, int] = {}
+    latest_key_for_word: dict[str, tuple[int, int, int, int]] = {}
 
-    for log_id_raw, _message_idx_raw, msg, log_date_ts in rows:
+    for log_id_raw, message_idx_raw, msg in rows:
         try:
             log_id = int(log_id_raw)
+            message_idx = int(message_idx_raw)
         except (TypeError, ValueError):
             continue
-        log_date_ts_by_log[log_id] = int(log_date_ts) if log_date_ts is not None else None
         if not msg:
             continue
         wcount = _profile_countable_words_in_message(msg)
@@ -2583,7 +2960,11 @@ def _profile_fetch_favorite_words(
         for tok, n in wcount.items():
             by_log = per_log_word.setdefault(tok, {})
             by_log[log_id] = by_log.get(log_id, 0) + n
-            latest_log_for_word[tok] = log_id
+            msg_key = _profile_latest_message_key(log_date_ts_by_log, log_id, message_idx)
+            prev_key = latest_key_for_word.get(tok)
+            if prev_key is None or msg_key > prev_key:
+                latest_key_for_word[tok] = msg_key
+                latest_log_for_word[tok] = log_id
 
     if not counts or total_words <= 0:
         return []
@@ -2686,17 +3067,38 @@ def _stats_leaderboard_from_agg(
     """Serve global leaderboard from ``player_stats_agg`` (instant vs full scan of ``log_players``)."""
     ss_eff = (
         stat_scope
-        if lb_key in ("ubers", "drops", "damage_taken", "winrate", "backstabs", "headshots")
+        if lb_key
+        in (
+            "dpm",
+            "kdr",
+            "ubers",
+            "drops",
+            "damage_taken",
+            "winrate",
+            "backstabs",
+            "headshots",
+            "heals",
+            "avg_deaths",
+            "avg_killstreak",
+        )
         else "total"
     )
     ord_clause = _leaderboard_agg_order_clause(lb_key, ss_eff)
     if ord_clause is None:
         raise RuntimeError("Unknown leaderboard type.")
     fmt = spec["format"]
+    if lb_key == "heals":
+        min_col = "heal_log_count"
+        extra_where = " AND total_heals > 0"
+    else:
+        min_col = "log_count"
+        extra_where = ""
     main_sql = f"""
         SELECT
           steamid64,
           log_count,
+          heal_log_count,
+          total_heals,
           wins,
           decided_logs,
           avg_dpm,
@@ -2706,11 +3108,15 @@ def _stats_leaderboard_from_agg(
           total_drops,
           total_headshots,
           total_backstabs,
+          total_damage,
           total_damage_taken,
+          total_kills,
+          total_deaths,
+          total_killstreak,
           avg_deaths,
           avg_killstreak
         FROM player_stats_agg
-        WHERE log_count >= ?
+        WHERE {min_col} >= ?{extra_where}
         ORDER BY {ord_clause}
         LIMIT ?
     """
@@ -2738,14 +3144,25 @@ def _stats_leaderboard_from_agg(
         sid = str(r["steamid64"] or "").strip()
         if sid:
             steam_ids.append(sid)
-        log_count = int(r["log_count"] or 0)
+        if lb_key == "heals":
+            log_count = int(r["heal_log_count"] or 0)
+        else:
+            log_count = int(r["log_count"] or 0)
         wins = int(r["wins"] or 0)
         decided = int(r["decided_logs"] or 0)
         win_rate = round(wins / decided, 6) if decided > 0 else None
         if lb_key == "dpm":
-            pv_raw = r["avg_dpm"]
+            if ss_eff == "per_log":
+                pv_raw = r["avg_dpm"]
+            else:
+                pv_raw = r["total_damage"]
         elif lb_key == "kdr":
-            pv_raw = r["avg_kdr"]
+            if ss_eff == "per_log":
+                pv_raw = r["avg_kdr"]
+            else:
+                tk_i = int(r["total_kills"] or 0)
+                td_i = int(r["total_deaths"] or 0)
+                pv_raw = (float(tk_i) / float(td_i)) if td_i > 0 else None
         elif lb_key == "winrate":
             pv_raw = (float(wins) / float(decided)) if decided > 0 else None
         elif lb_key == "logs":
@@ -2785,10 +3202,23 @@ def _stats_leaderboard_from_agg(
                 pv_raw = (float(th_i) / float(lc_i)) if lc_i > 0 else None
             else:
                 pv_raw = r["total_headshots"]
+        elif lb_key == "heals":
+            if ss_eff == "per_log":
+                hl_i = int(r["heal_log_count"] or 0)
+                th_i = int(r["total_heals"] or 0)
+                pv_raw = (float(th_i) / float(hl_i)) if hl_i > 0 else None
+            else:
+                pv_raw = r["total_heals"]
         elif lb_key == "avg_deaths":
-            pv_raw = r["avg_deaths"]
+            if ss_eff == "per_log":
+                pv_raw = r["avg_deaths"]
+            else:
+                pv_raw = r["total_deaths"]
         elif lb_key == "avg_killstreak":
-            pv_raw = r["avg_killstreak"]
+            if ss_eff == "per_log":
+                pv_raw = r["avg_killstreak"]
+            else:
+                pv_raw = r["total_killstreak"]
         else:
             pv_raw = None
         primary_value: float | int | None
@@ -2831,6 +3261,120 @@ def _stats_leaderboard_from_agg(
     return out, total_logs
 
 
+def _stats_leaderboard_from_classkills_agg(
+    lb_key: str,
+    victim_class: str,
+    stat_scope: str,
+    ml: int,
+    spec: dict[str, Any],
+    path: Path,
+    profile_sql: str,
+    profile_params: list[Any],
+) -> tuple[list[dict[str, Any]], int]:
+    """Global kills-by-victim-class leaderboard from ``player_classkills_agg``."""
+    ss_eff = stat_scope if stat_scope in ("total", "per_log") else "total"
+    if ss_eff == "per_log":
+        ord_clause = (
+            "(CAST(pca.total_kills AS REAL) / NULLIF(pca.log_count, 0)) DESC NULLS LAST"
+        )
+    else:
+        ord_clause = "pca.total_kills DESC NULLS LAST"
+    fmt = spec["format"]
+    main_sql = f"""
+        SELECT
+          pca.steamid64,
+          pca.log_count,
+          pca.total_kills,
+          psa.wins,
+          psa.decided_logs,
+          psa.avg_dpm,
+          psa.avg_kdr,
+          psa.avg_kadr,
+          psa.total_ubers,
+          psa.total_drops,
+          psa.total_headshots,
+          psa.total_backstabs,
+          psa.total_damage_taken,
+          psa.avg_deaths,
+          psa.avg_killstreak
+        FROM player_classkills_agg pca
+        LEFT JOIN player_stats_agg psa ON psa.steamid64 = pca.steamid64
+        WHERE pca.victim_class = ?
+          AND pca.log_count >= ?
+          AND pca.total_kills > 0
+        ORDER BY {ord_clause}
+        LIMIT ?
+    """
+    count_fast_sql = f"""
+        SELECT COUNT(*)
+        FROM logs l
+        WHERE 1=1
+          {profile_sql}
+    """
+    conn = _sqlite_connect_ro(path)
+    _configure_sqlite_leaderboard_read(conn)
+    conn.row_factory = sqlite3.Row
+    try:
+        total_logs = int(
+            conn.execute(count_fast_sql, tuple(profile_params)).fetchone()[0] or 0
+        )
+        cur = conn.execute(main_sql, (victim_class, ml, LEADERBOARD_MAX_ROWS))
+        raw_rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    out: list[dict[str, Any]] = []
+    steam_ids: list[str] = []
+    for r in raw_rows:
+        sid = str(r["steamid64"] or "").strip()
+        if sid:
+            steam_ids.append(sid)
+        log_count = int(r["log_count"] or 0)
+        wins = int(r["wins"] or 0)
+        decided = int(r["decided_logs"] or 0)
+        win_rate = round(wins / decided, 6) if decided > 0 else None
+        if ss_eff == "per_log":
+            tk_i = int(r["total_kills"] or 0)
+            pv_raw = (float(tk_i) / float(log_count)) if log_count > 0 else None
+        else:
+            pv_raw = r["total_kills"]
+        primary_value: float | int | None
+        if pv_raw is None:
+            primary_value = None
+        elif fmt == "int":
+            primary_value = int(round(float(pv_raw)))
+        else:
+            primary_value = _round2(pv_raw)
+
+        out.append(
+            {
+                "steamid64": sid,
+                "name": "",
+                "log_count": log_count,
+                "avg_dpm": _round2(r["avg_dpm"]),
+                "avg_kdr": _round2(r["avg_kdr"]),
+                "avg_kadr": _round2(r["avg_kadr"]),
+                "win_rate": win_rate,
+                "wins": wins,
+                "decided_logs": decided,
+                "total_ubers": int(r["total_ubers"] or 0),
+                "total_drops": int(r["total_drops"] or 0),
+                "total_headshots": int(r["total_headshots"] or 0),
+                "total_backstabs": int(r["total_backstabs"] or 0),
+                "total_damage_taken": int(r["total_damage_taken"] or 0),
+                "avg_deaths": _round2(r["avg_deaths"]),
+                "avg_killstreak": _round2(r["avg_killstreak"]),
+                "primary_value": primary_value,
+            }
+        )
+
+    alias_map = _lookup_aliases_from_chat_db(steam_ids)
+    for row in out:
+        row["name"] = (alias_map.get(row["steamid64"]) or "").strip()
+
+    return out, total_logs
+
+
 def _round2(v: Any) -> float | None:
     if v is None:
         return None
@@ -2857,8 +3401,9 @@ def stats_leaderboard(
 
     ``total_logs`` is a fast count of rows in ``logs`` matching gamemode/date/map filters only
     (not class filter). Player rows and aggregates still respect the class filter when set.
-    For ``ubers``, ``drops``, ``damage_taken``, ``backstabs``, and ``headshots``, ``stat_scope`` is
-    ``total`` (sum) or ``per_log``
+    For ``dpm``, ``kdr``, ``ubers``, ``drops``, ``damage_taken``, ``backstabs``, ``headshots``,
+    ``heals``, ``avg_deaths``, ``avg_killstreak``, and ``kills_<class>`` (nine victim classes),
+    ``stat_scope`` is ``total`` (sum / aggregate) or ``per_log`` (average per game).
     (average per game). For ``winrate``, ``stat_scope`` is ``highest`` (best win % first) or
     ``lowest`` (worst win % first among players meeting ``min_logs``).
     Raises RuntimeError if stats DB is unavailable or lb_type is unknown.
@@ -2866,10 +3411,11 @@ def stats_leaderboard(
     lb_key = (lb_type or "").strip().lower()
     if lb_key not in _LEADERBOARD_TYPES:
         raise RuntimeError("Unknown leaderboard type.")
+    victim_class = _leaderboard_victim_class_from_lb_key(lb_key)
     ss_raw = (stat_scope or "").strip().lower()
     if ss_raw not in LEADERBOARD_STAT_SCOPE_KEYS:
         ss_raw = "total"
-    if lb_key in ("ubers", "drops", "damage_taken", "backstabs", "headshots"):
+    if _leaderboard_supports_total_per_log(lb_key):
         ss = ss_raw if ss_raw in ("total", "per_log") else "total"
     elif lb_key == "winrate":
         ss = ss_raw if ss_raw in ("highest", "lowest") else "highest"
@@ -2889,19 +3435,41 @@ def stats_leaderboard(
     scope_sql, scope_params = _leaderboard_scope_sql(gamemode, date_from, date_to, map_query, class_filter)
     profile_sql, profile_params = _profile_filter_sql(gamemode, date_from, date_to, map_query)
 
-    if _leaderboard_is_global_unfiltered(
+    global_unfiltered = _leaderboard_is_global_unfiltered(
         gamemode, class_filter, date_from, date_to, map_query
-    ) and player_stats_agg_nonempty(path) and (
-        lb_key != "avg_killstreak" or _player_stats_agg_metric_complete(path, "avg_killstreak")
-    ):
+    )
+
+    if victim_class and global_unfiltered and player_classkills_agg_nonempty(path):
+        return _stats_leaderboard_from_classkills_agg(
+            lb_key, victim_class, ss, ml, spec, path, profile_sql, profile_params
+        )
+
+    agg_ok = (
+        global_unfiltered
+        and player_stats_agg_nonempty(path)
+        and (
+            lb_key != "avg_killstreak"
+            or _player_stats_agg_metric_complete(path, "avg_killstreak")
+        )
+        and (lb_key != "heals" or player_stats_agg_heals_populated(path))
+        and victim_class is None
+    )
+    if agg_ok:
         return _stats_leaderboard_from_agg(lb_key, ss, ml, spec, path, profile_sql, profile_params)
 
-    select_expr = " ".join(spec["select_expr"].split())
-    order_expr = " ".join(spec["order_expr"].split())
-
-    # Drive from ``logs`` first so date/gamemode/map can use ``logs`` indexes; join ``log_players``
-    # on (log_id, team) via idx_log_players_log_id_team.
-    main_sql = f"""
+    if victim_class:
+        ck_scope_sql, ck_scope_params = _leaderboard_scope_sql_for_classkills(
+            gamemode, date_from, date_to, map_query, class_filter
+        )
+        lp_scope_sql, lp_scope_params = scope_sql, scope_params
+        main_sql = _stats_leaderboard_classkills_sql(ss, ck_scope_sql, lp_scope_sql)
+        scope_params = [victim_class] + ck_scope_params + lp_scope_params
+    elif lb_key == "heals":
+        main_sql = _stats_leaderboard_heals_sql(ss, scope_sql)
+    else:
+        select_expr = " ".join(spec["select_expr"].split())
+        order_expr = " ".join(spec["order_expr"].split())
+        main_sql = f"""
         SELECT
           lp.steamid64,
           COUNT(*) AS log_count,

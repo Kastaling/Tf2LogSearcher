@@ -4,7 +4,11 @@ import pytest
 from app.chat_db import connect_chat_db, init_chat_db, replace_chat_for_log
 from app.logs_tf import steamid3_to_steamid64
 from app.stats_db import connect_stats_db, init_stats_db, replace_stats_for_log
-from app.search.search import _profile_fetch_favorite_words, player_profile
+from app.search.search import (
+    _profile_fetch_favorite_words,
+    _profile_latest_message_key,
+    player_profile,
+)
 
 # SteamID3 keys in logtext must convert to the same steamid64 used in profile/chat queries.
 PLAYER_A_3 = "[U:1:39734273]"
@@ -273,6 +277,11 @@ def test_profile_overview_counts(populated_db, monkeypatch):
     assert ov["first_log_id"] == 1001
     assert ov["last_log_id"] == 1002
     assert 1001 in log_ids and 1002 in log_ids
+
+
+def test_profile_latest_message_key_uses_log_date() -> None:
+    by_log = {1001: 1_700_000_000, 1002: 1_700_100_000}
+    assert _profile_latest_message_key(by_log, 1002, 0) > _profile_latest_message_key(by_log, 1001, 999)
 
 
 def test_profile_favorite_words_from_chat_db(populated_db, populated_chat_db, monkeypatch):

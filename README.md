@@ -111,7 +111,7 @@ docker compose run --rm downloader python -m app.stats_backfill --min-log-id 300
 
 ### Rebuild Leaderboard Aggregates
 
-Rebuild `player_stats_agg` after adding or changing aggregate leaderboard columns:
+Rebuild `player_stats_agg` and `player_classkills_agg` after adding or changing aggregate leaderboard columns (including heals, kills-by-class, `total_deaths`, `total_killstreak`):
 
 ```bash
 docker compose run --rm downloader python -m app.rebuild_agg
