@@ -9,7 +9,7 @@ function leaderboardDefaultSortKey(lbType) {
   if (
     t === 'dpm' || t === 'kdr' || t === 'ubers' || t === 'drops' || t === 'damage_taken'
     || t === 'avg_deaths' || t === 'avg_killstreak' || t === 'backstabs' || t === 'headshots'
-    || t === 'heals' || victimClassFromLbType(t)
+    || t === 'heals' || victimClassFromLbType(t) || weaponLbClassFromLbType(t)
   ) {
     return 'primary_value';
   }
@@ -28,9 +28,10 @@ var LEADERBOARD_COLUMNS_SUFFIX = [
   { key: 'win_rate', label: 'Win Rate', type: 'winrate' },
 ];
 
-function getLeaderboardPrimaryColumn(lbType, statScope) {
+function getLeaderboardPrimaryColumn(lbType, statScope, weaponLabel) {
   var t = sanitizeLbTypeInput(lbType);
   var ss = sanitizeLeaderboardStatScopeInput(statScope, t);
+  var wLbl = (weaponLabel == null ? '' : String(weaponLabel)).trim();
   if (t === 'ubers') {
     if (ss === 'per_log') return { key: 'primary_value', label: 'Ubers / log', type: 'decimal2' };
     return { key: 'primary_value', label: 'Ubers (total)', type: 'number' };
@@ -79,13 +80,21 @@ function getLeaderboardPrimaryColumn(lbType, statScope) {
     }
     return { key: 'primary_value', label: clsLabel + ' kills (total)', type: 'number' };
   }
+  var wpc = weaponLbClassFromLbType(t);
+  if (wpc) {
+    var name = wLbl || 'Weapon';
+    if (ss === 'per_log') {
+      return { key: 'primary_value', label: name + ' kills / log', type: 'decimal2' };
+    }
+    return { key: 'primary_value', label: name + ' kills (total)', type: 'number' };
+  }
   return null;
 }
 
-function getLeaderboardColumns(lbType, statScope) {
+function getLeaderboardColumns(lbType, statScope, weaponLabel) {
   var t = sanitizeLbTypeInput(lbType);
   var cols = LEADERBOARD_COLUMNS_PREFIX.slice();
-  var prim = getLeaderboardPrimaryColumn(t, statScope);
+  var prim = getLeaderboardPrimaryColumn(t, statScope, weaponLabel);
   if (prim) cols.push(prim);
   return cols.concat(LEADERBOARD_COLUMNS_SUFFIX);
 }
@@ -97,7 +106,7 @@ var LEADERBOARD_CSV_SUFFIX = [
   { key: 'win_rate_csv', label: 'Win Rate' },
 ];
 
-function getLeaderboardCsvColumns(lbType, statScope) {
+function getLeaderboardCsvColumns(lbType, statScope, weaponLabel) {
   var t = sanitizeLbTypeInput(lbType);
   var out = [
     { key: 'rank', label: 'Rank' },
@@ -105,7 +114,7 @@ function getLeaderboardCsvColumns(lbType, statScope) {
     { key: 'steamid64', label: 'SteamID64' },
     { key: 'log_count', label: 'Logs' },
   ];
-  var prim = getLeaderboardPrimaryColumn(t, statScope);
+  var prim = getLeaderboardPrimaryColumn(t, statScope, weaponLabel);
   if (prim) out.push({ key: 'primary_value', label: prim.label });
   return out.concat(LEADERBOARD_CSV_SUFFIX);
 }
@@ -142,13 +151,14 @@ function getLeaderboardSortValue(row, key, type) {
   return getSortValue(row, key, type);
 }
 
-function getSortedLeaderboardRows(originalRows, lbType, statScope) {
+function getSortedLeaderboardRows(originalRows, lbType, statScope, weaponLabel) {
   var t = sanitizeLbTypeInput(lbType || 'dpm');
   var ss = sanitizeLeaderboardStatScopeInput(statScope, t);
+  var wLbl = weaponLabel == null ? '' : String(weaponLabel);
   var sortedRows = originalRows.slice();
   var sortCol = leaderboardSortCol;
   var sortDir = leaderboardSortDir;
-  var colDef = getLeaderboardColumns(t, ss).find(function(c) { return c.key === sortCol; });
+  var colDef = getLeaderboardColumns(t, ss, wLbl).find(function(c) { return c.key === sortCol; });
   if (colDef && colDef.type !== 'rank') {
     sortedRows.sort(function(a, b) {
       var va = getLeaderboardSortValue(a, sortCol, colDef.type);
@@ -166,10 +176,10 @@ function getSortedLeaderboardRows(originalRows, lbType, statScope) {
   return sortedRows;
 }
 
-function buildLeaderboardCsvContent(sortedRows, lbType, statScope) {
+function buildLeaderboardCsvContent(sortedRows, lbType, statScope, weaponLabel) {
   var t = sanitizeLbTypeInput(lbType || 'dpm');
   var ss = sanitizeLeaderboardStatScopeInput(statScope, t);
-  var cols = getLeaderboardCsvColumns(t, ss);
+  var cols = getLeaderboardCsvColumns(t, ss, weaponLabel == null ? '' : String(weaponLabel));
   var header = cols.map(function(c) {
     return escapeCsvField(c.label);
   }).join(',');
@@ -218,8 +228,9 @@ function bindLeaderboardCsvDownload(container) {
     if (!rows || !rows.length) return;
     var lb = container._leaderboardLbType || 'dpm';
     var sc = container._leaderboardStatScope != null ? container._leaderboardStatScope : 'total';
-    var sorted = getSortedLeaderboardRows(rows, lb, sc);
-    var csv = buildLeaderboardCsvContent(sorted, lb, sc);
+    var wLbl = container._leaderboardWeaponLabel || '';
+    var sorted = getSortedLeaderboardRows(rows, lb, sc, wLbl);
+    var csv = buildLeaderboardCsvContent(sorted, lb, sc, wLbl);
     var d = new Date();
     var scopePart = (
       lb === 'dpm' || lb === 'kdr' || lb === 'ubers' || lb === 'drops' || lb === 'damage_taken'
@@ -290,10 +301,12 @@ function renderLeaderboard(container, data, elapsedMs) {
     data && data.stat_scope != null ? data.stat_scope : (sanitizeLbTypeInput(lbType) === 'winrate' ? 'highest' : 'total'),
     lbType
   );
-  if (rows !== container._leaderboardRows || lbType !== container._leaderboardLbType || statScope !== container._leaderboardStatScope) {
+  var weaponLabel = data && data.weapon_label ? String(data.weapon_label) : '';
+  if (rows !== container._leaderboardRows || lbType !== container._leaderboardLbType || statScope !== container._leaderboardStatScope || weaponLabel !== container._leaderboardWeaponLabel) {
     container._leaderboardRows = rows;
     container._leaderboardLbType = lbType;
     container._leaderboardStatScope = statScope;
+    container._leaderboardWeaponLabel = weaponLabel;
     leaderboardSortCol = leaderboardDefaultSortKey(lbType);
     leaderboardSortDir = -1;
   }
@@ -312,10 +325,10 @@ function renderLeaderboard(container, data, elapsedMs) {
     return;
   }
 
-  var sortedRows = getSortedLeaderboardRows(originalRows, lbType, statScope);
+  var sortedRows = getSortedLeaderboardRows(originalRows, lbType, statScope, weaponLabel);
   var sortCol = leaderboardSortCol;
   var sortDir = leaderboardSortDir;
-  var lbCols = getLeaderboardColumns(lbType, statScope);
+  var lbCols = getLeaderboardColumns(lbType, statScope, weaponLabel);
 
   var totalLine = '<p class="stats-summary-meta">Top ' + escapeHtml(String(originalRows.length)) + ' players';
   if (totalLogs != null && Number.isFinite(Number(totalLogs))) {
@@ -374,6 +387,7 @@ function renderLeaderboard(container, data, elapsedMs) {
         total_logs: container._leaderboardTotalLogs,
         lb_type: container._leaderboardLbType,
         stat_scope: container._leaderboardStatScope,
+        weapon_label: container._leaderboardWeaponLabel,
       }, container._leaderboardRequestMs);
     });
   });

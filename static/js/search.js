@@ -157,6 +157,7 @@ function buildSanitizedSearchState(mode, params) {
       date_from: sanitizeDateInput(params.get('date_from')),
       date_to: sanitizeDateInput(params.get('date_to')),
       min_logs: sanitizeLeaderboardMinLogs(params.get('min_logs')),
+      lb_weapon: (params.get('lb_weapon') || '').trim().toLowerCase(),
     };
   }
   if (mode === 'playername') {
@@ -174,6 +175,155 @@ function persistSearchState(state) {
   try {
     sessionStorage.setItem(SEARCH_STATE_KEY, JSON.stringify(state));
   } catch (e) {}
+}
+
+function clearPersistedSearchState() {
+  try {
+    sessionStorage.removeItem(SEARCH_STATE_KEY);
+  } catch (e) {}
+}
+
+/** Whitelisted home form modes for reset (no user-controlled mode strings in logic). */
+var HOME_FORM_RESET_MODES = {
+  chat: 1,
+  profile: 1,
+  coplayers: 1,
+  logmatch: 1,
+  stats: 1,
+  leaderboard: 1,
+  playername: 1,
+};
+
+var HOME_FORM_RESULTS_IDS = {
+  chat: 'chatResults',
+  profile: 'profileResults',
+  coplayers: 'coplayers-results',
+  logmatch: 'logmatchResults',
+  stats: 'statsResults',
+  leaderboard: 'leaderboardResults',
+  playername: 'playerNameResults',
+};
+
+function clearHomeFormResults(mode) {
+  var id = HOME_FORM_RESULTS_IDS[mode];
+  if (!id) return;
+  var el = document.getElementById(id);
+  if (el) el.innerHTML = '';
+}
+
+function clearHomeSearchUrlIfMode(mode) {
+  if (!isHomePathname()) return;
+  var params = new URLSearchParams(window.location.search);
+  if ((params.get('mode') || '').trim() !== mode) return;
+  try {
+    history.replaceState(null, '', window.location.pathname || '/');
+  } catch (e) {}
+}
+
+function clearAllHomeSearchUrl() {
+  if (!isHomePathname()) return;
+  if (!window.location.search) return;
+  try {
+    history.replaceState(null, '', window.location.pathname || '/');
+  } catch (e) {}
+}
+
+/** Restore one home endpoint form to its initial HTML defaults (does not change theme or layout cookies). */
+function applyHomeFormDefaults(mode) {
+  mode = (mode || '').trim();
+  if (!HOME_FORM_RESET_MODES[mode]) return;
+  if (mode === 'chat') {
+    var fc = document.getElementById('frmChat');
+    if (!fc) return;
+    if (fc.steamid) fc.steamid.value = '';
+    if (fc.word) fc.word.value = '';
+    if (fc.elements.date_from) fc.elements.date_from.value = '';
+    if (fc.elements.date_to) fc.elements.date_to.value = '';
+    if (fc.elements.map_query) fc.elements.map_query.value = '';
+    return;
+  }
+  if (mode === 'stats') {
+    var fs = document.getElementById('frmStats');
+    if (!fs) return;
+    if (fs.steamid) fs.steamid.value = '';
+    if (fs.gamemode) fs.gamemode.value = 'hl';
+    if (fs.elements.date_from) fs.elements.date_from.value = '';
+    if (fs.elements.date_to) fs.elements.date_to.value = '';
+    if (fs.elements.map_query) fs.elements.map_query.value = '';
+    fs.querySelectorAll('input[name="classes"]').forEach(function(inp) {
+      inp.checked = false;
+    });
+    return;
+  }
+  if (mode === 'logmatch') {
+    var fl = document.getElementById('frmLogmatch');
+    if (!fl) return;
+    if (fl.steamids) fl.steamids.value = '';
+    if (fl.elements.map_query) fl.elements.map_query.value = '';
+    return;
+  }
+  if (mode === 'coplayers') {
+    var fcp = document.getElementById('frmCoplayers');
+    if (!fcp) return;
+    if (fcp.steamid) fcp.steamid.value = '';
+    if (fcp.gamemode) fcp.gamemode.value = '';
+    if (fcp.elements.map_query) fcp.elements.map_query.value = '';
+    return;
+  }
+  if (mode === 'profile') {
+    var fp = document.getElementById('frmProfile');
+    if (!fp) return;
+    if (fp.steamid) fp.steamid.value = '';
+    if (fp.gamemode) fp.gamemode.value = '';
+    if (fp.elements.date_from) fp.elements.date_from.value = '';
+    if (fp.elements.date_to) fp.elements.date_to.value = '';
+    if (fp.elements.map_query) fp.elements.map_query.value = '';
+    return;
+  }
+  if (mode === 'leaderboard') {
+    var flb = document.getElementById('frmLeaderboard');
+    if (!flb) return;
+    if (flb.gamemode) flb.gamemode.value = '';
+    if (flb.elements.class_filter) flb.elements.class_filter.value = '';
+    if (flb.elements.map_query) flb.elements.map_query.value = '';
+    if (flb.elements.date_from) flb.elements.date_from.value = '';
+    if (flb.elements.date_to) flb.elements.date_to.value = '';
+    if (flb.elements.min_logs) flb.elements.min_logs.value = '10';
+    if (flb.elements.lb_weapon) flb.elements.lb_weapon.value = '';
+    if (flb.elements.lb_type) flb.elements.lb_type.value = 'dpm';
+    if (flb.elements.stat_scope) flb.elements.stat_scope.value = 'per_log';
+    if (flb.elements.lb_stat) {
+      setLeaderboardStatSelectValue(flb.elements.lb_stat, 'dpm', 'per_log');
+    }
+    syncLeaderboardClassSelectForMedicLeaderboards(flb);
+    syncLeaderboardWeaponSelect(flb, '');
+    syncLeaderboardStatIconPreview(flb);
+    syncLeaderboardStatClosedDisplay(flb);
+    return;
+  }
+  if (mode === 'playername') {
+    var fpn = document.getElementById('frmPlayerName');
+    if (!fpn || !fpn.q) return;
+    fpn.q.value = '';
+  }
+}
+
+function resetHomeForm(mode) {
+  mode = (mode || '').trim();
+  if (!HOME_FORM_RESET_MODES[mode]) return;
+  applyHomeFormDefaults(mode);
+  clearHomeFormResults(mode);
+  clearPersistedSearchState();
+  clearHomeSearchUrlIfMode(mode);
+}
+
+function resetAllHomeForms() {
+  Object.keys(HOME_FORM_RESET_MODES).forEach(function(m) {
+    applyHomeFormDefaults(m);
+    clearHomeFormResults(m);
+  });
+  clearPersistedSearchState();
+  clearAllHomeSearchUrl();
 }
 
 function applySearchStateToForms(state) {
@@ -249,6 +399,7 @@ function applySearchStateToForms(state) {
     if (flb.elements.date_from) flb.elements.date_from.value = state.date_from || '';
     if (flb.elements.date_to) flb.elements.date_to.value = state.date_to || '';
     if (flb.elements.min_logs) flb.elements.min_logs.value = sanitizeLeaderboardMinLogs(state.min_logs);
+    syncLeaderboardWeaponSelect(flb, state.lb_weapon);
     return;
   }
   if (state.mode === 'playername') {
@@ -445,6 +596,7 @@ function restoreHomeForms() {
     p2.set('date_from', parsed.date_from != null ? String(parsed.date_from) : '');
     p2.set('date_to', parsed.date_to != null ? String(parsed.date_to) : '');
     p2.set('min_logs', parsed.min_logs != null ? String(parsed.min_logs) : '');
+    if (parsed.lb_weapon) p2.set('lb_weapon', String(parsed.lb_weapon));
   } else if (parsed.mode === 'playername') {
     p2.set('q', parsed.q != null ? String(parsed.q) : '');
   } else {
@@ -453,6 +605,10 @@ function restoreHomeForms() {
   var again = buildSanitizedSearchState(parsed.mode, p2);
   if (again) applySearchStateToForms(again);
 }
+
+(function initStatsClassIcons() {
+  initStatsClassCheckboxIcons(document.getElementById('frmStats'));
+})();
 
 (function initLeaderboardStatSelect() {
   var form = document.getElementById('frmLeaderboard');
@@ -467,7 +623,11 @@ function restoreHomeForms() {
   form.elements.lb_stat.addEventListener('change', function() {
     applyLeaderboardStatSelectToForm(form);
   });
+  if (form.elements.lb_weapon) {
+    form.elements.lb_weapon.addEventListener('change', function() {});
+  }
   initLeaderboardStatSelectUi(form);
+  syncLeaderboardWeaponSelect(form);
 })();
 
 (function initHomeFormRestore() {
@@ -478,6 +638,25 @@ function restoreHomeForms() {
       runDeepLinkScrollAndFlashFromUrl();
     }
   });
+})();
+
+(function initHomeFormReset() {
+  var stack = document.querySelector('.js-home-endpoints-stack');
+  if (stack) {
+    stack.addEventListener('click', function(ev) {
+      var btn = ev.target.closest('.js-form-reset');
+      if (!btn) return;
+      ev.preventDefault();
+      resetHomeForm((btn.getAttribute('data-form-mode') || '').trim());
+    });
+  }
+  var allBtn = document.getElementById('homeResetAll');
+  if (allBtn) {
+    allBtn.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      resetAllHomeForms();
+    });
+  }
 })();
 
 /** Cookie-backed order + visibility for home page search sections (same-origin, SameSite=Lax). */
@@ -688,6 +867,54 @@ function restoreHomeForms() {
         applyHomeEndpointVisibility(stack, s2.hidden);
         rebuildHomeLayoutSortList(ul, s2);
       },
+    });
+  }
+
+  function clearLayoutSharePanelFields(panel) {
+    if (!panel) return;
+    var ta = panel.querySelector('.js-layout-share-text');
+    var st = panel.querySelector('.js-layout-share-status');
+    if (ta) ta.value = '';
+    if (st) st.textContent = '';
+  }
+
+  function applyDefaultNotifyPrefsToHomePanel() {
+    clearTf2lsCookie(NOTIFY_PREFS_COOKIE);
+    var prefs = readNotifyPrefs();
+    var cbN = home.querySelector('.js-notify-sound-enabled');
+    var volRange = home.querySelector('.js-notify-sound-volume');
+    var volLabel = home.querySelector('.js-notify-sound-volume-label');
+    if (cbN) cbN.checked = !!prefs.soundEnabled;
+    var pct = Math.round(sanitizeNotifyVolume(prefs.soundVolume) * 100);
+    if (volRange) {
+      volRange.value = String(pct);
+      volRange.disabled = !cbN || !cbN.checked;
+      volRange.setAttribute('aria-disabled', cbN && cbN.checked ? 'false' : 'true');
+    }
+    if (volLabel) {
+      volLabel.textContent = pct + '%';
+      volLabel.classList.toggle('is-muted', !cbN || !cbN.checked);
+    }
+    if (volRange) volRange.setAttribute('aria-valuenow', String(pct));
+  }
+
+  function resetHomeBrowserSettings() {
+    clearTf2lsCookie(HOME_LAYOUT_COOKIE);
+    var defaults = { order: HOME_ENDPOINT_IDS.slice(), hidden: {} };
+    applyHomeEndpointOrder(stack, defaults.order);
+    applyHomeEndpointVisibility(stack, defaults.hidden);
+    rebuildHomeLayoutSortList(ul, defaults);
+    applyDefaultNotifyPrefsToHomePanel();
+    clearLayoutSharePanelFields(homeLayoutDetails);
+  }
+
+  window.tf2lsResetHomeBrowserSettings = resetHomeBrowserSettings;
+
+  var browserSettingsResetBtn = home.querySelector('.js-browser-settings-reset');
+  if (browserSettingsResetBtn) {
+    browserSettingsResetBtn.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      resetHomeBrowserSettings();
     });
   }
 })();
@@ -1467,6 +1694,14 @@ if (frmLb) {
       frmLb.elements.class_filter && frmLb.elements.class_filter.value ? frmLb.elements.class_filter.value : '',
       lbForClass
     );
+    var lbWeaponVal = '';
+    if (weaponLbClassFromLbType(lbForClass) && frmLb.elements.lb_weapon) {
+      lbWeaponVal = sanitizeLeaderboardWeaponInput(frmLb.elements.lb_weapon.value, lbForClass);
+      if (!lbWeaponVal) {
+        document.getElementById('leaderboardResults').innerHTML = '<span class="error">Select a weapon for this leaderboard.</span>';
+        return;
+      }
+    }
     var lbParams = new URLSearchParams({
       lb_type: lbForClass,
       stat_scope: statScopeVal,
@@ -1477,6 +1712,7 @@ if (frmLb) {
       date_to: dateTo,
       min_logs: sanitizeLeaderboardMinLogs(frmLb.elements.min_logs && frmLb.elements.min_logs.value ? frmLb.elements.min_logs.value : '10'),
     });
+    if (lbWeaponVal) lbParams.set('lb_weapon', lbWeaponVal);
     var lbState = buildSanitizedSearchState('leaderboard', lbParams);
     if (lbState) persistSearchState(lbState);
     var params = new URLSearchParams({
@@ -1490,6 +1726,7 @@ if (frmLb) {
       date_to: dateTo,
       min_logs: sanitizeLeaderboardMinLogs(frmLb.elements.min_logs && frmLb.elements.min_logs.value ? frmLb.elements.min_logs.value : '10'),
     });
+    if (lbWeaponVal) params.set('lb_weapon', lbWeaponVal);
     window.location.href = '/results?' + params.toString();
   });
 }
@@ -1556,7 +1793,11 @@ if (frmLb) {
   } else if (mode === 'leaderboard') {
     var lbApi = sanitizeLbTypeInput(params.get('lb_type'));
     var ssApi = sanitizeLeaderboardStatScopeInput(params.get('stat_scope'), lbApi);
-    apiUrl = '/api/leaderboard?' + new URLSearchParams({
+    var lbWeaponApi = sanitizeLeaderboardWeaponInput(params.get('lb_weapon'), lbApi);
+    if (weaponLbClassFromLbType(lbApi) && !lbWeaponApi) {
+      lbWeaponApi = DEFAULT_WEAPON_BY_LB_CLASS[weaponLbClassFromLbType(lbApi)] || '';
+    }
+    var lbApiParams = {
       lb_type: lbApi,
       stat_scope: ssApi,
       gamemode: sanitizeCoplayersGamemodeInput(params.get('gamemode')),
@@ -1565,7 +1806,9 @@ if (frmLb) {
       date_from: params.get('date_from') || '',
       date_to: params.get('date_to') || '',
       min_logs: sanitizeLeaderboardMinLogs(params.get('min_logs')),
-    }).toString();
+    };
+    if (lbWeaponApi) lbApiParams.weapon = lbWeaponApi;
+    apiUrl = '/api/leaderboard?' + new URLSearchParams(lbApiParams).toString();
   } else if (mode === 'playername') {
     var pnQ = (params.get('q') || '').trim().replace(/[\u0000-\u001F\u007F]/g, '');
     if (pnQ.length > MAX_PLAYER_NAME_QUERY_LEN) pnQ = pnQ.slice(0, MAX_PLAYER_NAME_QUERY_LEN);

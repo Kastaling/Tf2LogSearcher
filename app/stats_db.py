@@ -341,6 +341,7 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
     _migrate_player_stats_agg_heals(conn)
     _migrate_player_stats_agg_total_deaths_killstreak(conn)
     _migrate_player_classkills_agg(conn)
+    _migrate_player_weapons_agg(conn)
 
 
 def _migrate_player_stats_agg_total_deaths_killstreak(conn: sqlite3.Connection) -> None:
@@ -1206,6 +1207,157 @@ def _migrate_player_classkills_agg(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_player_weapons_agg(conn: sqlite3.Connection) -> None:
+    """Per-player per-weapon kill totals for kills-by-weapon leaderboards."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS player_weapons_agg (
+          steamid64   TEXT NOT NULL,
+          weapon      TEXT NOT NULL,
+          log_count   INTEGER NOT NULL DEFAULT 0,
+          total_kills INTEGER NOT NULL DEFAULT 0,
+          updated_at  INTEGER NOT NULL,
+          PRIMARY KEY (steamid64, weapon)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pwa_weapon_total_kills
+        ON player_weapons_agg(weapon, total_kills DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pwa_weapon_avg_kills
+        ON player_weapons_agg(
+          weapon,
+          (CAST(total_kills AS REAL) / NULLIF(log_count, 0))
+        )
+        """
+    )
+    conn.commit()
+
+
+def rebuild_player_weapons_agg(conn: sqlite3.Connection) -> int:
+    """Full rebuild of ``player_weapons_agg`` (run with ``rebuild_player_stats_agg``)."""
+    ts = int(time.time())
+    _excl = _combined_logs.stats_log_exclusion_sql("l")
+    with conn:
+        conn.execute("DELETE FROM player_weapons_agg")
+        conn.execute(
+            f"""
+            INSERT INTO player_weapons_agg (
+              steamid64, weapon, log_count, total_kills, updated_at
+            )
+            SELECT
+              lpw.steamid64,
+              lpw.weapon,
+              COUNT(DISTINCT lpw.log_id),
+              SUM(lpw.kills),
+              ?
+            FROM log_player_weapons lpw
+            INNER JOIN logs l ON l.log_id = lpw.log_id
+            WHERE 1=1{_excl}
+            GROUP BY lpw.steamid64, lpw.weapon
+            """,
+            (ts,),
+        )
+    row = conn.execute("SELECT COUNT(*) FROM player_weapons_agg").fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def _refresh_player_weapons_agg_for_steamids_impl(
+    conn: sqlite3.Connection,
+    uniq: list[str],
+    ts: int,
+) -> None:
+    _excl = _combined_logs.stats_log_exclusion_sql("l")
+    sel_prefix = """
+        SELECT
+          lpw.steamid64,
+          lpw.weapon,
+          COUNT(DISTINCT lpw.log_id),
+          SUM(lpw.kills)
+        FROM log_player_weapons lpw
+        INNER JOIN logs l ON l.log_id = lpw.log_id
+        WHERE lpw.steamid64 IN (
+    """
+    sel_suffix = f"""
+        ){_excl}
+        GROUP BY lpw.steamid64, lpw.weapon
+    """
+    upsert = """
+        INSERT OR REPLACE INTO player_weapons_agg (
+          steamid64, weapon, log_count, total_kills, updated_at
+        ) VALUES (?, ?, ?, ?, ?)
+    """
+    for i in range(0, len(uniq), _PSA_CHUNK):
+        chunk = uniq[i : i + _PSA_CHUNK]
+        placeholders = ",".join("?" * len(chunk))
+        rows = conn.execute(sel_prefix + placeholders + sel_suffix, chunk).fetchall()
+        seen_sids: set[str] = set()
+        for row in rows:
+            if not row or not row[0] or not row[1]:
+                continue
+            sid = str(row[0]).strip()
+            wn = str(row[1]).strip().lower()
+            if not sid or not wn:
+                continue
+            seen_sids.add(sid)
+            conn.execute(
+                upsert,
+                (sid, wn, int(row[2] or 0), int(row[3] or 0), ts),
+            )
+        for sid in chunk:
+            if sid not in seen_sids:
+                conn.execute("DELETE FROM player_weapons_agg WHERE steamid64 = ?", (sid,))
+            else:
+                conn.execute(
+                    """
+                    DELETE FROM player_weapons_agg
+                    WHERE steamid64 = ?
+                      AND weapon NOT IN (
+                        SELECT DISTINCT weapon
+                        FROM log_player_weapons
+                        WHERE steamid64 = ?
+                      )
+                    """,
+                    (sid, sid),
+                )
+
+
+def refresh_player_weapons_agg_for_steamids(
+    conn: sqlite3.Connection, steamids: Sequence[str]
+) -> None:
+    """Recompute weapon-kill aggregate rows for the given SteamID64s."""
+    uniq = list(dict.fromkeys(s.strip() for s in steamids if s and str(s).strip()))
+    if not uniq:
+        return
+    ts = int(time.time())
+    conn.execute(f"SAVEPOINT {_PSA_SAVEPOINT}_wp")
+    try:
+        _refresh_player_weapons_agg_for_steamids_impl(conn, uniq, ts)
+        conn.execute(f"RELEASE SAVEPOINT {_PSA_SAVEPOINT}_wp")
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {_PSA_SAVEPOINT}_wp")
+        conn.execute(f"RELEASE SAVEPOINT {_PSA_SAVEPOINT}_wp")
+        raise
+
+
+def player_weapons_agg_nonempty(db_path: str | Path) -> bool:
+    """True if ``player_weapons_agg`` has at least one row (fast path available)."""
+    path = Path(db_path)
+    if not path.is_file():
+        return False
+    conn = connect_stats_db(path)
+    try:
+        row = conn.execute("SELECT 1 FROM player_weapons_agg LIMIT 1").fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def rebuild_player_classkills_agg(conn: sqlite3.Connection) -> int:
     """Full rebuild of ``player_classkills_agg`` (run with ``rebuild_player_stats_agg``)."""
     ts = int(time.time())
@@ -1374,6 +1526,7 @@ def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
             (ts,),
         )
     rebuild_player_classkills_agg(conn)
+    rebuild_player_weapons_agg(conn)
     row = conn.execute("SELECT COUNT(*) FROM player_stats_agg").fetchone()
     return int(row[0] or 0) if row else 0
 
@@ -1394,6 +1547,7 @@ def refresh_player_stats_agg_for_steamids(conn: sqlite3.Connection, steamids: Se
     try:
         _refresh_player_stats_agg_for_steamids_impl(conn, uniq, ts)
         _refresh_player_classkills_agg_for_steamids_impl(conn, uniq, ts)
+        _refresh_player_weapons_agg_for_steamids_impl(conn, uniq, ts)
         conn.execute(f"RELEASE SAVEPOINT {_PSA_SAVEPOINT}")
     except Exception:
         conn.execute(f"ROLLBACK TO SAVEPOINT {_PSA_SAVEPOINT}")

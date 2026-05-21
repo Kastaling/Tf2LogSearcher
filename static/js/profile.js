@@ -1095,6 +1095,9 @@ function profileLayoutSettingsPanelHtml() {
     '</p>' +
     '<p class="layout-share-status js-layout-share-status stats-summary-meta" aria-live="polite"></p>' +
     '</div>' +
+    '<p class="browser-settings-actions">' +
+    '<button type="button" class="js-profile-layout-settings-reset">Reset profile layout to defaults</button>' +
+    '</p>' +
     '</div></details>';
 }
 
@@ -1269,6 +1272,35 @@ function initProfileLayoutSettings(profileRoot, layoutSettings) {
         rebuildProfileLayoutSortListItems(ul2, profileRoot, s);
         bindProfileLayoutSortList(ul2, profileRoot);
       },
+    });
+  }
+
+  function clearProfileLayoutShareFields(panel) {
+    if (!panel) return;
+    var ta = panel.querySelector('.js-layout-share-text');
+    var st = panel.querySelector('.js-layout-share-status');
+    if (ta) ta.value = '';
+    if (st) st.textContent = '';
+  }
+
+  function resetProfileLayoutSettings() {
+    clearTf2lsCookie(PROFILE_LAYOUT_COOKIE);
+    var defaults = {
+      order: PROFILE_LAYOUT_SECTION_IDS.slice(),
+      collapseDefault: false,
+    };
+    applyProfileLayoutOrderToStack(profileRoot, defaults.order);
+    if (cb) cb.checked = false;
+    if (ul) rebuildProfileLayoutSortListItems(ul, profileRoot, defaults);
+    clearProfileLayoutShareFields(wrap);
+  }
+
+  var resetBtn = wrap.querySelector('.js-profile-layout-settings-reset');
+  if (resetBtn && !resetBtn._tf2lsProfileLayoutResetBound) {
+    resetBtn._tf2lsProfileLayoutResetBound = true;
+    resetBtn.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      resetProfileLayoutSettings();
     });
   }
 }

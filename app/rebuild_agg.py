@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     from app.stats_db import connect_stats_db, init_stats_db, rebuild_player_stats_agg
 
     p = argparse.ArgumentParser(
-        description="Rebuild player_stats_agg and player_classkills_agg from indexed logs."
+        description="Rebuild player_stats_agg, player_classkills_agg, and player_weapons_agg from indexed logs."
     )
     p.add_argument(
         "--db",
@@ -43,7 +43,10 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
 
-    print(f"player_stats_agg rebuilt: {n} player row(s) (includes player_classkills_agg).")
+    print(
+        f"player_stats_agg rebuilt: {n} player row(s) "
+        "(includes player_classkills_agg and player_weapons_agg)."
+    )
     return 0
 
 

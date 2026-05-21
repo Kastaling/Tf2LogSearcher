@@ -18,9 +18,11 @@ from app.stats_db import (
     player_classkills_agg_nonempty,
     player_stats_agg_heals_populated,
     player_stats_agg_nonempty,
+    player_weapons_agg_nonempty,
     stats_log_ids_for_player,
 )
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
+from app.weapon_classes import is_weapon_kill_whitelisted, weapons_for_class
 from app.weapon_names import get_weapon_name
 
 logger = logging.getLogger(__name__)
@@ -316,6 +318,35 @@ def _classkill_leaderboard_types() -> dict[str, dict[str, Any]]:
 
 _LEADERBOARD_TYPES.update(_classkill_leaderboard_types())
 
+
+def _weaponkill_leaderboard_types() -> dict[str, dict[str, Any]]:
+    """Nine class-grouped weapon-kill boards (``kills_weapon_scout``, …); weapon chosen separately."""
+    out: dict[str, dict[str, Any]] = {}
+    for pc in _CLASSKILL_VICTIM_CLASSES:
+        label = f"{_CLASSKILL_VICTIM_LABELS[pc]} weapon kills"
+        out[f"kills_weapon_{pc}"] = {
+            "label": label,
+            "weapon_lb_class": pc,
+            "scopes": {
+                "total": {
+                    "order_expr": "wk.total_kills DESC",
+                    "select_expr": "wk.total_kills AS primary_value",
+                    "value_key": "total_weapon_kills",
+                    "format": "int",
+                },
+                "per_log": {
+                    "order_expr": "wk.avg_kills_per_log DESC",
+                    "select_expr": "wk.avg_kills_per_log AS primary_value",
+                    "value_key": "avg_weapon_kills_per_log",
+                    "format": "float2",
+                },
+            },
+        }
+    return out
+
+
+_LEADERBOARD_TYPES.update(_weaponkill_leaderboard_types())
+
 LEADERBOARD_TYPE_KEYS: tuple[str, ...] = tuple(_LEADERBOARD_TYPES.keys())
 # Ubers/drops/damage_taken: ``total`` / ``per_log``. Win rate: ``highest`` (best first) / ``lowest`` (worst first).
 LEADERBOARD_STAT_SCOPE_KEYS: frozenset[str] = frozenset(
@@ -345,11 +376,15 @@ def _leaderboard_resolve_spec(lb_type: str, stat_scope: str) -> dict[str, Any]:
     out.update(scopes[ss])
     if "victim_class" in base:
         out["victim_class"] = base["victim_class"]
+    if "weapon_lb_class" in base:
+        out["weapon_lb_class"] = base["weapon_lb_class"]
     return out
 
 
 def _leaderboard_victim_class_from_lb_key(lb_key: str) -> str | None:
-    """Whitelist victim class for ``kills_*`` leaderboard keys (no user-controlled SQL)."""
+    """Whitelist victim class for ``kills_<class>`` leaderboard keys (no user-controlled SQL)."""
+    if lb_key.startswith("kills_weapon_"):
+        return None
     if not lb_key.startswith("kills_"):
         return None
     vc = lb_key[6:].strip().lower()
@@ -358,8 +393,48 @@ def _leaderboard_victim_class_from_lb_key(lb_key: str) -> str | None:
     return None
 
 
+def _leaderboard_weapon_lb_class_from_lb_key(lb_key: str) -> str | None:
+    """Whitelist playable class for ``kills_weapon_<class>`` keys (weapon picker grouping)."""
+    if not lb_key.startswith("kills_weapon_"):
+        return None
+    pc = lb_key[13:].strip().lower()
+    if pc in _CLASSKILL_VICTIM_CLASSES:
+        return pc
+    return None
+
+
+def normalize_leaderboard_weapon(weapon: str, lb_key: str) -> str | None:
+    """
+    Return a whitelisted weapon log name for ``kills_weapon_*`` boards, or None if invalid.
+    Weapon must belong to the class menu for that leaderboard type.
+    """
+    pc = _leaderboard_weapon_lb_class_from_lb_key(lb_key)
+    if not pc:
+        return None
+    w = (weapon or "").strip().lower()
+    if not w or not is_weapon_kill_whitelisted(w):
+        return None
+    if w not in weapons_for_class(pc):
+        return None
+    return w
+
+
+def leaderboard_weapons_for_type(lb_key: str) -> list[dict[str, str]]:
+    """Sorted weapon options ``{id, label}`` for a ``kills_weapon_*`` leaderboard type."""
+    pc = _leaderboard_weapon_lb_class_from_lb_key(lb_key)
+    if not pc:
+        return []
+    out: list[dict[str, str]] = []
+    for w in weapons_for_class(pc):
+        out.append({"id": w, "label": get_weapon_name(w) or w})
+    out.sort(key=lambda x: (x["label"].lower(), x["id"]))
+    return out
+
+
 def _leaderboard_supports_total_per_log(lb_key: str) -> bool:
     if _leaderboard_victim_class_from_lb_key(lb_key):
+        return True
+    if _leaderboard_weapon_lb_class_from_lb_key(lb_key):
         return True
     return lb_key in (
         "dpm",
@@ -386,6 +461,21 @@ def _leaderboard_scope_sql_for_classkills(
     sql, params = _leaderboard_scope_sql(gamemode, date_from, date_to, map_query, class_filter)
     return (
         sql.replace("lp.log_id", "lpck.log_id").replace("lp.steamid64", "lpck.steamid64"),
+        params,
+    )
+
+
+def _leaderboard_scope_sql_for_weapons(
+    gamemode: str,
+    date_from: date | None,
+    date_to: date | None,
+    map_query: str,
+    class_filter: str,
+) -> tuple[str, list[Any]]:
+    """Scope clauses for ``log_player_weapons`` (alias ``lpw``)."""
+    sql, params = _leaderboard_scope_sql(gamemode, date_from, date_to, map_query, class_filter)
+    return (
+        sql.replace("lp.log_id", "lpw.log_id").replace("lp.steamid64", "lpw.steamid64"),
         params,
     )
 
@@ -463,6 +553,84 @@ def _stats_leaderboard_classkills_sql(
         FROM ck_agg ck
         LEFT JOIN lp_stats ls ON ls.steamid64 = ck.steamid64
         WHERE ck.log_count >= ?
+        ORDER BY {order_expr}
+        LIMIT ?
+    """
+
+
+def _stats_leaderboard_weapons_sql(
+    stat_scope: str,
+    wp_scope_sql: str,
+    lp_scope_sql: str,
+) -> str:
+    """Leaderboard SQL from ``log_player_weapons`` for one weapon (``?`` = weapon log name)."""
+    if stat_scope == "per_log":
+        primary_sel = "wk.avg_kills_per_log AS primary_value"
+        order_expr = "wk.avg_kills_per_log DESC NULLS LAST"
+    else:
+        primary_sel = "wk.total_kills AS primary_value"
+        order_expr = "wk.total_kills DESC NULLS LAST"
+    return f"""
+        WITH weapon_per_log AS (
+          SELECT
+            lpw.steamid64,
+            lpw.log_id,
+            SUM(lpw.kills) AS kills_in_log
+          FROM log_player_weapons lpw
+          INNER JOIN logs l ON l.log_id = lpw.log_id
+          WHERE lpw.weapon = ?
+            {wp_scope_sql}
+          GROUP BY lpw.steamid64, lpw.log_id
+        ),
+        wk_agg AS (
+          SELECT
+            steamid64,
+            COUNT(*) AS log_count,
+            SUM(kills_in_log) AS total_kills,
+            AVG(kills_in_log) AS avg_kills_per_log
+          FROM weapon_per_log
+          GROUP BY steamid64
+        ),
+        lp_stats AS (
+          SELECT
+            lp.steamid64,
+            AVG(CASE WHEN lp.dapm IS NOT NULL THEN lp.dapm END) AS avg_dpm,
+            AVG(CASE WHEN lp.kdr IS NOT NULL THEN lp.kdr END) AS avg_kdr,
+            AVG(CASE WHEN lp.kadr IS NOT NULL THEN lp.kadr END) AS avg_kadr,
+            SUM(CASE WHEN l.winner IS NOT NULL AND l.winner = lp.team THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN l.winner IS NOT NULL THEN 1 ELSE 0 END) AS decided_logs,
+            SUM(lp.ubers) AS total_ubers,
+            SUM(lp.drops) AS total_drops,
+            SUM(lp.headshots) AS total_headshots,
+            SUM(lp.backstabs) AS total_backstabs,
+            SUM(lp.damage_taken) AS total_damage_taken,
+            AVG(CAST(lp.deaths AS REAL)) AS avg_deaths,
+            AVG(CAST(lp.longest_killstreak AS REAL)) AS avg_killstreak
+          FROM logs l
+          INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.team IN ('Red', 'Blue')
+          WHERE 1=1
+            {lp_scope_sql}
+          GROUP BY lp.steamid64
+        )
+        SELECT
+          wk.steamid64,
+          wk.log_count,
+          ls.avg_dpm,
+          ls.avg_kdr,
+          ls.avg_kadr,
+          ls.wins,
+          ls.decided_logs,
+          ls.total_ubers,
+          ls.total_drops,
+          ls.total_headshots,
+          ls.total_backstabs,
+          ls.total_damage_taken,
+          ls.avg_deaths,
+          ls.avg_killstreak,
+          {primary_sel}
+        FROM wk_agg wk
+        LEFT JOIN lp_stats ls ON ls.steamid64 = wk.steamid64
+        WHERE wk.log_count >= ?
         ORDER BY {order_expr}
         LIMIT ?
     """
@@ -2841,26 +3009,49 @@ def _profile_fetch_log_date_ts_by_log(
     conn: sqlite3.Connection,
     steamid64: str,
 ) -> dict[int, int | None]:
-    """One row per log the player chatted in (no message scan, no sort)."""
-    rows = conn.execute(
+    """
+    ``log_date_ts`` keyed by ``log_id`` for logs the player has chat in.
+
+    Uses ``idx_chat_messages_steamid64`` (distinct log ids) then PK lookups on
+    ``chat_logs``, instead of scanning every ``chat_logs`` row with EXISTS.
+    """
+    sid = (steamid64 or "").strip()
+    if not sid:
+        return {}
+    id_rows = conn.execute(
         """
-        SELECT cl.log_id, cl.log_date_ts
-        FROM chat_logs cl
-        WHERE EXISTS (
-            SELECT 1
-            FROM chat_messages m
-            WHERE m.log_id = cl.log_id AND m.steamid64 = ?
-        )
+        SELECT DISTINCT log_id
+        FROM chat_messages
+        WHERE steamid64 = ?
         """,
-        (steamid64,),
+        (sid,),
     ).fetchall()
-    out: dict[int, int | None] = {}
-    for log_id_raw, log_date_ts in rows:
+    log_ids: list[int] = []
+    for row in id_rows:
         try:
-            log_id = int(log_id_raw)
+            log_ids.append(int(row[0]))
         except (TypeError, ValueError):
             continue
-        out[log_id] = int(log_date_ts) if log_date_ts is not None else None
+    if not log_ids:
+        return {}
+    out: dict[int, int | None] = {}
+    for i in range(0, len(log_ids), _SQLITE_MAX_VARS):
+        chunk = log_ids[i : i + _SQLITE_MAX_VARS]
+        placeholders = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""
+            SELECT log_id, log_date_ts
+            FROM chat_logs
+            WHERE log_id IN ({placeholders})
+            """,
+            chunk,
+        ).fetchall()
+        for log_id_raw, log_date_ts in rows:
+            try:
+                log_id = int(log_id_raw)
+            except (TypeError, ValueError):
+                continue
+            out[log_id] = int(log_date_ts) if log_date_ts is not None else None
     return out
 
 
@@ -3375,6 +3566,120 @@ def _stats_leaderboard_from_classkills_agg(
     return out, total_logs
 
 
+def _stats_leaderboard_from_weapons_agg(
+    lb_key: str,
+    weapon: str,
+    stat_scope: str,
+    ml: int,
+    spec: dict[str, Any],
+    path: Path,
+    profile_sql: str,
+    profile_params: list[Any],
+) -> tuple[list[dict[str, Any]], int]:
+    """Global kills-by-weapon leaderboard from ``player_weapons_agg``."""
+    ss_eff = stat_scope if stat_scope in ("total", "per_log") else "total"
+    if ss_eff == "per_log":
+        ord_clause = (
+            "(CAST(pwa.total_kills AS REAL) / NULLIF(pwa.log_count, 0)) DESC NULLS LAST"
+        )
+    else:
+        ord_clause = "pwa.total_kills DESC NULLS LAST"
+    fmt = spec["format"]
+    main_sql = f"""
+        SELECT
+          pwa.steamid64,
+          pwa.log_count,
+          pwa.total_kills,
+          psa.wins,
+          psa.decided_logs,
+          psa.avg_dpm,
+          psa.avg_kdr,
+          psa.avg_kadr,
+          psa.total_ubers,
+          psa.total_drops,
+          psa.total_headshots,
+          psa.total_backstabs,
+          psa.total_damage_taken,
+          psa.avg_deaths,
+          psa.avg_killstreak
+        FROM player_weapons_agg pwa
+        LEFT JOIN player_stats_agg psa ON psa.steamid64 = pwa.steamid64
+        WHERE pwa.weapon = ?
+          AND pwa.log_count >= ?
+          AND pwa.total_kills > 0
+        ORDER BY {ord_clause}
+        LIMIT ?
+    """
+    count_fast_sql = f"""
+        SELECT COUNT(*)
+        FROM logs l
+        WHERE 1=1
+          {profile_sql}
+    """
+    conn = _sqlite_connect_ro(path)
+    _configure_sqlite_leaderboard_read(conn)
+    conn.row_factory = sqlite3.Row
+    try:
+        total_logs = int(
+            conn.execute(count_fast_sql, tuple(profile_params)).fetchone()[0] or 0
+        )
+        cur = conn.execute(main_sql, (weapon, ml, LEADERBOARD_MAX_ROWS))
+        raw_rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    out: list[dict[str, Any]] = []
+    steam_ids: list[str] = []
+    for r in raw_rows:
+        sid = str(r["steamid64"] or "").strip()
+        if sid:
+            steam_ids.append(sid)
+        log_count = int(r["log_count"] or 0)
+        wins = int(r["wins"] or 0)
+        decided = int(r["decided_logs"] or 0)
+        win_rate = round(wins / decided, 6) if decided > 0 else None
+        if ss_eff == "per_log":
+            tk_i = int(r["total_kills"] or 0)
+            pv_raw = (float(tk_i) / float(log_count)) if log_count > 0 else None
+        else:
+            pv_raw = r["total_kills"]
+        primary_value: float | int | None
+        if pv_raw is None:
+            primary_value = None
+        elif fmt == "int":
+            primary_value = int(round(float(pv_raw)))
+        else:
+            primary_value = _round2(pv_raw)
+
+        out.append(
+            {
+                "steamid64": sid,
+                "name": "",
+                "log_count": log_count,
+                "avg_dpm": _round2(r["avg_dpm"]),
+                "avg_kdr": _round2(r["avg_kdr"]),
+                "avg_kadr": _round2(r["avg_kadr"]),
+                "win_rate": win_rate,
+                "wins": wins,
+                "decided_logs": decided,
+                "total_ubers": int(r["total_ubers"] or 0),
+                "total_drops": int(r["total_drops"] or 0),
+                "total_headshots": int(r["total_headshots"] or 0),
+                "total_backstabs": int(r["total_backstabs"] or 0),
+                "total_damage_taken": int(r["total_damage_taken"] or 0),
+                "avg_deaths": _round2(r["avg_deaths"]),
+                "avg_killstreak": _round2(r["avg_killstreak"]),
+                "primary_value": primary_value,
+            }
+        )
+
+    alias_map = _lookup_aliases_from_chat_db(steam_ids)
+    for row in out:
+        row["name"] = (alias_map.get(row["steamid64"]) or "").strip()
+
+    return out, total_logs
+
+
 def _round2(v: Any) -> float | None:
     if v is None:
         return None
@@ -3388,6 +3693,7 @@ def stats_leaderboard(
     lb_type: str,
     *,
     stat_scope: str = "total",
+    weapon: str = "",
     gamemode: str = "",
     class_filter: str = "",
     date_from: date | None = None,
@@ -3402,7 +3708,8 @@ def stats_leaderboard(
     ``total_logs`` is a fast count of rows in ``logs`` matching gamemode/date/map filters only
     (not class filter). Player rows and aggregates still respect the class filter when set.
     For ``dpm``, ``kdr``, ``ubers``, ``drops``, ``damage_taken``, ``backstabs``, ``headshots``,
-    ``heals``, ``avg_deaths``, ``avg_killstreak``, and ``kills_<class>`` (nine victim classes),
+    ``heals``, ``avg_deaths``, ``avg_killstreak``, ``kills_<class>`` (nine victim classes),
+    and ``kills_weapon_<class>`` (weapon kills; requires ``weapon`` log name),
     ``stat_scope`` is ``total`` (sum / aggregate) or ``per_log`` (average per game).
     (average per game). For ``winrate``, ``stat_scope`` is ``highest`` (best win % first) or
     ``lowest`` (worst win % first among players meeting ``min_logs``).
@@ -3412,6 +3719,12 @@ def stats_leaderboard(
     if lb_key not in _LEADERBOARD_TYPES:
         raise RuntimeError("Unknown leaderboard type.")
     victim_class = _leaderboard_victim_class_from_lb_key(lb_key)
+    weapon_lb_class = _leaderboard_weapon_lb_class_from_lb_key(lb_key)
+    weapon_key: str | None = None
+    if weapon_lb_class:
+        weapon_key = normalize_leaderboard_weapon(weapon, lb_key)
+        if not weapon_key:
+            raise RuntimeError("A valid weapon is required for this leaderboard type.")
     ss_raw = (stat_scope or "").strip().lower()
     if ss_raw not in LEADERBOARD_STAT_SCOPE_KEYS:
         ss_raw = "total"
@@ -3444,6 +3757,11 @@ def stats_leaderboard(
             lb_key, victim_class, ss, ml, spec, path, profile_sql, profile_params
         )
 
+    if weapon_key and global_unfiltered and player_weapons_agg_nonempty(path):
+        return _stats_leaderboard_from_weapons_agg(
+            lb_key, weapon_key, ss, ml, spec, path, profile_sql, profile_params
+        )
+
     agg_ok = (
         global_unfiltered
         and player_stats_agg_nonempty(path)
@@ -3453,6 +3771,7 @@ def stats_leaderboard(
         )
         and (lb_key != "heals" or player_stats_agg_heals_populated(path))
         and victim_class is None
+        and weapon_key is None
     )
     if agg_ok:
         return _stats_leaderboard_from_agg(lb_key, ss, ml, spec, path, profile_sql, profile_params)
@@ -3464,6 +3783,13 @@ def stats_leaderboard(
         lp_scope_sql, lp_scope_params = scope_sql, scope_params
         main_sql = _stats_leaderboard_classkills_sql(ss, ck_scope_sql, lp_scope_sql)
         scope_params = [victim_class] + ck_scope_params + lp_scope_params
+    elif weapon_key:
+        wp_scope_sql, wp_scope_params = _leaderboard_scope_sql_for_weapons(
+            gamemode, date_from, date_to, map_query, class_filter
+        )
+        lp_scope_sql, lp_scope_params = scope_sql, scope_params
+        main_sql = _stats_leaderboard_weapons_sql(ss, wp_scope_sql, lp_scope_sql)
+        scope_params = [weapon_key] + wp_scope_params + lp_scope_params
     elif lb_key == "heals":
         main_sql = _stats_leaderboard_heals_sql(ss, scope_sql)
     else:

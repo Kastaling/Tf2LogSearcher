@@ -34,16 +34,40 @@ var KILLS_BY_CLASS_VICTIMS = [
 ];
 KILLS_BY_CLASS_VICTIMS.forEach(function(c) {
   VALID_LB_TYPES['kills_' + c.id] = 1;
+  VALID_LB_TYPES['kills_weapon_' + c.id] = 1;
 });
 function killsLbType(classId) {
   return 'kills_' + String(classId || '').trim().toLowerCase();
 }
+function killsWeaponLbType(classId) {
+  return 'kills_weapon_' + String(classId || '').trim().toLowerCase();
+}
 function victimClassFromLbType(lbType) {
   var t = sanitizeLbTypeInput(lbType);
+  if (weaponLbClassFromLbType(t)) return '';
   if (t.indexOf('kills_') !== 0) return '';
   var vc = t.slice(6);
   return VALID_LB_TYPES[t] ? vc : '';
 }
+function weaponLbClassFromLbType(lbType) {
+  var t = sanitizeLbTypeInput(lbType);
+  if (t.indexOf('kills_weapon_') !== 0) return '';
+  var pc = t.slice(13);
+  return VALID_LB_TYPES[t] ? pc : '';
+}
+var DEFAULT_WEAPON_BY_LB_CLASS = {
+  scout: 'scattergun',
+  soldier: 'tf_projectile_rocket',
+  pyro: 'flamethrower',
+  demoman: 'tf_projectile_pipe',
+  heavyweapons: 'minigun',
+  engineer: 'obj_sentrygun',
+  medic: 'crusaders_crossbow',
+  sniper: 'sniperrifle',
+  spy: 'knife',
+};
+var _lbWeaponsCache = Object.create(null);
+var _lbWeaponsPending = Object.create(null);
 function sanitizeLbTypeInput(v) {
   var s = (v == null ? '' : String(v)).trim().toLowerCase();
   return VALID_LB_TYPES[s] ? s : 'dpm';
@@ -85,7 +109,7 @@ function sanitizeLeaderboardStatScopeInput(raw, lbType) {
   if (
     t === 'dpm' || t === 'kdr' || t === 'ubers' || t === 'drops' || t === 'damage_taken'
     || t === 'backstabs' || t === 'headshots' || t === 'heals' || t === 'avg_deaths'
-    || t === 'avg_killstreak' || victimClassFromLbType(t)
+    || t === 'avg_killstreak' || victimClassFromLbType(t) || weaponLbClassFromLbType(t)
   ) {
     if (s === 'total' || s === 'per_log') return s;
     return 'total';
@@ -143,6 +167,102 @@ function killsByClassMenuEntries() {
   return out;
 }
 
+function killsByWeaponMenuEntries() {
+  var out = [{ kind: 'heading', label: 'Kills by Weapon' }];
+  KILLS_BY_CLASS_VICTIMS.forEach(function(c) {
+    out.push({ kind: 'heading', label: c.label, iconClass: c.id, indent: 1 });
+    out.push({ kind: 'stat', lb: killsWeaponLbType(c.id), scope: 'total', label: 'Total', indent: 2, iconClass: c.id });
+    out.push({ kind: 'stat', lb: killsWeaponLbType(c.id), scope: 'per_log', label: 'Per log', indent: 2, iconClass: c.id });
+  });
+  return out;
+}
+
+function sanitizeLeaderboardWeaponInput(raw, lbType) {
+  var w = (raw == null ? '' : String(raw)).trim().toLowerCase();
+  if (!w) return '';
+  var pc = weaponLbClassFromLbType(lbType);
+  if (!pc) return '';
+  var list = _lbWeaponsCache[killsWeaponLbType(pc)];
+  if (!list || !list.length) return w;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].id === w) return w;
+  }
+  return '';
+}
+
+function fetchLeaderboardWeaponsForLbType(lbType, cb) {
+  var lt = sanitizeLbTypeInput(lbType);
+  var pc = weaponLbClassFromLbType(lt);
+  if (!pc) {
+    if (cb) cb([]);
+    return;
+  }
+  if (_lbWeaponsCache[lt]) {
+    if (cb) cb(_lbWeaponsCache[lt]);
+    return;
+  }
+  if (_lbWeaponsPending[lt]) {
+    _lbWeaponsPending[lt].push(cb);
+    return;
+  }
+  _lbWeaponsPending[lt] = [cb];
+  fetch('/api/leaderboard-weapons?lb_type=' + encodeURIComponent(lt))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var weapons = (data && data.weapons) ? data.weapons : [];
+      _lbWeaponsCache[lt] = weapons;
+      var cbs = _lbWeaponsPending[lt] || [];
+      delete _lbWeaponsPending[lt];
+      cbs.forEach(function(fn) { if (fn) fn(weapons); });
+    })
+    .catch(function() {
+      var cbs = _lbWeaponsPending[lt] || [];
+      delete _lbWeaponsPending[lt];
+      cbs.forEach(function(fn) { if (fn) fn([]); });
+    });
+}
+
+function populateLeaderboardWeaponSelect(select, weapons, selectedId) {
+  if (!select) return;
+  select.innerHTML = '';
+  var want = (selectedId == null ? '' : String(selectedId)).trim().toLowerCase();
+  (weapons || []).forEach(function(w) {
+    var opt = document.createElement('option');
+    opt.value = w.id;
+    opt.textContent = w.label || w.id;
+    select.appendChild(opt);
+  });
+  if (want) select.value = want;
+  if (!select.value && select.options.length) select.selectedIndex = 0;
+}
+
+function syncLeaderboardWeaponSelect(form, preferredWeapon) {
+  if (!form) return;
+  var wrap = form.querySelector('.js-lb-weapon-wrap');
+  var sel = form.elements.lb_weapon;
+  if (!wrap || !sel) return;
+  var lb = sanitizeLbTypeInput(form.elements.lb_type && form.elements.lb_type.value ? form.elements.lb_type.value : 'dpm');
+  var pc = weaponLbClassFromLbType(lb);
+  if (!pc) {
+    wrap.hidden = true;
+    wrap.setAttribute('aria-hidden', 'true');
+    sel.disabled = true;
+    sel.setAttribute('aria-hidden', 'true');
+    sel.value = '';
+    return;
+  }
+  wrap.hidden = false;
+  wrap.removeAttribute('aria-hidden');
+  sel.disabled = false;
+  sel.removeAttribute('aria-hidden');
+  var pref = sanitizeLeaderboardWeaponInput(preferredWeapon, lb);
+  if (!pref) pref = DEFAULT_WEAPON_BY_LB_CLASS[pc] || '';
+  fetchLeaderboardWeaponsForLbType(lb, function(weapons) {
+    populateLeaderboardWeaponSelect(sel, weapons, pref);
+    if (!sel.value && weapons.length) sel.value = weapons[0].id;
+  });
+}
+
 function leaderboardClassIconImg(classId) {
   if (!classId) return '';
   var key = String(classId).toLowerCase();
@@ -152,6 +272,37 @@ function leaderboardClassIconImg(classId) {
   return '<img class="logmatch-class-icon lb-stat-class-icon" src="' + escapeAttr(src) + '" alt="" width="22" height="22" loading="lazy" title="' + escapeAttr(label) + '">';
 }
 
+/** Insert class icons beside Stats Sorter class checkboxes (once per form). */
+function initStatsClassCheckboxIcons(form) {
+  var frm = form || document.getElementById('frmStats');
+  if (!frm || frm.dataset.statsClassIconsInit === '1') return;
+  frm.dataset.statsClassIconsInit = '1';
+  frm.querySelectorAll('label.stats-class-option').forEach(function(label) {
+    var inp = label.querySelector('input[name="classes"]');
+    if (!inp || label.querySelector('.stats-class-icon')) return;
+    var cid = (inp.value || '').trim().toLowerCase();
+    var iconHtml = leaderboardClassIconImg(cid);
+    if (!iconHtml) return;
+    var labelText = (LOGMATCH_CLASS_LABEL[cid] || cid);
+    var wrap = document.createElement('span');
+    wrap.className = 'stats-class-option-inner';
+    wrap.appendChild(inp);
+    var holder = document.createElement('span');
+    holder.innerHTML = iconHtml;
+    var img = holder.querySelector('.logmatch-class-icon');
+    if (img) {
+      img.classList.add('stats-class-icon');
+      wrap.appendChild(img);
+    }
+    var textSpan = document.createElement('span');
+    textSpan.className = 'stats-class-option-text';
+    textSpan.textContent = labelText;
+    wrap.appendChild(textSpan);
+    label.textContent = '';
+    label.appendChild(wrap);
+  });
+}
+
 function syncLeaderboardStatIconPreview(form) {
   if (!form) return;
   var preview = form.querySelector('.js-lb-stat-icon-preview');
@@ -159,7 +310,7 @@ function syncLeaderboardStatIconPreview(form) {
   var lb = form.elements.lb_type && form.elements.lb_type.value
     ? form.elements.lb_type.value
     : 'dpm';
-  var vc = victimClassFromLbType(lb);
+  var vc = victimClassFromLbType(lb) || weaponLbClassFromLbType(lb);
   preview.innerHTML = vc ? leaderboardClassIconImg(vc) : '';
   preview.hidden = !vc;
 }
@@ -239,7 +390,7 @@ var LEADERBOARD_STAT_MENU = [
       { kind: 'heading', label: 'Killstreak' },
       { kind: 'stat', lb: 'avg_killstreak', scope: 'total', label: 'Total', indent: 1 },
       { kind: 'stat', lb: 'avg_killstreak', scope: 'per_log', label: 'Per log', indent: 1 },
-    ].concat(killsByClassMenuEntries()).concat([
+    ].concat(killsByClassMenuEntries()).concat(killsByWeaponMenuEntries()).concat([
       { kind: 'heading', label: 'Headshots' },
       { kind: 'stat', lb: 'headshots', scope: 'total', label: 'Total', indent: 1 },
       { kind: 'stat', lb: 'headshots', scope: 'per_log', label: 'Per log', indent: 1 },
@@ -349,6 +500,7 @@ function applyLeaderboardStatSelectToForm(form) {
   if (form.elements.lb_type) form.elements.lb_type.value = parsed.lb_type;
   if (form.elements.stat_scope) form.elements.stat_scope.value = parsed.stat_scope;
   syncLeaderboardClassSelectForMedicLeaderboards(form);
+  syncLeaderboardWeaponSelect(form, form.elements.lb_weapon && form.elements.lb_weapon.value);
   syncLeaderboardStatIconPreview(form);
   syncLeaderboardStatClosedDisplay(form);
   return parsed;
@@ -744,6 +896,15 @@ function readNotifyPrefs() {
     }
   } catch (e) {}
   return d;
+}
+
+/** Remove a same-origin TF2LS preference cookie (path=/, SameSite=Lax). */
+function clearTf2lsCookie(cookieName) {
+  var name = (cookieName || '').trim();
+  if (!name) return;
+  try {
+    document.cookie = name + '=;path=/;max-age=0;SameSite=Lax';
+  } catch (e) {}
 }
 
 function writeNotifyPrefs(prefs) {

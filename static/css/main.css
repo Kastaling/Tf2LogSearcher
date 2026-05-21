@@ -86,12 +86,12 @@
     [data-theme="dark"] h2 { color: #6eb5c0; }
     a, a:visited { color: var(--link); }
     /* Explicit button text color so it stays visible in Vivaldi/browser dark mode */
-    button:not(.theme-toggle):not(.profile-word-cloud-item), input[type="submit"], input[type="button"], input[type="reset"], .back-button, .js-chat-subscribe {
+    button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item), input[type="submit"], input[type="button"], input[type="reset"], .back-button, .js-chat-subscribe {
       background-color: var(--accent);
       border-color: var(--accent);
       color: #fff;
     }
-    button:not(.theme-toggle):not(.profile-word-cloud-item):hover, input[type="submit"]:hover, input[type="button"]:hover, input[type="reset"]:hover, .back-button:hover, .js-chat-subscribe:hover {
+    button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):hover, input[type="submit"]:hover, input[type="button"]:hover, input[type="reset"]:hover, .back-button:hover, .js-chat-subscribe:hover {
       background-color: var(--accent-hover);
       border-color: var(--accent-hover);
       color: #fff;
@@ -110,7 +110,7 @@
     a.back-button:visited:hover {
       color: var(--accent-text);
     }
-    [data-theme="dark"] button:not(.theme-toggle):not(.profile-word-cloud-item), [data-theme="dark"] input[type="submit"], [data-theme="dark"] input[type="button"], [data-theme="dark"] input[type="reset"], [data-theme="dark"] .back-button, [data-theme="dark"] .js-chat-subscribe {
+    [data-theme="dark"] button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item), [data-theme="dark"] input[type="submit"], [data-theme="dark"] input[type="button"], [data-theme="dark"] input[type="reset"], [data-theme="dark"] .back-button, [data-theme="dark"] .js-chat-subscribe {
       color: #1a1a1a;
     }
     [data-theme="dark"] a.back-button,
@@ -118,7 +118,7 @@
     [data-theme="dark"] a.back-button:visited {
       color: #1a1a1a;
     }
-    [data-theme="dark"] button:not(.theme-toggle):not(.profile-word-cloud-item):hover, [data-theme="dark"] input[type="submit"]:hover, [data-theme="dark"] input[type="button"]:hover, [data-theme="dark"] input[type="reset"]:hover, [data-theme="dark"] .back-button:hover, [data-theme="dark"] .js-chat-subscribe:hover {
+    [data-theme="dark"] button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):hover, [data-theme="dark"] input[type="submit"]:hover, [data-theme="dark"] input[type="button"]:hover, [data-theme="dark"] input[type="reset"]:hover, [data-theme="dark"] .back-button:hover, [data-theme="dark"] .js-chat-subscribe:hover {
       color: #1a1a1a;
     }
     [data-theme="dark"] a.back-button:hover,
@@ -129,9 +129,62 @@
     form { margin-bottom: 1.25rem; }
     form label { margin-bottom: 0.5rem; display: block; }
     form .form-row { display: block; margin-bottom: 0.5rem; }
+    .form-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+      margin-bottom: 0;
+    }
+    /* Submit margin lives on .form-actions; extra margin-top misaligns paired Reset buttons */
+    .form-actions button[type="submit"],
+    .form-actions .form-reset-btn {
+      margin-top: 0;
+      margin-bottom: 0;
+      align-self: center;
+    }
+    .form-reset-btn {
+      padding: 0.3rem 0.55rem;
+      font-size: 0.85rem;
+      line-height: 1.2;
+      min-height: auto;
+    }
+    .stats-class-options {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      margin-bottom: 0.75rem;
+    }
+    .stats-class-options .form-row { margin-bottom: 0.15rem; }
+    label.stats-class-option {
+      display: flex;
+      align-items: center;
+      margin-bottom: 0;
+      cursor: pointer;
+      max-width: 12rem;
+    }
+    .stats-class-option-inner {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem 0.5rem;
+    }
+    .stats-class-option-text {
+      line-height: 1.2;
+    }
+    .stats-class-option .stats-class-icon {
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      vertical-align: middle;
+    }
     form input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"]),
     form textarea, form select { margin-bottom: 0; padding: 0.3rem 0.45rem; }
     form button[type="submit"] { margin-top: 0.5rem; }
+    /* ``form label { display: block }`` overrides the HTML ``hidden`` attribute on weapon wrap labels */
+    .lb-weapon-wrap[hidden] {
+      display: none !important;
+    }
     /* Use --input-bg so inputs stay slightly darker than page in dark theme */
     input:not([type="submit"]):not([type="button"]):not([type="reset"]),
     textarea, select {
@@ -1483,26 +1536,57 @@
     }
     .webhook-subscribe input[type="url"], .webhook-subscribe input[type="text"] { max-width: 100%; width: 400px; }
     .webhook-subscribe .subscribe-msg { margin-top: 0.35rem; font-size: 0.9em; }
-    .theme-toggle {
+    .home-page-controls {
       position: fixed;
       top: 0.5rem;
       right: 0.5rem;
       z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0.35rem;
+    }
+    .home-page-controls .theme-toggle {
+      position: static;
+    }
+    .theme-toggle,
+    .home-reset-all-btn {
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--input-bg);
+      background-color: var(--input-bg);
+      border-color: var(--border);
+      cursor: pointer;
+    }
+    .theme-toggle {
       padding: 0.5rem 0.75rem;
       min-height: 44px;
       min-width: 44px;
       font-size: 1rem;
-      border-radius: 6px;
-      border: 1px solid var(--border);
-      background: var(--input-bg);
       color: var(--text);
-      cursor: pointer;
       line-height: 1;
     }
-    .theme-toggle:hover, .theme-toggle:focus {
+    .home-reset-all-btn {
+      padding: 0.35rem 0.55rem;
+      min-height: 36px;
+      font-size: 0.8rem;
+      line-height: 1.2;
+      color: var(--text);
+    }
+    [data-theme="dark"] .home-reset-all-btn {
+      color: #fff;
+    }
+    .theme-toggle:hover,
+    .theme-toggle:focus,
+    .home-reset-all-btn:hover,
+    .home-reset-all-btn:focus {
       opacity: 0.9;
       outline: 2px solid var(--link);
       outline-offset: 2px;
+    }
+    [data-theme="dark"] .home-reset-all-btn:hover,
+    [data-theme="dark"] .home-reset-all-btn:focus {
+      color: #fff;
     }
     .profile-healspread-cols {
       display: flex;
@@ -1574,7 +1658,10 @@
       font: inherit;
       cursor: pointer;
     }
-    @media (max-width: 600px) { .theme-toggle { top: 0.25rem; right: 0.25rem; padding: 0.4rem 0.6rem; } }
+    @media (max-width: 600px) {
+      .home-page-controls { top: 0.25rem; right: 0.25rem; }
+      .home-page-controls .theme-toggle { padding: 0.4rem 0.6rem; }
+    }
     .back-button {
       display: inline-block;
       padding: 0.5rem 1rem;

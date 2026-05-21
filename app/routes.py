@@ -44,6 +44,7 @@ from app.stats_db import count_stats_index_rows, stats_db_fingerprint, stats_pla
 from app.rate_limit import rate_limit_exceeded
 from app.request_log import append_request_log
 from app.profile_views import record_profile_view, visitor_fingerprint
+from app.weapon_names import get_weapon_name
 from app.search.search import (
     LEADERBOARD_MIN_LOGS_DEFAULT,
     LEADERBOARD_MIN_LOGS_MAX,
@@ -52,6 +53,9 @@ from app.search.search import (
     PlayerNameIndexNotReadyError,
     _LOGMATCH_CLASS_TYPES,
     _leaderboard_supports_total_per_log,
+    _leaderboard_weapon_lb_class_from_lb_key,
+    leaderboard_weapons_for_type,
+    normalize_leaderboard_weapon,
     STATS_SEARCH_DEFAULT_CLASSES,
     chat_leaderboard_search_sqlite,
     chat_search,
@@ -1750,11 +1754,22 @@ def _api_leaderboard_impl(
     date_to_raw: str,
     map_query_raw: str,
     min_logs_raw: str,
+    weapon_raw: str,
 ) -> JSONResponse:
     start = time.perf_counter()
     lt = (lb_type or "").strip().lower()
     if lt not in LEADERBOARD_TYPE_KEYS:
         return JSONResponse({"error": "Invalid leaderboard type."}, status_code=400)
+    weapon_lb_class = _leaderboard_weapon_lb_class_from_lb_key(lt)
+    weapon_key = ""
+    if weapon_lb_class:
+        wn = normalize_leaderboard_weapon(weapon_raw, lt)
+        if not wn:
+            return JSONResponse(
+                {"error": "Invalid or missing weapon for this leaderboard type."},
+                status_code=400,
+            )
+        weapon_key = wn
     date_from, err = _parse_iso_date_or_none(date_from_raw)
     if err:
         return JSONResponse({"error": err}, status_code=400)
@@ -1809,6 +1824,7 @@ def _api_leaderboard_impl(
         date_to.isoformat() if date_to else "",
         map_query.lower(),
         ml,
+        weapon_key,
     )
     cached = cache_get("leaderboard", cache_key)
     if cached is not None:
@@ -1837,6 +1853,7 @@ def _api_leaderboard_impl(
         rows, total_logs = stats_leaderboard(
             lt,
             stat_scope=ss,
+            weapon=weapon_key,
             gamemode=gm,
             class_filter=cf,
             date_from=date_from,
@@ -1844,7 +1861,14 @@ def _api_leaderboard_impl(
             map_query=map_query,
             min_logs=ml,
         )
-        payload = {"rows": rows, "total_logs": total_logs, "lb_type": lt, "stat_scope": ss}
+        payload = {
+            "rows": rows,
+            "total_logs": total_logs,
+            "lb_type": lt,
+            "stat_scope": ss,
+            "weapon": weapon_key or None,
+            "weapon_label": get_weapon_name(weapon_key) if weapon_key else None,
+        }
         cache_set("leaderboard", cache_key, payload, stats_db_fingerprint(STATS_DB_PATH))
         _lb_sids = [r["steamid64"] for r in rows if r.get("steamid64")]
         if _lb_sids:
@@ -1876,6 +1900,15 @@ def _api_leaderboard_impl(
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@router.get("/api/leaderboard-weapons")
+async def api_leaderboard_weapons(lb_type: str = Query("kills_weapon_scout")):
+    """Weapon picker options for a ``kills_weapon_<class>`` leaderboard type."""
+    lt = (lb_type or "").strip().lower()
+    if lt not in LEADERBOARD_TYPE_KEYS or not _leaderboard_weapon_lb_class_from_lb_key(lt):
+        return JSONResponse({"error": "Invalid weapon leaderboard type."}, status_code=400)
+    return JSONResponse({"lb_type": lt, "weapons": leaderboard_weapons_for_type(lt)})
+
+
 @router.get("/api/leaderboard")
 async def api_leaderboard_get(
     request: Request,
@@ -1883,6 +1916,7 @@ async def api_leaderboard_get(
     gamemode: str = Query(""),
     class_filter: str = Query(""),
     stat_scope: str = Query("total"),
+    weapon: str = Query(""),
     date_from: str = Query(""),
     date_to: str = Query(""),
     map_query: str = Query(""),
@@ -1899,6 +1933,7 @@ async def api_leaderboard_get(
         date_to or "",
         map_query or "",
         min_logs or "",
+        weapon or "",
     )
 
 

@@ -9,10 +9,12 @@ from app.search.search import (
     _leaderboard_agg_order_clause,
     _leaderboard_resolve_spec,
     _leaderboard_victim_class_from_lb_key,
+    _leaderboard_weapon_lb_class_from_lb_key,
     _log_in_date_range,
     _map_matches_query,
     _player_count_filter,
     _winner_team_from_log,
+    normalize_leaderboard_weapon,
     stats_leaderboard,
 )
 from app.stats_db import (
@@ -40,6 +42,8 @@ def _leaderboard_log(
     b_backstabs: int = 0,
     healspread: dict | None = None,
     classkills: dict | None = None,
+    scout_weapons: dict | None = None,
+    b_scout_weapons: dict | None = None,
 ) -> dict:
     out = {
         "info": {
@@ -66,7 +70,17 @@ def _leaderboard_log(
                 "headshots": a_headshots,
                 "backstabs": a_backstabs,
                 "longest_killstreak": a_ks,
-                "class_stats": [{"type": "soldier", "total_time": 300, "kills": 10, "assists": 2, "deaths": 5, "dmg": 3000}],
+                "class_stats": [
+                    {
+                        "type": "scout" if scout_weapons else "soldier",
+                        "total_time": 300,
+                        "kills": 10,
+                        "assists": 2,
+                        "deaths": 5,
+                        "dmg": 3000,
+                        **({"weapon": scout_weapons} if scout_weapons else {}),
+                    }
+                ],
             },
             PLAYER_B_3: {
                 "team": "Blue",
@@ -80,7 +94,17 @@ def _leaderboard_log(
                 "headshots": b_headshots,
                 "backstabs": b_backstabs,
                 "longest_killstreak": b_ks,
-                "class_stats": [{"type": "soldier", "total_time": 300, "kills": 8, "assists": 1, "deaths": 6, "dmg": 2400}],
+                "class_stats": [
+                    {
+                        "type": "scout" if b_scout_weapons else "soldier",
+                        "total_time": 300,
+                        "kills": 8,
+                        "assists": 1,
+                        "deaths": 6,
+                        "dmg": 2400,
+                        **({"weapon": b_scout_weapons} if b_scout_weapons else {}),
+                    }
+                ],
             },
         },
         "names": {
@@ -322,8 +346,21 @@ def stats_leaderboard_classkills_db(tmp_path):
 def test_leaderboard_victim_class_from_lb_key():
     assert _leaderboard_victim_class_from_lb_key("kills_soldier") == "soldier"
     assert _leaderboard_victim_class_from_lb_key("kills_heavyweapons") == "heavyweapons"
+    assert _leaderboard_victim_class_from_lb_key("kills_weapon_scout") is None
     assert _leaderboard_victim_class_from_lb_key("kills_invalid") is None
     assert _leaderboard_victim_class_from_lb_key("dpm") is None
+
+
+def test_leaderboard_weapon_lb_class_from_lb_key():
+    assert _leaderboard_weapon_lb_class_from_lb_key("kills_weapon_scout") == "scout"
+    assert _leaderboard_weapon_lb_class_from_lb_key("kills_weapon_spy") == "spy"
+    assert _leaderboard_weapon_lb_class_from_lb_key("kills_scout") is None
+
+
+def test_normalize_leaderboard_weapon_whitelist():
+    assert normalize_leaderboard_weapon("scattergun", "kills_weapon_scout") == "scattergun"
+    assert normalize_leaderboard_weapon("flaregun", "kills_weapon_scout") is None
+    assert normalize_leaderboard_weapon("';drop--", "kills_weapon_scout") is None
 
 
 def test_leaderboard_resolve_spec_kills_soldier():
@@ -350,6 +387,66 @@ def test_stats_leaderboard_kills_soldier_total_and_per_log(
     rows_p, _ = stats_leaderboard("kills_soldier", stat_scope="per_log", min_logs=1)
     assert rows_p[0]["primary_value"] == 8.0
     assert rows_p[1]["primary_value"] == 6.5
+
+
+@pytest.fixture()
+def stats_leaderboard_weapons_db(tmp_path):
+    db_path = tmp_path / "stats.db"
+    conn = connect_stats_db(db_path)
+    init_stats_db(conn)
+    sg = {"kills": 1, "dmg": 100, "shots": 10, "hits": 5}
+    with conn:
+        replace_stats_for_log(
+            conn,
+            1001,
+            _leaderboard_log(
+                4,
+                4,
+                log_id=1001,
+                scout_weapons={"scattergun": {**sg, "kills": 12}},
+            ),
+        )
+        replace_stats_for_log(
+            conn,
+            1002,
+            _leaderboard_log(
+                2,
+                4,
+                log_id=1002,
+                scout_weapons={"scattergun": {**sg, "kills": 4}},
+                b_scout_weapons={"scattergun": {**sg, "kills": 5}},
+            ),
+        )
+        rebuild_player_stats_agg(conn)
+    conn.close()
+    return db_path
+
+
+def test_stats_leaderboard_scattergun_total_and_per_log(
+    stats_leaderboard_weapons_db, monkeypatch
+):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", stats_leaderboard_weapons_db)
+    rows_t, _ = stats_leaderboard(
+        "kills_weapon_scout", weapon="scattergun", min_logs=1
+    )
+    assert rows_t[0]["steamid64"] == PLAYER_A
+    assert rows_t[0]["primary_value"] == 16
+    assert rows_t[1]["steamid64"] == PLAYER_B
+    assert rows_t[1]["primary_value"] == 5
+    rows_p, _ = stats_leaderboard(
+        "kills_weapon_scout",
+        weapon="scattergun",
+        stat_scope="per_log",
+        min_logs=1,
+    )
+    assert rows_p[0]["primary_value"] == 8.0
+    assert rows_p[1]["primary_value"] == 5.0
+
+
+def test_stats_leaderboard_weapon_required(stats_leaderboard_weapons_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", stats_leaderboard_weapons_db)
+    with pytest.raises(RuntimeError, match="weapon"):
+        stats_leaderboard("kills_weapon_scout", min_logs=1)
 
 
 # --- _log_in_date_range ---

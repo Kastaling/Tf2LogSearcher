@@ -6,6 +6,7 @@ from app.logs_tf import steamid3_to_steamid64
 from app.stats_db import connect_stats_db, init_stats_db, replace_stats_for_log
 from app.search.search import (
     _profile_fetch_favorite_words,
+    _profile_fetch_log_date_ts_by_log,
     _profile_latest_message_key,
     player_profile,
 )
@@ -282,6 +283,16 @@ def test_profile_overview_counts(populated_db, monkeypatch):
 def test_profile_latest_message_key_uses_log_date() -> None:
     by_log = {1001: 1_700_000_000, 1002: 1_700_100_000}
     assert _profile_latest_message_key(by_log, 1002, 0) > _profile_latest_message_key(by_log, 1001, 999)
+
+
+def test_profile_fetch_log_date_ts_by_log(populated_chat_db) -> None:
+    conn = connect_chat_db(populated_chat_db)
+    try:
+        by_log = _profile_fetch_log_date_ts_by_log(conn, PLAYER_A)
+        assert by_log == {1001: 1_700_000_000, 1002: 1_700_050_000}
+        assert _profile_fetch_log_date_ts_by_log(conn, "") == {}
+    finally:
+        conn.close()
 
 
 def test_profile_favorite_words_from_chat_db(populated_db, populated_chat_db, monkeypatch):

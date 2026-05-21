@@ -37,7 +37,10 @@
 
 </head>
 <body>
-  <button type="button" class="theme-toggle" id="themeToggle" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
+  <div class="home-page-controls">
+    <button type="button" class="theme-toggle" id="themeToggle" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
+    <button type="button" class="home-reset-all-btn" id="homeResetAll" title="Reset all search forms to defaults" aria-label="Reset all search forms to defaults">Reset all</button>
+  </div>
   <div id="homePage">
   <h1>TF2 Logs.tf Advanced Searcher</h1>
   <div class="js-home-endpoints-stack">
@@ -51,7 +54,10 @@
     <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
     <label>Date from (optional): <input type="date" name="date_from"></label>
     <label>Date to (optional): <input type="date" name="date_to"></label>
-    <button type="submit">Submit</button>
+    <p class="form-actions">
+      <button type="submit">Submit</button>
+      <button type="button" class="form-reset-btn js-form-reset" data-form-mode="chat" title="Reset this form" aria-label="Reset Chat Searcher form">Reset</button>
+    </p>
   </form>
   <div id="chatResults" class="results"></div>
   </div>
@@ -72,7 +78,10 @@
     <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
     <label>Date from (optional): <input type="date" name="date_from"></label>
     <label>Date to (optional): <input type="date" name="date_to"></label>
-    <button type="submit">Load profile</button>
+    <p class="form-actions">
+      <button type="submit">Load profile</button>
+      <button type="button" class="form-reset-btn js-form-reset" data-form-mode="profile" title="Reset this form" aria-label="Reset Player profile form">Reset</button>
+    </p>
   </form>
   <div id="profileResults" class="results"></div>
   </div>
@@ -91,7 +100,10 @@
       <option value="ud">Ultiduo</option>
     </select></label>
     <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
-    <button type="submit">Submit</button>
+    <p class="form-actions">
+      <button type="submit">Submit</button>
+      <button type="button" class="form-reset-btn js-form-reset" data-form-mode="coplayers" title="Reset this form" aria-label="Reset Frequent Co-players form">Reset</button>
+    </p>
   </form>
   <div id="coplayers-results" class="results"></div>
   </div>
@@ -102,7 +114,10 @@
   <form id="frmLogmatch">
     <label>Steam IDs: <textarea name="steamids" rows="3" cols="50" placeholder="Profile URLs, vanity names, or 17-digit IDs (space or comma separated)"></textarea></label>
     <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
-    <button type="submit">Submit</button>
+    <p class="form-actions">
+      <button type="submit">Submit</button>
+      <button type="button" class="form-reset-btn js-form-reset" data-form-mode="logmatch" title="Reset this form" aria-label="Reset Multi-party Log Searcher form">Reset</button>
+    </p>
   </form>
   <div id="logmatchResults" class="results"></div>
   </div>
@@ -122,17 +137,22 @@
     <label>Map filter (optional): <input type="text" name="map_query" maxlength="100" placeholder="e.g. cp_, koth_, gullywash"></label>
     <label>Date from (optional): <input type="date" name="date_from"></label>
     <label>Date to (optional): <input type="date" name="date_to"></label>
-    <span class="form-row">Class selection:</span>
-    <label><input type="checkbox" name="classes" value="scout"> Scout</label>
-    <label><input type="checkbox" name="classes" value="soldier"> Soldier</label>
-    <label><input type="checkbox" name="classes" value="pyro"> Pyro</label>
-    <label><input type="checkbox" name="classes" value="demoman"> Demoman</label>
-    <label><input type="checkbox" name="classes" value="heavyweapons"> Heavy</label>
-    <label><input type="checkbox" name="classes" value="engineer"> Engineer</label>
-    <label><input type="checkbox" name="classes" value="medic"> Medic</label>
-    <label><input type="checkbox" name="classes" value="sniper"> Sniper</label>
-    <label><input type="checkbox" name="classes" value="spy"> Spy</label>
-    <button type="submit">Submit</button>
+    <div class="stats-class-options" role="group" aria-label="Class selection">
+      <span class="form-row">Class selection:</span>
+      <label class="stats-class-option"><input type="checkbox" name="classes" value="scout"> Scout</label>
+      <label class="stats-class-option"><input type="checkbox" name="classes" value="soldier"> Soldier</label>
+      <label class="stats-class-option"><input type="checkbox" name="classes" value="pyro"> Pyro</label>
+      <label class="stats-class-option"><input type="checkbox" name="classes" value="demoman"> Demoman</label>
+      <label class="stats-class-option"><input type="checkbox" name="classes" value="heavyweapons"> Heavy</label>
+      <label class="stats-class-option"><input type="checkbox" name="classes" value="engineer"> Engineer</label>
+      <label class="stats-class-option"><input type="checkbox" name="classes" value="medic"> Medic</label>
+      <label class="stats-class-option"><input type="checkbox" name="classes" value="sniper"> Sniper</label>
+      <label class="stats-class-option"><input type="checkbox" name="classes" value="spy"> Spy</label>
+    </div>
+    <p class="form-actions">
+      <button type="submit">Submit</button>
+      <button type="button" class="form-reset-btn js-form-reset" data-form-mode="stats" title="Reset this form" aria-label="Reset Stats Sorter form">Reset</button>
+    </p>
   </form>
   <div id="statsResults" class="results"></div>
   </div>
@@ -152,6 +172,11 @@
     </label>
     <input type="hidden" name="lb_type" value="dpm">
     <input type="hidden" name="stat_scope" value="per_log">
+    <div class="js-lb-weapon-wrap lb-weapon-wrap" hidden>
+      <label>Weapon:
+        <select name="lb_weapon" class="js-lb-weapon-select" aria-label="Leaderboard weapon"></select>
+      </label>
+    </div>
     <label>Gamemode: <select name="gamemode">
       <option value="">All gamemodes</option>
       <option value="hl">Highlander</option>
@@ -176,7 +201,10 @@
     <label>Date from (optional): <input type="date" name="date_from"></label>
     <label>Date to (optional): <input type="date" name="date_to"></label>
     <label>Minimum logs: <input type="number" name="min_logs" value="10" min="1" max="5000" style="width:5.5rem"></label>
-    <button type="submit">Load leaderboard</button>
+    <p class="form-actions">
+      <button type="submit">Load leaderboard</button>
+      <button type="button" class="form-reset-btn js-form-reset" data-form-mode="leaderboard" title="Reset this form" aria-label="Reset Stats Leaderboards form">Reset</button>
+    </p>
   </form>
   <div id="leaderboardResults" class="results"></div>
   </div>
@@ -186,7 +214,10 @@
   <p>Find Steam accounts by a substring of the in-game name used in chat we have indexed. Names link to Steam profiles; rows are sorted by how many different logs include that name.</p>
   <form id="frmPlayerName">
     <label>Name contains: <input type="search" name="q" minlength="3" maxlength="64" required placeholder="e.g. frag" autocomplete="off"></label>
-    <button type="submit">Search</button>
+    <p class="form-actions">
+      <button type="submit">Search</button>
+      <button type="button" class="form-reset-btn js-form-reset" data-form-mode="playername" title="Reset this form" aria-label="Reset Player search by name form">Reset</button>
+    </p>
   </form>
   <div id="playerNameResults" class="results"></div>
   </div>
@@ -234,6 +265,9 @@
         </p>
         <p class="layout-share-status js-layout-share-status stats-summary-meta" aria-live="polite"></p>
       </div>
+      <p class="browser-settings-actions">
+        <button type="button" class="js-browser-settings-reset">Reset browser settings to defaults</button>
+      </p>
     </div>
   </details>
 
