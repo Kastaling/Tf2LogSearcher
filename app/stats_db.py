@@ -1767,18 +1767,20 @@ def stats_db_fingerprint(db_path: str | Path) -> frozenset[int]:
     return frozenset((count, max_id, max_imp))
 
 
-def stats_player_stats_cache_token(db_path: str | Path, steamid64: str) -> frozenset[int]:
+def stats_player_stats_cache_token_parts(
+    db_path: str | Path,
+    steamid64: str,
+) -> tuple[int, int, int]:
     """
-    Small fingerprint for per-player stats/coplayers/profile cache validation.
-    Avoids loading every ``log_id`` for the player on each cache hit.
+    Per-player stats fingerprint as ``(log_count, max_log_id, sum_imported_at)``.
 
-    Uses ``log_players.imported_at`` (denormalized from ``logs`` at insert) so validation is a
-    single index lookup on ``steamid64`` with no join.
+    Order is fixed; use this for disk cache columns. For in-memory cache equality use
+    ``stats_player_stats_cache_token`` (frozenset of the same three values).
     """
     path = Path(db_path)
     sid = (steamid64 or "").strip()
     if not path.is_file() or not sid:
-        return frozenset()
+        return (0, 0, 0)
     try:
         conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
         try:
@@ -1806,13 +1808,38 @@ def stats_player_stats_cache_token(db_path: str | Path, steamid64: str) -> froze
         finally:
             conn.close()
     except Exception:
-        return frozenset()
+        return (0, 0, 0)
     if not row:
+        return (0, 0, 0)
+    return (int(row[0] or 0), int(row[1] or 0), int(row[2] or 0))
+
+
+def stats_player_stats_cache_token_frozenset_from_parts(
+    parts: tuple[int, int, int],
+) -> frozenset[int]:
+    """
+    In-memory cache token for ``stats_player_stats_cache_token_parts`` output.
+
+    Must match ``stats_player_stats_cache_token`` — do not use bare ``frozenset(parts)``:
+    ``frozenset((0, 0, 0))`` collapses to ``frozenset({0})``, which would not equal ``frozenset()``.
+    """
+    cnt, mx, s = (int(parts[0]), int(parts[1]), int(parts[2]))
+    if cnt == 0 and mx == 0 and s == 0:
         return frozenset()
-    cnt = int(row[0] or 0)
-    mx = int(row[1] or 0)
-    s = int(row[2] or 0)
     return frozenset((cnt, mx, s))
+
+
+def stats_player_stats_cache_token(db_path: str | Path, steamid64: str) -> frozenset[int]:
+    """
+    Small fingerprint for per-player stats/coplayers/profile cache validation.
+    Avoids loading every ``log_id`` for the player on each cache hit.
+
+    Uses ``log_players.imported_at`` (denormalized from ``logs`` at insert) so validation is a
+    single index lookup on ``steamid64`` with no join.
+    """
+    return stats_player_stats_cache_token_frozenset_from_parts(
+        stats_player_stats_cache_token_parts(db_path, steamid64)
+    )
 
 
 def stats_log_ids_for_player(db_path: str | Path, steamid64: str) -> frozenset[int]:

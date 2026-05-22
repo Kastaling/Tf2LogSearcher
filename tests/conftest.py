@@ -20,6 +20,7 @@ def pytest_configure(config):
     os.environ["DOWNLOADER_STATE_DIR"] = str(state)
     os.environ["CHAT_DB_PATH"] = str(state / "chat.db")
     os.environ["AVATAR_DB_PATH"] = str(state / "avatars.db")
+    os.environ["PROFILE_CACHE_DB_PATH"] = str(state / "profile_cache.db")
     os.environ["REQUEST_LOG_PATH"] = str(base / "req.csv")
     os.environ["_TF2LS_PYTEST_ENV"] = "1"
 

@@ -1,0 +1,1261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;">
+  <title>TF2 Log Searcher — Request log viewer (offline)</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --card: #fff;
+      --text: #1a1a1a;
+      --muted: #555;
+      --border: #c8cdd3;
+      --accent: #2e6c80;
+      --accent-soft: #e8f2f6;
+      --danger: #a33;
+      --warn: #8a6d00;
+      --ok: #2d6a3e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1a1a1a;
+        --card: #252525;
+        --text: #e8e8e8;
+        --muted: #b0b0b0;
+        --border: #444;
+        --accent: #6eb5c0;
+        --accent-soft: #1e3338;
+        --danger: #f88;
+        --warn: #ddb;
+        --ok: #8c8;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 15px;
+      line-height: 1.45;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--card);
+    }
+    header h1 { margin: 0 0 0.35rem; font-size: 1.25rem; color: var(--accent); }
+    header p { margin: 0.25rem 0; color: var(--muted); font-size: 0.9rem; }
+    main { max-width: 1200px; margin: 0 auto; padding: 1rem 1.25rem 2rem; }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    .privacy { background: var(--accent-soft); border-color: var(--accent); font-size: 0.9rem; }
+    .load-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+    .load-row input[type="file"] { max-width: 100%; }
+    .meta { font-size: 0.85rem; color: var(--muted); }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+      gap: 0.75rem;
+    }
+    .stat-card {
+      padding: 0.65rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+    }
+    .stat-card .val { font-size: 1.35rem; font-weight: 700; }
+    .stat-card .lbl { font-size: 0.8rem; color: var(--muted); }
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+      gap: 0.65rem 1rem;
+      align-items: end;
+    }
+    label { display: block; font-size: 0.85rem; margin-bottom: 0.2rem; }
+    input, select, button {
+      font: inherit;
+      padding: 0.35rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--card);
+      color: var(--text);
+    }
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    button.secondary {
+      background: var(--card);
+      color: var(--text);
+      border-color: var(--border);
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .charts {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+    .chart-box h3 { margin: 0 0 0.5rem; font-size: 0.95rem; }
+    canvas { width: 100%; height: 180px; display: block; }
+    details summary { cursor: pointer; font-weight: 600; }
+    .glossary dt { font-weight: 600; margin-top: 0.5rem; }
+    .glossary dd { margin: 0.15rem 0 0 0; color: var(--muted); font-size: 0.9rem; }
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.35rem 0.45rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--bg); position: sticky; top: 0; }
+    tr.err { background: rgba(160, 51, 51, 0.08); }
+    tr.slow { background: rgba(138, 109, 0, 0.08); }
+    .pager { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.75rem; }
+    .duration-metric-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem; }
+    .duration-table { font-size: 0.8rem; }
+    .duration-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .chart-wide { grid-column: 1 / -1; }
+    .chart-wide canvas { height: 220px; }
+    .report-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 0.65rem; }
+    .report-redact { font-size: 0.85rem; display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; }
+    .report-redact label { display: inline-flex; align-items: center; gap: 0.35rem; margin: 0; cursor: pointer; }
+    #issuesReport {
+      width: 100%;
+      min-height: 14rem;
+      font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+      font-size: 0.78rem;
+      line-height: 1.4;
+      resize: vertical;
+    }
+    .hidden { display: none !important; }
+    .status-ok { color: var(--ok); }
+    .status-err { color: var(--danger); font-weight: 600; }
+    .status-warn { color: var(--warn); }
+    #parseStatus.error { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Request log viewer</h1>
+    <p>Offline tool for <code>request_log.csv</code> from TF2 Log Searcher. Data stays on your machine — nothing is uploaded.</p>
+  </header>
+  <main>
+    <section class="panel privacy">
+      <strong>Privacy:</strong> The CSV may contain client IPs, search terms, Steam IDs, and browser strings.
+      Use only on a trusted admin machine. Do not share exported screenshots or copies publicly.
+    </section>
+
+    <section class="panel">
+      <div class="load-row">
+        <label>
+          <span class="meta">Select CSV file</span><br>
+          <input type="file" id="fileInput" accept=".csv,text/csv,text/plain" />
+        </label>
+        <button type="button" class="secondary" id="btnClear" disabled>Clear loaded data</button>
+      </div>
+      <p id="parseStatus" class="meta" aria-live="polite">No file loaded.</p>
+    </section>
+
+    <div id="dashboard" class="hidden">
+      <section class="panel">
+        <h2 style="margin:0 0 0.75rem;font-size:1.05rem;">Overview</h2>
+        <div class="stats-grid" id="statsGrid"></div>
+      </section>
+
+      <section class="panel">
+        <h2 style="margin:0 0 0.75rem;font-size:1.05rem;">Filters</h2>
+        <div class="filters">
+          <div>
+            <label for="filterApiOnly">Show</label>
+            <select id="filterApiOnly">
+              <option value="api">API searches only (recommended)</option>
+              <option value="all">All requests</option>
+              <option value="pages">Page loads only (/ and /results)</option>
+            </select>
+          </div>
+          <div>
+            <label for="filterEndpoint">Endpoint</label>
+            <select id="filterEndpoint"><option value="">All</option></select>
+          </div>
+          <div>
+            <label for="filterStatus">HTTP status</label>
+            <select id="filterStatus">
+              <option value="">All</option>
+              <option value="2xx">2xx success</option>
+              <option value="4xx">4xx client error</option>
+              <option value="5xx">5xx server error</option>
+              <option value="429">429 rate limited</option>
+            </select>
+          </div>
+          <div>
+            <label for="filterSlow">Slow requests (ms ≥)</label>
+            <input type="number" id="filterSlow" min="0" step="100" placeholder="e.g. 5000" />
+          </div>
+          <div>
+            <label for="filterFrom">From (UTC date)</label>
+            <input type="date" id="filterFrom" />
+          </div>
+          <div>
+            <label for="filterTo">To (UTC date)</label>
+            <input type="date" id="filterTo" />
+          </div>
+          <div>
+            <label for="filterQuery">Text search</label>
+            <input type="search" id="filterQuery" placeholder="IP, steamid, word, path…" autocomplete="off" />
+          </div>
+        </div>
+        <p class="meta" id="filterSummary" style="margin-top:0.75rem;"></p>
+      </section>
+
+      <section class="panel">
+        <h2 style="margin:0 0 0.75rem;font-size:1.05rem;">Issues report (for brainstorming)</h2>
+        <p class="meta">Auto-generated plain-text summary of the biggest problems in the <strong>currently filtered</strong> rows. Copy and paste into a chat to discuss fixes. Redaction is optional.</p>
+        <div class="report-actions">
+          <button type="button" id="btnCopyReport">Copy report to clipboard</button>
+          <span id="copyReportStatus" class="meta" aria-live="polite"></span>
+        </div>
+        <div class="report-redact">
+          <label><input type="checkbox" id="redactIps" checked> Redact client IPs in report</label>
+          <label><input type="checkbox" id="redactSteamIds" checked> Redact Steam IDs in report</label>
+        </div>
+        <textarea id="issuesReport" readonly spellcheck="false" aria-label="Issues report"></textarea>
+      </section>
+
+      <section class="panel">
+        <h2 style="margin:0 0 0.75rem;font-size:1.05rem;">Response time by endpoint (filtered rows)</h2>
+        <div class="duration-metric-row">
+          <label>Chart &amp; table sort by
+            <select id="durationMetric">
+              <option value="p95" selected>p95 (95th percentile)</option>
+              <option value="avg">Average</option>
+              <option value="median">Median</option>
+              <option value="max">Maximum</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="durationApiOnly" checked> API endpoints only</label>
+          <span class="meta">Requires at least 2 requests per endpoint for meaningful percentiles.</span>
+        </div>
+        <div class="charts">
+          <div class="chart-box chart-wide">
+            <h3>Slowest endpoints (bar length = selected metric, ms)</h3>
+            <canvas id="chartEndpointDuration" width="900" height="220"></canvas>
+          </div>
+        </div>
+        <div class="table-wrap" style="margin-top:0.75rem;">
+          <table class="duration-table">
+            <thead>
+              <tr>
+                <th>Endpoint</th>
+                <th>Requests</th>
+                <th>Avg</th>
+                <th>Median</th>
+                <th>p95</th>
+                <th>Max</th>
+                <th>Errors (4xx/5xx)</th>
+              </tr>
+            </thead>
+            <tbody id="durationTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 style="margin:0 0 0.75rem;font-size:1.05rem;">Charts (filtered rows)</h2>
+        <div class="charts">
+          <div class="chart-box"><h3>Requests per day (UTC)</h3><canvas id="chartByDay" width="400" height="180"></canvas></div>
+          <div class="chart-box"><h3>Top endpoints</h3><canvas id="chartEndpoints" width="400" height="180"></canvas></div>
+          <div class="chart-box"><h3>HTTP status</h3><canvas id="chartStatus" width="400" height="180"></canvas></div>
+          <div class="chart-box"><h3>Duration (API, ms)</h3><canvas id="chartDuration" width="400" height="180"></canvas></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <details>
+          <summary>Column glossary (what each CSV field means)</summary>
+          <dl class="glossary" id="glossary"></dl>
+        </details>
+      </section>
+
+      <section class="panel">
+        <h2 style="margin:0 0 0.75rem;font-size:1.05rem;">Request log</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>When (UTC)</th>
+                <th>Plain summary</th>
+                <th>Endpoint</th>
+                <th>Status</th>
+                <th>Duration</th>
+                <th>Results</th>
+              </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button type="button" class="secondary" id="btnPrev" disabled>Previous</button>
+          <span id="pageInfo" class="meta"></span>
+          <button type="button" class="secondary" id="btnNext" disabled>Next</button>
+          <label class="meta">Rows per page
+            <select id="pageSize">
+              <option value="25">25</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+            </select>
+          </label>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script>
+(function () {
+  'use strict';
+
+  var EXPECTED_HEADER = [
+    'timestamp_utc', 'endpoint', 'method', 'client_ip', 'host', 'user_agent', 'referer',
+    'word', 'steamid', 'gamemode', 'classes', 'steamids', 'date_from', 'date_to', 'map_query',
+    'lb_type', 'lb_class_filter', 'min_logs', 'result_count', 'status_code', 'duration_ms'
+  ];
+
+  var GLOSSARY = {
+    timestamp_utc: 'When the request finished (UTC, ISO format).',
+    endpoint: 'URL path that was hit (e.g. /api/search/stats).',
+    method: 'HTTP method (usually GET).',
+    client_ip: 'Visitor IP as seen by the server (may be IPv4 or IPv6).',
+    host: 'Hostname from the request (your site domain).',
+    user_agent: 'Browser or bot identifier string.',
+    referer: 'Previous page URL, if the browser sent it.',
+    word: 'Chat search: word or phrase (or global word leaderboard).',
+    steamid: 'Single Steam ID (profile, stats, co-players) as submitted or resolved.',
+    gamemode: 'Gamemode filter: hl, 6s, 7s, 4s, ud, or empty for all.',
+    classes: 'Stats search: comma-separated class list (not used on leaderboard rows).',
+    steamids: 'Log match: one or more Steam IDs (comma-separated in the log).',
+    date_from: 'Optional start date filter (YYYY-MM-DD).',
+    date_to: 'Optional end date filter (YYYY-MM-DD).',
+    map_query: 'Optional map name substring filter.',
+    lb_type: 'Leaderboard statistic type (e.g. dpm, kills_scout, kills_weapon_scout).',
+    lb_class_filter: 'Leaderboard: limit rankings to players who played this class.',
+    min_logs: 'Leaderboard: minimum number of logs a player must have to appear.',
+    result_count: 'How many rows/items returned (meaning depends on endpoint).',
+    status_code: 'HTTP result: 200 OK, 400 bad input, 429 rate limited, 500 server error, etc.',
+    duration_ms: 'Server time spent handling the request, in milliseconds.'
+  };
+
+  var PAGE_SIZE_DEFAULT = 50;
+  var MAX_FILE_BYTES = 80 * 1024 * 1024;
+  var DEBOUNCE_MS = 120;
+
+  var state = {
+    rows: [],
+    indices: [],
+    filtered: [],
+    page: 0,
+    pageSize: PAGE_SIZE_DEFAULT,
+    filterTimer: null
+  };
+
+  var el = {
+    fileInput: document.getElementById('fileInput'),
+    btnClear: document.getElementById('btnClear'),
+    parseStatus: document.getElementById('parseStatus'),
+    dashboard: document.getElementById('dashboard'),
+    statsGrid: document.getElementById('statsGrid'),
+    filterApiOnly: document.getElementById('filterApiOnly'),
+    filterEndpoint: document.getElementById('filterEndpoint'),
+    filterStatus: document.getElementById('filterStatus'),
+    filterSlow: document.getElementById('filterSlow'),
+    filterFrom: document.getElementById('filterFrom'),
+    filterTo: document.getElementById('filterTo'),
+    filterQuery: document.getElementById('filterQuery'),
+    filterSummary: document.getElementById('filterSummary'),
+    glossary: document.getElementById('glossary'),
+    tableBody: document.getElementById('tableBody'),
+    btnPrev: document.getElementById('btnPrev'),
+    btnNext: document.getElementById('btnNext'),
+    pageInfo: document.getElementById('pageInfo'),
+    pageSize: document.getElementById('pageSize'),
+    durationMetric: document.getElementById('durationMetric'),
+    durationApiOnly: document.getElementById('durationApiOnly'),
+    durationTableBody: document.getElementById('durationTableBody'),
+    issuesReport: document.getElementById('issuesReport'),
+    btnCopyReport: document.getElementById('btnCopyReport'),
+    copyReportStatus: document.getElementById('copyReportStatus'),
+    redactIps: document.getElementById('redactIps'),
+    redactSteamIds: document.getElementById('redactSteamIds')
+  };
+
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function trim(v) {
+    return v == null ? '' : String(v).trim();
+  }
+
+  function isApiEndpoint(ep) {
+    return trim(ep).indexOf('/api/') === 0;
+  }
+
+  function isPageEndpoint(ep) {
+    var p = trim(ep);
+    return p === '/' || p === '/results';
+  }
+
+  function parseIntSafe(v) {
+    var n = parseInt(trim(v), 10);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function parseTimestampMs(ts) {
+    var s = trim(ts);
+    if (!s) return null;
+    var t = Date.parse(s.replace('Z', '+00:00'));
+    return Number.isFinite(t) ? t : null;
+  }
+
+  function formatDuration(ms) {
+    var n = parseIntSafe(ms);
+    if (n == null) return '—';
+    if (n < 1000) return n + ' ms';
+    return (n / 1000).toFixed(2) + ' s';
+  }
+
+  function statusClass(code) {
+    var c = parseIntSafe(code);
+    if (c == null) return '';
+    if (c >= 500) return 'status-err';
+    if (c === 429 || c >= 400) return 'status-warn';
+    if (c >= 200 && c < 300) return 'status-ok';
+    return '';
+  }
+
+  function truncate(s, max) {
+    s = trim(s);
+    if (s.length <= max) return s;
+    return s.slice(0, max - 1) + '…';
+  }
+
+  function summarizeRow(r) {
+    var ep = trim(r.endpoint);
+    var code = parseIntSafe(r.status_code);
+    var dur = formatDuration(r.duration_ms);
+    var rc = trim(r.result_count);
+    var rcPart = rc !== '' ? (' — ' + rc + ' result' + (rc === '1' ? '' : 's')) : '';
+    var tail = ' (' + (code != null ? code : '?') + ', ' + dur + ')' + rcPart;
+
+    if (ep === '/') return 'Visited home page' + tail;
+    if (ep === '/results') return 'Opened results page shell' + tail;
+    if (ep === '/api/search/chat') {
+      var w = trim(r.word);
+      var sid = trim(r.steamid);
+      if (sid && w) return 'Chat search for player + word «' + truncate(w, 40) + '»' + tail;
+      if (w && !sid) return 'Global chat word leaderboard for «' + truncate(w, 40) + '»' + tail;
+      if (sid) return 'Chat history for Steam ID ' + truncate(sid, 20) + tail;
+      return 'Chat search' + tail;
+    }
+    if (ep === '/api/search/stats') {
+      return 'Class stats for ' + truncate(trim(r.steamid) || '(unknown)', 20) +
+        (trim(r.gamemode) ? ' (' + trim(r.gamemode) + ')' : '') + tail;
+    }
+    if (ep === '/api/search/logmatch') {
+      return 'Multi-player log match (' + truncate(trim(r.steamids) || 'IDs', 30) + ')' + tail;
+    }
+    if (ep === '/api/search/coplayers') {
+      return 'Frequent co-players for ' + truncate(trim(r.steamid) || '(unknown)', 20) + tail;
+    }
+    if (ep === '/api/search/player-name') {
+      return 'Name search containing «' + truncate(trim(r.word), 40) + '»' + tail;
+    }
+    if (ep === '/api/player/profile') {
+      return 'Player profile for ' + truncate(trim(r.steamid) || '(unknown)', 20) + tail;
+    }
+    if (ep === '/api/leaderboard') {
+      var lb = trim(r.lb_type) || 'leaderboard';
+      var extra = trim(r.lb_class_filter) ? ', class ' + trim(r.lb_class_filter) : '';
+      if (trim(r.min_logs)) extra += ', min logs ' + trim(r.min_logs);
+      return 'Leaderboard: ' + lb + extra + tail;
+    }
+    if (ep.indexOf('/api/') === 0) return 'API: ' + ep + tail;
+    return ep + tail;
+  }
+
+  /** RFC 4180-style CSV parse (handles quoted fields). */
+  function parseCsv(text) {
+    var rows = [];
+    var row = [];
+    var field = '';
+    var i = 0;
+    var inQuotes = false;
+    while (i < text.length) {
+      var ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') {
+            field += '"';
+            i += 2;
+            continue;
+          }
+          inQuotes = false;
+          i++;
+          continue;
+        }
+        field += ch;
+        i++;
+        continue;
+      }
+      if (ch === '"') {
+        inQuotes = true;
+        i++;
+        continue;
+      }
+      if (ch === ',') {
+        row.push(field);
+        field = '';
+        i++;
+        continue;
+      }
+      if (ch === '\r') {
+        i++;
+        continue;
+      }
+      if (ch === '\n') {
+        row.push(field);
+        field = '';
+        if (row.length > 1 || trim(row[0]) !== '') rows.push(row);
+        row = [];
+        i++;
+        continue;
+      }
+      field += ch;
+      i++;
+    }
+    row.push(field);
+    if (row.length > 1 || trim(row[0]) !== '') rows.push(row);
+    return rows;
+  }
+
+  function rowToObject(header, cells) {
+    var o = {};
+    for (var c = 0; c < header.length; c++) {
+      o[header[c]] = cells[c] != null ? cells[c] : '';
+    }
+    return o;
+  }
+
+  function buildGlossary() {
+    var html = '';
+    EXPECTED_HEADER.forEach(function (key) {
+      html += '<dt>' + escapeHtml(key) + '</dt><dd>' + escapeHtml(GLOSSARY[key] || '') + '</dd>';
+    });
+    el.glossary.innerHTML = html;
+  }
+
+  function populateEndpointFilter(rows) {
+    var counts = Object.create(null);
+    rows.forEach(function (r) {
+      var ep = trim(r.endpoint) || '(empty)';
+      counts[ep] = (counts[ep] || 0) + 1;
+    });
+    var eps = Object.keys(counts).sort(function (a, b) {
+      return counts[b] - counts[a] || a.localeCompare(b);
+    });
+    var sel = el.filterEndpoint;
+    var cur = sel.value;
+    sel.innerHTML = '<option value="">All</option>';
+    eps.forEach(function (ep) {
+      var opt = document.createElement('option');
+      opt.value = ep;
+      opt.textContent = ep + ' (' + counts[ep] + ')';
+      sel.appendChild(opt);
+    });
+    if (cur && counts[cur]) sel.value = cur;
+  }
+
+  function computeOverview(rows) {
+    var total = rows.length;
+    var api = 0;
+    var err = 0;
+    var slow = 0;
+    var durs = [];
+    rows.forEach(function (r) {
+      var ep = trim(r.endpoint);
+      if (isApiEndpoint(ep)) {
+        api++;
+        var d = parseIntSafe(r.duration_ms);
+        if (d != null) durs.push(d);
+      }
+      var sc = parseIntSafe(r.status_code);
+      if (sc != null && sc >= 400) err++;
+      var dm = parseIntSafe(r.duration_ms);
+      if (dm != null && dm >= 10000) slow++;
+    });
+    durs.sort(function (a, b) { return a - b; });
+    var p95 = durs.length ? durs[Math.min(durs.length - 1, Math.floor(durs.length * 0.95))] : null;
+    return { total: total, api: api, err: err, slow: slow, p95: p95 };
+  }
+
+  function renderStats(overview) {
+    var cards = [
+      { val: overview.total, lbl: 'Total rows' },
+      { val: overview.api, lbl: 'API requests' },
+      { val: overview.err, lbl: 'HTTP ≥ 400' },
+      { val: overview.slow, lbl: 'Very slow (≥ 10s)' },
+      { val: overview.p95 != null ? formatDuration(overview.p95) : '—', lbl: 'API duration p95' }
+    ];
+    el.statsGrid.innerHTML = cards.map(function (c) {
+      return '<div class="stat-card"><div class="val">' + escapeHtml(String(c.val)) +
+        '</div><div class="lbl">' + escapeHtml(c.lbl) + '</div></div>';
+    }).join('');
+  }
+
+  function rowMatchesFilters(r, idx) {
+    var ep = trim(r.endpoint);
+    var mode = el.filterApiOnly.value;
+    if (mode === 'api' && !isApiEndpoint(ep)) return false;
+    if (mode === 'pages' && !isPageEndpoint(ep)) return false;
+
+    var fEp = el.filterEndpoint.value;
+    if (fEp && (trim(r.endpoint) || '(empty)') !== fEp) return false;
+
+    var sc = parseIntSafe(r.status_code);
+    var st = el.filterStatus.value;
+    if (st === '2xx' && (sc == null || sc < 200 || sc >= 300)) return false;
+    if (st === '4xx' && (sc == null || sc < 400 || sc >= 500)) return false;
+    if (st === '5xx' && (sc == null || sc < 500)) return false;
+    if (st === '429' && sc !== 429) return false;
+
+    var slowMin = parseIntSafe(el.filterSlow.value);
+    if (slowMin != null) {
+      var dm = parseIntSafe(r.duration_ms);
+      if (dm == null || dm < slowMin) return false;
+    }
+
+    var from = el.filterFrom.value;
+    var to = el.filterTo.value;
+    if (from || to) {
+      var t = parseTimestampMs(r.timestamp_utc);
+      if (t == null) return false;
+      if (from) {
+        var f0 = Date.parse(from + 'T00:00:00Z');
+        if (t < f0) return false;
+      }
+      if (to) {
+        var f1 = Date.parse(to + 'T23:59:59.999Z');
+        if (t > f1) return false;
+      }
+    }
+
+    var q = trim(el.filterQuery.value).toLowerCase();
+    if (q) {
+      var hay = (
+        r.timestamp_utc + ' ' + r.endpoint + ' ' + r.client_ip + ' ' + r.steamid + ' ' +
+        r.word + ' ' + r.steamids + ' ' + r.lb_type + ' ' + r.map_query + ' ' + r.user_agent
+      ).toLowerCase();
+      if (hay.indexOf(q) < 0) return false;
+    }
+    return true;
+  }
+
+  function percentile(sortedArr, p) {
+    if (!sortedArr.length) return null;
+    var idx = Math.min(sortedArr.length - 1, Math.max(0, Math.floor(sortedArr.length * p)));
+    return sortedArr[idx];
+  }
+
+  function aggregateEndpointDurations(indices, apiOnly) {
+    var byEp = Object.create(null);
+    var errByEp = Object.create(null);
+    indices.forEach(function (idx) {
+      var r = state.rows[idx];
+      var ep = trim(r.endpoint) || '(empty)';
+      if (apiOnly && !isApiEndpoint(ep)) return;
+      var d = parseIntSafe(r.duration_ms);
+      if (d == null) return;
+      if (!byEp[ep]) byEp[ep] = [];
+      byEp[ep].push(d);
+      var sc = parseIntSafe(r.status_code);
+      if (sc != null && sc >= 400) {
+        errByEp[ep] = (errByEp[ep] || 0) + 1;
+      }
+    });
+    var out = [];
+    Object.keys(byEp).forEach(function (ep) {
+      var arr = byEp[ep].slice().sort(function (a, b) { return a - b; });
+      var sum = 0;
+      for (var i = 0; i < arr.length; i++) sum += arr[i];
+      out.push({
+        endpoint: ep,
+        count: arr.length,
+        avg: Math.round(sum / arr.length),
+        median: percentile(arr, 0.5),
+        p95: percentile(arr, 0.95),
+        max: arr[arr.length - 1],
+        errors: errByEp[ep] || 0
+      });
+    });
+    return out;
+  }
+
+  function sortDurationRows(rows, metric) {
+    var key = metric === 'avg' || metric === 'median' || metric === 'max' ? metric : 'p95';
+    rows.sort(function (a, b) {
+      return (b[key] || 0) - (a[key] || 0);
+    });
+    return rows;
+  }
+
+  function drawHorizontalBarChart(canvas, items, metricKey) {
+    var ctx = canvas.getContext('2d');
+    var w = canvas.width;
+    var h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    var n = items.length;
+    if (!n) {
+      ctx.fillStyle = chartInk();
+      ctx.font = '14px sans-serif';
+      ctx.fillText('No duration data for current filters', 12, h / 2);
+      return;
+    }
+    var pad = { l: 140, r: 12, t: 8, b: 8 };
+    var rowH = Math.max(14, (h - pad.t - pad.b) / n);
+    var maxVal = 1;
+    items.forEach(function (it) {
+      var v = it[metricKey] || 0;
+      if (v > maxVal) maxVal = v;
+    });
+    var chartW = w - pad.l - pad.r;
+    ctx.fillStyle = chartInk();
+    ctx.font = '11px sans-serif';
+    items.forEach(function (it, i) {
+      var y = pad.t + i * rowH + 2;
+      var v = it[metricKey] || 0;
+      var barW = (v / maxVal) * chartW;
+      ctx.fillStyle = '#2e6c80';
+      if (window.matchMedia('(prefers-color-scheme: dark)').matches) ctx.fillStyle = '#6eb5c0';
+      ctx.fillRect(pad.l, y, barW, rowH - 4);
+      ctx.fillStyle = chartInk();
+      ctx.textAlign = 'right';
+      ctx.fillText(truncate(it.endpoint, 18), pad.l - 6, y + rowH * 0.65);
+      ctx.textAlign = 'left';
+      ctx.fillText(formatDuration(v), pad.l + barW + 4, y + rowH * 0.65);
+    });
+  }
+
+  function renderDurationByEndpoint() {
+    var metric = el.durationMetric.value || 'p95';
+    var apiOnly = !!el.durationApiOnly.checked;
+    var rows = sortDurationRows(aggregateEndpointDurations(state.filtered, apiOnly), metric);
+    var top = rows.slice(0, 12);
+    drawHorizontalBarChart(document.getElementById('chartEndpointDuration'), top, metric);
+    var tbody = el.durationTableBody;
+    tbody.innerHTML = '';
+    var frag = document.createDocumentFragment();
+    rows.forEach(function (row) {
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td>' + escapeHtml(row.endpoint) + '</td>' +
+        '<td class="num">' + escapeHtml(String(row.count)) + '</td>' +
+        '<td class="num">' + escapeHtml(formatDuration(row.avg)) + '</td>' +
+        '<td class="num">' + escapeHtml(formatDuration(row.median)) + '</td>' +
+        '<td class="num">' + escapeHtml(formatDuration(row.p95)) + '</td>' +
+        '<td class="num">' + escapeHtml(formatDuration(row.max)) + '</td>' +
+        '<td class="num">' + escapeHtml(String(row.errors)) + '</td>';
+      frag.appendChild(tr);
+    });
+    tbody.appendChild(frag);
+  }
+
+  function redactForShare(text) {
+    var out = text;
+    if (el.redactIps && el.redactIps.checked) {
+      out = out.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[IPv4]');
+      out = out.replace(/\b(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}\b/g, '[IPv6]');
+    }
+    if (el.redactSteamIds && el.redactSteamIds.checked) {
+      out = out.replace(/\b7656119\d{10}\b/g, '[STEAMID64]');
+    }
+    return out;
+  }
+
+  function filterSummaryText() {
+    var parts = ['rows=' + state.filtered.length + '/' + state.rows.length];
+    parts.push('view=' + el.filterApiOnly.value);
+    if (el.filterEndpoint.value) parts.push('endpoint=' + el.filterEndpoint.value);
+    if (el.filterStatus.value) parts.push('status=' + el.filterStatus.value);
+    if (trim(el.filterSlow.value)) parts.push('slow>=' + trim(el.filterSlow.value) + 'ms');
+    if (el.filterFrom.value) parts.push('from=' + el.filterFrom.value);
+    if (el.filterTo.value) parts.push('to=' + el.filterTo.value);
+    if (trim(el.filterQuery.value)) parts.push('q=' + truncate(el.filterQuery.value, 40));
+    return parts.join(', ');
+  }
+
+  function buildIssuesReport(indices) {
+    var lines = [];
+    var now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+    lines.push('TF2 Log Searcher — request log issues report');
+    lines.push('Generated: ' + now + ' (browser-local, not from server)');
+    lines.push('Scope: ' + filterSummaryText());
+    lines.push('');
+
+    if (!indices.length) {
+      lines.push('No rows match the current filters.');
+      return lines.join('\n');
+    }
+
+    var dateMin = null;
+    var dateMax = null;
+    indices.forEach(function (idx) {
+      var t = parseTimestampMs(state.rows[idx].timestamp_utc);
+      if (t == null) return;
+      if (dateMin == null || t < dateMin) dateMin = t;
+      if (dateMax == null || t > dateMax) dateMax = t;
+    });
+    if (dateMin != null) {
+      lines.push('Time range (filtered): ' + new Date(dateMin).toISOString().slice(0, 10) +
+        ' → ' + new Date(dateMax).toISOString().slice(0, 10) + ' UTC');
+      lines.push('');
+    }
+
+    var err5 = 0;
+    var err4 = 0;
+    var rate429 = 0;
+    var slow5 = 0;
+    var slow10 = 0;
+    var slow30 = 0;
+    indices.forEach(function (idx) {
+      var r = state.rows[idx];
+      var sc = parseIntSafe(r.status_code);
+      var dm = parseIntSafe(r.duration_ms);
+      if (sc != null && sc >= 500) err5++;
+      else if (sc === 429) rate429++;
+      else if (sc != null && sc >= 400) err4++;
+      if (dm != null) {
+        if (dm >= 5000) slow5++;
+        if (dm >= 10000) slow10++;
+        if (dm >= 30000) slow30++;
+      }
+    });
+    lines.push('=== Summary ===');
+    lines.push('- HTTP 5xx (server errors): ' + err5);
+    lines.push('- HTTP 4xx (client errors, not 429/5xx): ' + err4);
+    lines.push('- HTTP 429 (rate limited): ' + rate429);
+    lines.push('- Slow requests (≥5s): ' + slow5);
+    lines.push('- Very slow (≥10s): ' + slow10);
+    lines.push('- Extremely slow (≥30s): ' + slow30);
+    lines.push('');
+
+    var epStats = sortDurationRows(aggregateEndpointDurations(indices, true), 'p95');
+    if (epStats.length) {
+      lines.push('=== Slowest API endpoints (by p95 duration) ===');
+      epStats.slice(0, 8).forEach(function (row, i) {
+        lines.push((i + 1) + '. ' + row.endpoint + ' — n=' + row.count +
+          ', avg=' + formatDuration(row.avg) + ', p95=' + formatDuration(row.p95) +
+          ', max=' + formatDuration(row.max) + ', errors=' + row.errors);
+      });
+      lines.push('');
+    }
+
+    var errByEp = Object.create(null);
+    indices.forEach(function (idx) {
+      var r = state.rows[idx];
+      var sc = parseIntSafe(r.status_code);
+      if (sc == null || sc < 400) return;
+      var ep = trim(r.endpoint) || '(empty)';
+      if (!errByEp[ep]) errByEp[ep] = { n: 0, codes: Object.create(null) };
+      errByEp[ep].n++;
+      var c = String(sc);
+      errByEp[ep].codes[c] = (errByEp[ep].codes[c] || 0) + 1;
+    });
+    var errEps = Object.keys(errByEp).sort(function (a, b) {
+      return errByEp[b].n - errByEp[a].n;
+    });
+    if (errEps.length) {
+      lines.push('=== Errors by endpoint ===');
+      errEps.slice(0, 10).forEach(function (ep) {
+        var e = errByEp[ep];
+        var codes = Object.keys(e.codes).sort().map(function (c) {
+          return c + '×' + e.codes[c];
+        }).join(', ');
+        lines.push('- ' + ep + ': ' + e.n + ' (' + codes + ')');
+      });
+      lines.push('');
+    }
+
+    var slowRows = [];
+    indices.forEach(function (idx) {
+      var r = state.rows[idx];
+      var dm = parseIntSafe(r.duration_ms);
+      if (dm == null || dm < 10000) return;
+      if (!isApiEndpoint(trim(r.endpoint))) return;
+      slowRows.push({ idx: idx, dm: dm });
+    });
+    slowRows.sort(function (a, b) { return b.dm - a.dm; });
+    if (slowRows.length) {
+      lines.push('=== Slowest API examples (≥10s, up to 12) ===');
+      slowRows.slice(0, 12).forEach(function (item, i) {
+        var r = state.rows[item.idx];
+        lines.push((i + 1) + '. ' + trim(r.timestamp_utc) + ' | ' + summarizeRow(r));
+      });
+      lines.push('');
+    }
+
+    var lbRows = epStats.filter(function (r) {
+      return r.endpoint === '/api/leaderboard';
+    });
+    if (lbRows.length && lbRows[0].p95 >= 5000) {
+      lines.push('=== Leaderboard note ===');
+      lines.push('/api/leaderboard p95=' + formatDuration(lbRows[0].p95) +
+        ' (n=' + lbRows[0].count + '). Heavy SQL/aggregate work; consider caching, stricter min_logs defaults, or pre-aggregates.');
+      lines.push('');
+    }
+
+    var dayBuckets = aggregateByDay(indices);
+    if (dayBuckets.labels.length >= 2) {
+      var maxDay = 0;
+      var maxVal = 0;
+      dayBuckets.values.forEach(function (v, i) {
+        if (v > maxVal) { maxVal = v; maxDay = i; }
+      });
+      var total = 0;
+      dayBuckets.values.forEach(function (v) { total += v; });
+      if (total > 0 && maxVal / total > 0.5) {
+        lines.push('=== Traffic spike ===');
+        lines.push('Most filtered traffic is on ' + dayBuckets.labels[maxDay] +
+          ' (' + maxVal + ' of ' + total + ' requests).');
+        lines.push('');
+      }
+    }
+
+    lines.push('=== Suggested focus areas (for discussion) ===');
+    var focus = [];
+    if (err5 > 0) focus.push('Investigate 5xx responses (stability, DB locks, unhandled exceptions).');
+    if (rate429 > 0) focus.push('Review rate limits (429) — Steam vanity or public API quotas.');
+    if (slow10 > 0) focus.push('Reduce tail latency on slow API paths (indexes, aggregates, caching).');
+    if (lbRows.length && lbRows[0].p95 >= 10000) {
+      focus.push('Optimize /api/leaderboard (largest p95 in many deployments).');
+    }
+    var topEp = epStats[0];
+    if (topEp && topEp.p95 >= 5000 && topEp.endpoint !== '/api/leaderboard') {
+      focus.push('Profile ' + topEp.endpoint + ' (highest p95 among APIs).');
+    }
+    if (!focus.length) focus.push('No major red flags in filtered data; try widening filters or a longer time window.');
+    focus.forEach(function (f) { lines.push('- ' + f); });
+    lines.push('');
+    lines.push('---');
+    lines.push('Paste this report into your issue tracker or AI assistant. Toggle redaction before copy if sharing externally.');
+
+    return lines.join('\n');
+  }
+
+  function updateIssuesReport() {
+    el.issuesReport.value = buildIssuesReport(state.filtered);
+  }
+
+  function applyFilters() {
+    state.filtered = [];
+    for (var i = 0; i < state.rows.length; i++) {
+      if (rowMatchesFilters(state.rows[i], i)) state.filtered.push(i);
+    }
+    state.page = 0;
+    el.filterSummary.textContent =
+      'Showing ' + state.filtered.length + ' of ' + state.rows.length + ' rows.';
+    drawCharts();
+    renderDurationByEndpoint();
+    updateIssuesReport();
+    renderTablePage();
+  }
+
+  function scheduleFilter() {
+    if (state.filterTimer) clearTimeout(state.filterTimer);
+    state.filterTimer = setTimeout(applyFilters, DEBOUNCE_MS);
+  }
+
+  function chartInk() {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? '#b0b0b0' : '#555';
+  }
+
+  function drawBarChart(canvas, labels, values, opts) {
+    opts = opts || {};
+    var ctx = canvas.getContext('2d');
+    var w = canvas.width;
+    var h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (!values.length) {
+      ctx.fillStyle = chartInk();
+      ctx.font = '14px sans-serif';
+      ctx.fillText('No data', 12, h / 2);
+      return;
+    }
+    var max = Math.max.apply(null, values) || 1;
+    var pad = { l: 8, r: 8, t: 8, b: opts.rotateLabels ? 56 : 28 };
+    var chartW = w - pad.l - pad.r;
+    var chartH = h - pad.t - pad.b;
+    var n = values.length;
+    var gap = 2;
+    var barW = Math.max(2, (chartW - gap * (n - 1)) / n);
+    var colors = ['#2e6c80', '#4a9bb0', '#6eb5c0', '#8a8', '#a86', '#c66'];
+    for (var i = 0; i < n; i++) {
+      var bh = (values[i] / max) * chartH;
+      ctx.fillStyle = colors[i % colors.length];
+      ctx.fillRect(pad.l + i * (barW + gap), pad.t + chartH - bh, barW, bh);
+    }
+    ctx.fillStyle = chartInk();
+    ctx.font = '10px sans-serif';
+    var labelStep = n > 12 ? Math.ceil(n / 8) : 1;
+    for (var j = 0; j < n; j += labelStep) {
+      var lbl = labels[j];
+      if (opts.rotateLabels) {
+        ctx.save();
+        ctx.translate(pad.l + j * (barW + gap) + barW / 2, h - 6);
+        ctx.rotate(-0.5);
+        ctx.textAlign = 'right';
+        ctx.fillText(lbl, 0, 0);
+        ctx.restore();
+      } else {
+        ctx.textAlign = 'center';
+        ctx.fillText(lbl, pad.l + j * (barW + gap) + barW / 2, h - 8);
+      }
+    }
+  }
+
+  function aggregateByDay(indices) {
+    var buckets = Object.create(null);
+    indices.forEach(function (idx) {
+      var ts = trim(state.rows[idx].timestamp_utc);
+      var day = ts.length >= 10 ? ts.slice(0, 10) : 'unknown';
+      buckets[day] = (buckets[day] || 0) + 1;
+    });
+    var days = Object.keys(buckets).sort();
+    return { labels: days, values: days.map(function (d) { return buckets[d]; }) };
+  }
+
+  function aggregateEndpoints(indices, limit) {
+    var buckets = Object.create(null);
+    indices.forEach(function (idx) {
+      var ep = trim(state.rows[idx].endpoint) || '(empty)';
+      buckets[ep] = (buckets[ep] || 0) + 1;
+    });
+    var arr = Object.keys(buckets).map(function (k) {
+      return { k: k, v: buckets[k] };
+    });
+    arr.sort(function (a, b) { return b.v - a.v; });
+    arr = arr.slice(0, limit || 10);
+    return {
+      labels: arr.map(function (x) { return truncate(x.k, 22); }),
+      values: arr.map(function (x) { return x.v; })
+    };
+  }
+
+  function aggregateStatus(indices) {
+    var buckets = Object.create(null);
+    indices.forEach(function (idx) {
+      var sc = trim(state.rows[idx].status_code) || '?';
+      buckets[sc] = (buckets[sc] || 0) + 1;
+    });
+    var keys = Object.keys(buckets).sort();
+    return { labels: keys, values: keys.map(function (k) { return buckets[k]; }) };
+  }
+
+  function aggregateDuration(indices) {
+    var buckets = { '<1s': 0, '1-5s': 0, '5-15s': 0, '15-60s': 0, '60s+': 0 };
+    indices.forEach(function (idx) {
+      if (!isApiEndpoint(trim(state.rows[idx].endpoint))) return;
+      var d = parseIntSafe(state.rows[idx].duration_ms);
+      if (d == null) return;
+      if (d < 1000) buckets['<1s']++;
+      else if (d < 5000) buckets['1-5s']++;
+      else if (d < 15000) buckets['5-15s']++;
+      else if (d < 60000) buckets['15-60s']++;
+      else buckets['60s+']++;
+    });
+    var labels = ['<1s', '1-5s', '5-15s', '15-60s', '60s+'];
+    return { labels: labels, values: labels.map(function (l) { return buckets[l]; }) };
+  }
+
+  function drawCharts() {
+    var idx = state.filtered;
+    var day = aggregateByDay(idx);
+    drawBarChart(document.getElementById('chartByDay'), day.labels, day.values, { rotateLabels: day.labels.length > 8 });
+    var ep = aggregateEndpoints(idx, 10);
+    drawBarChart(document.getElementById('chartEndpoints'), ep.labels, ep.values, { rotateLabels: true });
+    var st = aggregateStatus(idx);
+    drawBarChart(document.getElementById('chartStatus'), st.labels, st.values);
+    var du = aggregateDuration(idx);
+    drawBarChart(document.getElementById('chartDuration'), du.labels, du.values);
+  }
+
+  function renderTablePage() {
+    var ps = parseInt(el.pageSize.value, 10) || PAGE_SIZE_DEFAULT;
+    state.pageSize = ps;
+    var total = state.filtered.length;
+    var pages = Math.max(1, Math.ceil(total / ps));
+    if (state.page >= pages) state.page = pages - 1;
+    if (state.page < 0) state.page = 0;
+    var start = state.page * ps;
+    var slice = state.filtered.slice(start, start + ps);
+    var frag = document.createDocumentFragment();
+    slice.forEach(function (rowIdx) {
+      var r = state.rows[rowIdx];
+      var tr = document.createElement('tr');
+      var sc = parseIntSafe(r.status_code);
+      var dm = parseIntSafe(r.duration_ms);
+      if (sc != null && sc >= 400) tr.className = 'err';
+      else if (dm != null && dm >= 10000) tr.className = 'slow';
+      tr.innerHTML =
+        '<td>' + escapeHtml(trim(r.timestamp_utc)) + '</td>' +
+        '<td>' + escapeHtml(summarizeRow(r)) + '</td>' +
+        '<td>' + escapeHtml(trim(r.endpoint)) + '</td>' +
+        '<td class="' + escapeHtml(statusClass(sc)) + '">' + escapeHtml(trim(r.status_code)) + '</td>' +
+        '<td>' + escapeHtml(formatDuration(r.duration_ms)) + '</td>' +
+        '<td>' + escapeHtml(trim(r.result_count)) + '</td>';
+      frag.appendChild(tr);
+    });
+    el.tableBody.innerHTML = '';
+    el.tableBody.appendChild(frag);
+    el.pageInfo.textContent = 'Page ' + (state.page + 1) + ' of ' + pages + ' (' + total + ' rows)';
+    el.btnPrev.disabled = state.page <= 0;
+    el.btnNext.disabled = state.page >= pages - 1;
+  }
+
+  function loadFile(file) {
+    if (!file) return;
+    if (file.size > MAX_FILE_BYTES) {
+      el.parseStatus.textContent = 'File is too large (' + Math.round(file.size / 1024 / 1024) +
+        ' MB). Maximum ' + Math.round(MAX_FILE_BYTES / 1024 / 1024) + ' MB.';
+      el.parseStatus.className = 'meta error';
+      return;
+    }
+    el.parseStatus.textContent = 'Reading…';
+    el.parseStatus.className = 'meta';
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        var t0 = performance.now();
+        var grid = parseCsv(String(reader.result || ''));
+        if (!grid.length) throw new Error('CSV is empty.');
+        var header = grid[0].map(function (h) { return trim(h); });
+        var colWarn = '';
+        if (header.length !== EXPECTED_HEADER.length) {
+          colWarn = ' Warning: expected ' + EXPECTED_HEADER.length + ' columns, found ' + header.length + '.';
+        }
+        state.rows = [];
+        for (var i = 1; i < grid.length; i++) {
+          state.rows.push(rowToObject(header, grid[i]));
+        }
+        state.rows.reverse();
+        var ms = Math.round(performance.now() - t0);
+        el.parseStatus.textContent = 'Loaded ' + state.rows.length + ' rows in ' + ms + ' ms.' + colWarn;
+        el.parseStatus.className = 'meta';
+        el.dashboard.classList.remove('hidden');
+        el.btnClear.disabled = false;
+        populateEndpointFilter(state.rows);
+        renderStats(computeOverview(state.rows));
+        el.filterApiOnly.value = 'api';
+        applyFilters();
+      } catch (err) {
+        el.parseStatus.textContent = 'Parse error: ' + (err && err.message ? err.message : String(err));
+        el.parseStatus.className = 'meta error';
+      }
+    };
+    reader.onerror = function () {
+      el.parseStatus.textContent = 'Could not read file.';
+      el.parseStatus.className = 'meta error';
+    };
+    reader.readAsText(file);
+  }
+
+  function clearData() {
+    state.rows = [];
+    state.filtered = [];
+    state.page = 0;
+    el.fileInput.value = '';
+    el.dashboard.classList.add('hidden');
+    el.btnClear.disabled = true;
+    el.parseStatus.textContent = 'No file loaded.';
+    el.parseStatus.className = 'meta';
+    el.tableBody.innerHTML = '';
+    el.durationTableBody.innerHTML = '';
+    el.issuesReport.value = '';
+    el.copyReportStatus.textContent = '';
+  }
+
+  function copyReportToClipboard() {
+    var text = redactForShare(el.issuesReport.value || '');
+    el.copyReportStatus.textContent = '';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        el.copyReportStatus.textContent = 'Copied.';
+      }).catch(function () {
+        el.copyReportStatus.textContent = 'Copy failed — select the text and copy manually.';
+      });
+      return;
+    }
+    el.issuesReport.focus();
+    el.issuesReport.select();
+    try {
+      if (document.execCommand('copy')) el.copyReportStatus.textContent = 'Copied.';
+      else el.copyReportStatus.textContent = 'Select the report text and copy manually.';
+    } catch (e) {
+      el.copyReportStatus.textContent = 'Select the report text and copy manually.';
+    }
+  }
+
+  buildGlossary();
+
+  el.fileInput.addEventListener('change', function () {
+    var f = el.fileInput.files && el.fileInput.files[0];
+    loadFile(f);
+  });
+  el.btnClear.addEventListener('click', clearData);
+  [
+    el.filterApiOnly, el.filterEndpoint, el.filterStatus, el.filterSlow,
+    el.filterFrom, el.filterTo, el.filterQuery, el.pageSize
+  ].forEach(function (node) {
+    node.addEventListener('input', scheduleFilter);
+    node.addEventListener('change', scheduleFilter);
+  });
+  [el.durationMetric, el.durationApiOnly].forEach(function (node) {
+    node.addEventListener('change', function () {
+      renderDurationByEndpoint();
+    });
+  });
+  [el.redactIps, el.redactSteamIds].forEach(function (node) {
+    node.addEventListener('change', function () {
+      el.copyReportStatus.textContent = '';
+    });
+  });
+  el.btnCopyReport.addEventListener('click', copyReportToClipboard);
+  el.btnPrev.addEventListener('click', function () {
+    state.page--;
+    renderTablePage();
+  });
+  el.btnNext.addEventListener('click', function () {
+    state.page++;
+    renderTablePage();
+  });
+})();
+  </script>
+</body>
+</html>

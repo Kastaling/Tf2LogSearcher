@@ -76,6 +76,16 @@ CHAT_SEARCH_MAX_RESULTS_STEAMID = _optional_positive_int("CHAT_SEARCH_MAX_RESULT
 # Avatar URL cache (Steam Web API; separate SQLite file)
 AVATAR_DB_PATH = Path(_str("AVATAR_DB_PATH", "./downloader_state/avatars.db"))
 
+# Default (unfiltered) player profile JSON disk cache
+_PROFILE_CACHE_PATH_RAW = _str("PROFILE_CACHE_DB_PATH", "").strip()
+PROFILE_CACHE_DB_PATH = (
+    Path(_PROFILE_CACHE_PATH_RAW)
+    if _PROFILE_CACHE_PATH_RAW
+    else (DOWNLOADER_STATE_DIR / "profile_cache.db")
+)
+# Safety TTL for disk rows; primary invalidation is per-player stats token match.
+PROFILE_CACHE_MAX_AGE_SEC = _int("PROFILE_CACHE_MAX_AGE_SEC", 365 * 24 * 60 * 60)
+
 # Public profile view counters (total + unique visitor buckets)
 _PROFILE_VIEWS_PATH_RAW = _str("PROFILE_VIEWS_DB_PATH", "").strip()
 PROFILE_VIEWS_DB_PATH = (

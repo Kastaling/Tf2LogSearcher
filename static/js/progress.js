@@ -535,6 +535,7 @@ function _fillStorageStatsTableIntoShell(el, d) {
     raw_events_db: 'raw_events.db',
     avatar_db: 'avatars.db',
     profile_views_db: 'profile_views.db',
+    profile_cache_db: 'profile_cache.db',
   };
   const dbFiles = d.db_files || {};
   const dbRows = [];

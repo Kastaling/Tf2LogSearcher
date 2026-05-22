@@ -107,7 +107,8 @@ def _init_stats_db_background() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     from app.avatar_db import connect_avatar_db, init_avatar_db
-    from app.config import AVATAR_DB_PATH, DOWNLOAD_RAW_ENABLED, RAW_EVENTS_DB_PATH
+    from app.config import AVATAR_DB_PATH, DOWNLOAD_RAW_ENABLED, PROFILE_CACHE_DB_PATH, RAW_EVENTS_DB_PATH
+    from app.profile_cache_db import connect_profile_cache_db, init_profile_cache_db
     from app.raw_db import connect_raw_db, init_raw_db
 
     conn = connect_avatar_db(AVATAR_DB_PATH)
@@ -115,6 +116,12 @@ async def lifespan(_app: FastAPI):
         init_avatar_db(conn)
     finally:
         conn.close()
+
+    pconn = connect_profile_cache_db(PROFILE_CACHE_DB_PATH)
+    try:
+        init_profile_cache_db(pconn)
+    finally:
+        pconn.close()
 
     if DOWNLOAD_RAW_ENABLED or Path(RAW_EVENTS_DB_PATH).is_file():
         rconn = connect_raw_db(RAW_EVENTS_DB_PATH)

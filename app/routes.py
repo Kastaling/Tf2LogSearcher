@@ -21,6 +21,7 @@ from app.config import (
     DOWNLOAD_RAW_ENABLED,
     DOWNLOADER_STATE_DIR,
     LOGS_DIR,
+    PROFILE_CACHE_DB_PATH,
     PROFILE_VIEWS_DB_PATH,
     RAW_EVENTS_DB_PATH,
     RAW_LOGS_DIR,
@@ -40,9 +41,23 @@ from app.avatar_db import (
 )
 from app.chat_db import chat_log_fingerprint, count_chat_messages
 from app.raw_db import count_raw_library_rows
-from app.stats_db import count_stats_index_rows, stats_db_fingerprint, stats_player_stats_cache_token
+from app.stats_db import (
+    count_stats_index_rows,
+    stats_db_fingerprint,
+    stats_player_stats_cache_token,
+    stats_player_stats_cache_token_frozenset_from_parts,
+    stats_player_stats_cache_token_parts,
+)
 from app.rate_limit import rate_limit_exceeded
 from app.request_log import append_request_log
+from app.profile_cache_db import (
+    connect_profile_cache_db,
+    default_profile_cache_key,
+    get_default_profile_cache,
+    init_profile_cache_db,
+    is_default_profile_scope,
+    set_default_profile_cache,
+)
 from app.profile_views import record_profile_view, visitor_fingerprint
 from app.weapon_names import get_weapon_name
 from app.search.search import (
@@ -221,6 +236,32 @@ _PREFETCH_MAX = 20  # cap how many profiles to warm per trigger
 _PREFETCH_GAMEMODE_DEFAULT = ""  # warm unfiltered profiles only
 
 
+def _persist_default_profile_disk(
+    steamid64: str, profile: dict[str, Any], token: tuple[int, int, int]
+) -> None:
+    """Write default-scope profile to disk cache (best-effort)."""
+    try:
+        conn = connect_profile_cache_db(PROFILE_CACHE_DB_PATH)
+        try:
+            set_default_profile_cache(conn, steamid64, profile, token)
+        finally:
+            conn.close()
+    except OSError:
+        pass
+
+
+def _load_default_profile_disk(steamid64: str, token: tuple[int, int, int]) -> dict[str, Any] | None:
+    """Read default-scope profile from disk when token matches (best-effort)."""
+    try:
+        conn = connect_profile_cache_db(PROFILE_CACHE_DB_PATH)
+        try:
+            return get_default_profile_cache(conn, steamid64, token)
+        finally:
+            conn.close()
+    except OSError:
+        return None
+
+
 def _prefetch_profiles_background(steamid64s: list[str]) -> None:
     """
     Warm the in-process profile cache for a list of SteamID64s.
@@ -231,13 +272,30 @@ def _prefetch_profiles_background(steamid64s: list[str]) -> None:
     candidates = [s for s in steamid64s if s and re.fullmatch(r"\d{17}", s)][: _PREFETCH_MAX]
     gm = _PREFETCH_GAMEMODE_DEFAULT
     for sid64 in candidates:
-        ck = (sid64, gm, "", "", "")
+        ck = default_profile_cache_key(sid64)
         if cache_get("profile", ck) is not None:
+            continue
+        token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, sid64)
+        disk = _load_default_profile_disk(sid64, token_parts)
+        if disk is not None:
+            cache_set(
+                "profile",
+                ck,
+                disk,
+                stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+            )
             continue
         try:
             profile, _ = player_profile(sid64, gamemode=gm)
-            token = stats_player_stats_cache_token(STATS_DB_PATH, sid64)
-            cache_set("profile", ck, profile, token)
+            # Fresh token after build (profile fetch can take minutes; ingest may advance token).
+            token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, sid64)
+            cache_set(
+                "profile",
+                ck,
+                profile,
+                stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+            )
+            _persist_default_profile_disk(sid64, profile, token_parts)
         except Exception:
             pass
 
@@ -1461,6 +1519,7 @@ def _compute_storage_stats() -> dict[str, Any]:
     raw_db = _file_size_bytes(Path(RAW_EVENTS_DB_PATH)) if DOWNLOAD_RAW_ENABLED else None
     avatar_db = _file_size_bytes(Path(AVATAR_DB_PATH))
     pv_sz = _file_size_bytes(Path(PROFILE_VIEWS_DB_PATH))
+    profile_cache_db = _file_size_bytes(Path(PROFILE_CACHE_DB_PATH))
     # Always surface in API/UI so the row appears even before first profile view creates the file.
     profile_views_db = 0 if pv_sz is None else pv_sz
 
@@ -1470,6 +1529,7 @@ def _compute_storage_stats() -> dict[str, Any]:
         "raw_events_db": raw_db,
         "avatar_db": avatar_db,
         "profile_views_db": profile_views_db,
+        "profile_cache_db": profile_cache_db,
     }
     _db_parts = [v for v in db_files.values() if v is not None]
     db_total: int | None = sum(_db_parts) if _db_parts else None
@@ -1612,6 +1672,22 @@ def _api_profile_impl(
         map_query.lower(),
     )
     cached = cache_get("profile", cache_key)
+    if cached is None and is_default_profile_scope(
+        gamemode=gm,
+        date_from=date_from,
+        date_to=date_to,
+        map_query=map_query,
+    ):
+        token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, steamid64)
+        disk_profile = _load_default_profile_disk(steamid64, token_parts)
+        if disk_profile is not None:
+            cache_set(
+                "profile",
+                cache_key,
+                disk_profile,
+                stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+            )
+            cached = disk_profile
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
@@ -1646,14 +1722,27 @@ def _api_profile_impl(
         )
         return rl
     try:
-        profile, log_ids = player_profile(
+        profile, _log_ids = player_profile(
             steamid64,
             gamemode=gm,
             date_from=date_from,
             date_to=date_to,
             map_query=map_query,
         )
-        cache_set("profile", cache_key, profile, stats_player_stats_cache_token(STATS_DB_PATH, steamid64))
+        token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, steamid64)
+        cache_set(
+            "profile",
+            cache_key,
+            profile,
+            stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+        )
+        if is_default_profile_scope(
+            gamemode=gm,
+            date_from=date_from,
+            date_to=date_to,
+            map_query=map_query,
+        ):
+            _persist_default_profile_disk(steamid64, profile, token_parts)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
             request,

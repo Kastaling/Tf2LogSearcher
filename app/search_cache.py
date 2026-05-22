@@ -138,3 +138,17 @@ def set_(mode: str, key_tuple: tuple[Any, ...], payload: dict[str, Any], log_ids
         if k in _cache_order:
             _cache_order[:] = [x for x in _cache_order if x != k]
         _cache_order.append(k)
+
+
+def invalidate_profile_for_steamid(steamid64: str) -> None:
+    """Remove all in-memory profile cache entries for one player (any filter scope)."""
+    sid = (steamid64 or "").strip()
+    if not sid:
+        return
+    with _cache_lock:
+        to_drop = [k for k in _cache if k[0] == "profile" and k[1] and k[1][0] == sid]
+        for k in to_drop:
+            _cache.pop(k, None)
+        if to_drop:
+            drop_set = set(to_drop)
+            _cache_order[:] = [x for x in _cache_order if x not in drop_set]

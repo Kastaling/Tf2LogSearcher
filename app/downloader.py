@@ -119,11 +119,13 @@ def _collect_pending_agg_steamids_from_log(
     aggregate query and spuriously delete existing ``player_stats_agg`` rows).
     Isolated from the stats DB try/except so queue failures cannot be mistaken for insert failures.
     When ``state_dir`` is set, the pending set is persisted so a crash before flush does not lose work.
+    Also proactively invalidates default profile disk + in-memory cache for players in this log.
     """
     if pending_agg_steamids is None:
         return
     try:
         n_before = len(pending_agg_steamids)
+        sids_this_log: list[str] = []
         players_block = data.get("players") if isinstance(data, dict) else None
         if isinstance(players_block, dict):
             for sid3, stats in players_block.items():
@@ -135,6 +137,18 @@ def _collect_pending_agg_steamids_from_log(
                 sid64 = steamid3_to_steamid64(str(sid3).strip())
                 if sid64:
                     pending_agg_steamids.add(sid64)
+                    sids_this_log.append(sid64)
+        if sids_this_log:
+            try:
+                from app.profile_cache_db import invalidate_default_profile_caches
+
+                invalidate_default_profile_caches(sids_this_log)
+            except Exception as inv_err:
+                logger.warning(
+                    "profile_cache invalidate failed (log %s): %s",
+                    log_id,
+                    inv_err,
+                )
         if state_dir is not None and len(pending_agg_steamids) != n_before:
             _save_pending_agg_steamids(state_dir, pending_agg_steamids)
     except Exception as e:

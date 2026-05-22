@@ -51,8 +51,13 @@ docker compose logs -f downloader
 | Downloader state | `./downloader_state` |
 | Chat SQLite DB | `./downloader_state/chat.db` |
 | Stats SQLite DB | `./downloader_state/stats.db` |
+| Default profile disk cache | `./downloader_state/profile_cache.db` |
 | Raw events DB | `./downloader_state/raw_events.db` |
 | Request logs | `./request_logs` |
+
+### Request log viewer (offline)
+
+`scripts/request-log-viewer.html` parses `request_log.csv` in the browser only (no upload, no server). Copy the HTML file and CSV off the host, open the HTML locally, and load the CSV. Filters, charts, per-endpoint latency, and a copyable issues summary are included. Logs may contain IPs and Steam IDs; ~80 MB file size limit.
 
 The default web port is `8027` on the host mapped to `8000` in the container. Change the left side of the port mapping in your local `docker-compose.yml` if needed.
 
