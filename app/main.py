@@ -104,6 +104,16 @@ def _init_stats_db_background() -> None:
     )
 
 
+def _purge_poisoned_logs_background() -> None:
+    """Remove curated poisoned logs from chat/stats DBs (best-effort, non-blocking startup)."""
+    from app.poisoned_logs import purge_poisoned_logs
+
+    try:
+        purge_poisoned_logs()
+    except Exception:
+        logger.exception("Poisoned log purge failed; search may include blocklisted logs until fixed.")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     from app.avatar_db import connect_avatar_db, init_avatar_db
@@ -133,6 +143,7 @@ async def lifespan(_app: FastAPI):
     # Run in a daemon thread so uvicorn can listen immediately. Otherwise init_stats_db (CREATE INDEX
     # on large tables) blocks the whole app for minutes and contends with the downloader for locks.
     threading.Thread(target=_init_stats_db_background, name="stats-db-init", daemon=True).start()
+    threading.Thread(target=_purge_poisoned_logs_background, name="poisoned-log-purge", daemon=True).start()
     yield
 
 

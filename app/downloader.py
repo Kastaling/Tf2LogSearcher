@@ -44,6 +44,7 @@ from app.raw_log_parser import parse_raw_log
 from app.raw_zip_io import extract_log_content_from_zip, fetch_raw_log_zip_with_retry, save_raw_log_zip
 from app.logs_tf import fetch_log_list, fetch_log_json, steamid3_to_steamid64
 from app.subscriptions import check_log_for_subscriptions
+from app.poisoned_logs import is_poisoned, purge_poisoned_logs
 from app.download_eta_checkpoint import (
     load_eta_checkpoint,
     maybe_save_eta_checkpoint,
@@ -691,6 +692,8 @@ def run_catch_up_newest(
         if log_id is None:
             continue
         log_id = int(log_id)
+        if is_poisoned(log_id):
+            continue
         if log_id in skipped:
             continue
         path = logs_dir / f"{log_id}.json"
@@ -837,6 +840,8 @@ def run_backfill_from_offset(
             if log_id is None:
                 continue
             log_id = int(log_id)
+            if is_poisoned(log_id):
+                continue
             if log_id in skipped:
                 skipped_this_page += 1
                 continue
@@ -1043,6 +1048,11 @@ def main() -> None:
             raw_db_conn = None
 
     logger.info("Download modes: JSON=%s RAW=%s", DOWNLOAD_JSON_ENABLED, DOWNLOAD_RAW_ENABLED)
+
+    try:
+        purge_poisoned_logs()
+    except Exception as e:
+        logger.warning("Poisoned log purge at startup failed (continuing): %s", e)
 
     try:
         wall_start, total_dl, loaded_recent = load_eta_checkpoint(state_dir)

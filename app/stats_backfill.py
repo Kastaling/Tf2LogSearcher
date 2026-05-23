@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from app.config import LOGS_DIR, STATS_DB_PATH
+from app.poisoned_logs import is_poisoned
 from app.stats_db import connect_stats_db, init_stats_db, rebuild_player_stats_agg, replace_stats_for_log
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
@@ -105,6 +106,8 @@ def run_backfill(
             processed += 1
             try:
                 log_id = int(p.stem)
+                if is_poisoned(log_id):
+                    continue
                 logtext = json.loads(p.read_text(encoding="utf-8", errors="replace"))
                 player_rows_total += replace_stats_for_log(conn, log_id, logtext)
             except (OSError, ValueError, TypeError) as e:

@@ -383,7 +383,11 @@ def local_chat_log_ids_for_player(steamid64: str, db_path: str | Path) -> frozen
         ).fetchall()
     finally:
         conn.close()
-    return frozenset(int(r[0]) for r in rows if r and r[0] is not None)
+    from app.poisoned_logs import is_poisoned
+
+    return frozenset(
+        int(r[0]) for r in rows if r and r[0] is not None and not is_poisoned(int(r[0]))
+    )
 
 
 def local_all_chat_log_ids(db_path: str | Path) -> frozenset[int]:
@@ -466,6 +470,12 @@ def replace_chat_for_log(
 
     Caller controls transaction scope. Returns number of inserted chat rows.
     """
+    from app.poisoned_logs import is_poisoned
+
+    if is_poisoned(log_id):
+        conn.execute("DELETE FROM chat_messages WHERE log_id = ?", (log_id,))
+        conn.execute("DELETE FROM chat_logs WHERE log_id = ?", (log_id,))
+        return 0
     ts = int(time.time()) if imported_at_ts is None else int(imported_at_ts)
     log_date_ts, map_name, rows = _extract_chat_rows(log_id, logtext)
 

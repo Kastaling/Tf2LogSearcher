@@ -152,3 +152,82 @@ def invalidate_profile_for_steamid(steamid64: str) -> None:
         if to_drop:
             drop_set = set(to_drop)
             _cache_order[:] = [x for x in _cache_order if x not in drop_set]
+
+
+def invalidate_coplayers_for_steamid(steamid64: str) -> None:
+    """Remove all in-memory co-players cache entries for one player (any filter scope)."""
+    sid = (steamid64 or "").strip()
+    if not sid:
+        return
+    with _cache_lock:
+        to_drop = [k for k in _cache if k[0] == "coplayers" and k[1] and k[1][0] == sid]
+        for k in to_drop:
+            _cache.pop(k, None)
+        if to_drop:
+            drop_set = set(to_drop)
+            _cache_order[:] = [x for x in _cache_order if x not in drop_set]
+
+
+_SINGLEFLIGHT_WAIT_SEC = 600
+_inflight_events: dict[tuple[str, tuple[Any, ...]], threading.Event] = {}
+_inflight_lock = threading.Lock()
+
+
+def singleflight_build(
+    mode: str,
+    key_tuple: tuple[Any, ...],
+    builder: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Coalesce concurrent cache misses for the same key into one ``builder`` call.
+
+    ``builder`` must store the result via ``set_`` before returning the payload.
+    Waiters block until the leader finishes, then read from the cache.
+    """
+    hit = get(mode, key_tuple)
+    if hit is not None:
+        return hit
+
+    k = _cache_key(mode, *key_tuple)
+    with _inflight_lock:
+        evt = _inflight_events.get(k)
+        if evt is not None:
+            leader = False
+        else:
+            evt = threading.Event()
+            _inflight_events[k] = evt
+            leader = True
+
+    if not leader:
+        while True:
+            evt.wait(timeout=_SINGLEFLIGHT_WAIT_SEC)
+            hit = get(mode, key_tuple)
+            if hit is not None:
+                return hit
+            # Timed-out waiters must not become a new leader while this flight is still
+            # registered (including the brief window after the leader finishes ``builder``
+            # but before ``finally`` clears tracking).
+            with _inflight_lock:
+                still_inflight = _inflight_events.get(k) is evt
+            if still_inflight:
+                continue
+            break
+        return singleflight_build(mode, key_tuple, builder)
+
+    # Another worker may have finished and populated the cache while we waited for the lock.
+    hit = get(mode, key_tuple)
+    if hit is not None:
+        evt.set()
+        with _inflight_lock:
+            if _inflight_events.get(k) is evt:
+                _inflight_events.pop(k, None)
+        return hit
+
+    try:
+        return builder()
+    finally:
+        # Signal before removing from tracking so blocked waiters wake while the
+        # entry still exists; removal afterward prevents stale-event joins.
+        evt.set()
+        with _inflight_lock:
+            _inflight_events.pop(k, None)

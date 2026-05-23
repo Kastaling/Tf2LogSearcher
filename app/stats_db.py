@@ -989,6 +989,11 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
     Does not update ``player_stats_agg``; callers that need leaderboard aggregates should
     collect affected SteamID64s and call ``flush_player_stats_agg`` after a batch of writes.
     """
+    from app.poisoned_logs import is_poisoned
+
+    if is_poisoned(log_id):
+        conn.execute("DELETE FROM logs WHERE log_id = ?", (log_id,))
+        return 0
     conn.execute("DELETE FROM logs WHERE log_id = ?", (log_id,))
     data = extract_log_stats(log_id, logtext)
     lr = data["log_row"]

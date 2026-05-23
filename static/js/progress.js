@@ -121,12 +121,17 @@ function appendProgressRow(tbody, label, valueText, trClass) {
 }
 
 /** Storage table: primary value + optional faded ``(pct%)`` vs grand total (no HTML from server). */
-function appendStorageValueRow(tbody, label, primaryText, trClass, bytesForPct, totalBytes, sliceId) {
+function appendStorageValueRow(tbody, label, primaryText, trClass, bytesForPct, totalBytes, sliceId, opts) {
+  opts = opts || {};
   const tr = document.createElement('tr');
   if (trClass) tr.className = trClass;
   if (sliceId) {
     tr.setAttribute('data-storage-slice', String(sliceId));
     tr.classList.add('download-progress-storage-data-row');
+  }
+  if (opts.hoverDetail) {
+    tr.classList.add('download-progress-storage-has-detail');
+    tr.setAttribute('title', opts.hoverDetail);
   }
   const th = document.createElement('th');
   th.scope = 'row';
@@ -529,27 +534,48 @@ function _fillStorageStatsTableIntoShell(el, d) {
     appendStorageValueRow(tbody, 'Directories total', fmtBytes(dirsTotal), 'download-progress-storage-subtotal', dirsTotal, d.total_bytes);
   }
 
-  const dbLabels = {
+  const majorDbLabels = {
     stats_db: 'stats.db',
     chat_db: 'chat.db',
     raw_events_db: 'raw_events.db',
-    avatar_db: 'avatars.db',
-    profile_views_db: 'profile_views.db',
-    profile_cache_db: 'profile_cache.db',
   };
+  const miscDbDefs = [
+    { key: 'avatar_db', label: 'avatars.db' },
+    { key: 'profile_views_db', label: 'profile_views.db', missingAsZero: true },
+    { key: 'profile_cache_db', label: 'profile_cache.db' },
+  ];
   const dbFiles = d.db_files || {};
   const dbRows = [];
-  Object.keys(dbLabels).forEach(function(key) {
+  Object.keys(majorDbLabels).forEach(function(key) {
     if (key === 'raw_events_db' && !d.download_raw_enabled) return;
     var v = dbFiles[key];
-    if (key === 'profile_views_db') {
-      var pvVal = v != null && typeof v === 'number' && Number.isFinite(v) ? v : 0;
-      dbRows.push({ key: key, label: dbLabels[key], v: pvVal });
+    if (v == null) return;
+    dbRows.push({ key: key, label: majorDbLabels[key], v: v });
+  });
+  var miscParts = [];
+  var miscSum = 0;
+  var miscCount = 0;
+  miscDbDefs.forEach(function(def) {
+    var v = dbFiles[def.key];
+    if (def.missingAsZero) {
+      v = v != null && typeof v === 'number' && Number.isFinite(v) ? v : 0;
+    } else if (v == null) {
       return;
     }
-    if (v == null) return;
-    dbRows.push({ key: key, label: dbLabels[key], v: v });
+    miscSum += v;
+    miscCount += 1;
+    miscParts.push(def.label + ': ' + fmtBytes(v));
   });
+  var miscDetail = null;
+  if (miscCount > 0) {
+    miscDetail = miscParts.join('\n');
+    dbRows.push({
+      key: 'misc_dbs',
+      label: 'Miscellaneous DBs (' + miscCount + ')',
+      v: miscSum,
+      hoverDetail: 'Breakdown:\n' + miscDetail,
+    });
+  }
   const anyDb = dbRows.length > 0;
 
   if (hasDirSection && (anyDb || d.total_bytes != null)) {
@@ -557,8 +583,18 @@ function _fillStorageStatsTableIntoShell(el, d) {
   }
 
   dbRows.forEach(function(row) {
-    pieSegments.push({ id: row.key, label: row.label, bytes: row.v });
-    appendStorageValueRow(tbody, row.label, fmtBytes(row.v), '', row.v, d.total_bytes, row.key);
+    var pieLabel = row.key === 'misc_dbs' ? 'Miscellaneous DBs' : row.label;
+    pieSegments.push({ id: row.key, label: pieLabel, bytes: row.v });
+    appendStorageValueRow(
+      tbody,
+      row.label,
+      fmtBytes(row.v),
+      '',
+      row.v,
+      d.total_bytes,
+      row.key,
+      row.hoverDetail ? { hoverDetail: row.hoverDetail } : undefined,
+    );
   });
   if (anyDb && d.db_total_bytes != null) {
     appendStorageValueRow(

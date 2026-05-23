@@ -617,6 +617,11 @@
       font-size: 0.85em;
       opacity: 0.52;
     }
+    .download-progress-stats--storage tr.download-progress-storage-has-detail th {
+      cursor: help;
+      text-decoration: underline dotted;
+      text-underline-offset: 0.2em;
+    }
     .download-progress-stats--storage tr.download-progress-storage-section-spacer .download-progress-storage-section-spacer-cell {
       padding: 0.45rem 0 0.15rem;
       border-left: none;

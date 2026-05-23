@@ -272,7 +272,7 @@ def stats_log_exclusion_sql(table_alias: str = "l") -> str:
     )
     # Series score suffix — aligned with ``_TITLE_SERIES_SCORE_TAIL_RE`` / ``title_suggests_combined_log``.
     title_series_sql = _title_series_score_tail_sql(t)
-    return (
+    base = (
         f" AND NOT ("
         f"({t}.map IS NULL OR trim({t}.map) = '')"
         f" OR instr({t}.map, ',') > 0 OR instr({t}.map, '+') > 0"
@@ -282,6 +282,9 @@ def stats_log_exclusion_sql(table_alias: str = "l") -> str:
         f" OR {title_series_sql}"
         f")"
     )
+    from app.poisoned_logs import poisoned_log_exclusion_sql
+
+    return base + poisoned_log_exclusion_sql(table_alias)
 
 
 def _sql_quote(s: str) -> str:

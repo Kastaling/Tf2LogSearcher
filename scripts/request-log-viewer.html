@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; connect-src https://api.github.com;">
   <title>TF2 Log Searcher — Request log viewer (offline)</title>
   <style>
     :root {
@@ -143,6 +143,17 @@
       resize: vertical;
     }
     .hidden { display: none !important; }
+    .deploy-panel { border-color: var(--accent); }
+    .deploy-row { display: flex; flex-wrap: wrap; gap: 0.65rem 1rem; align-items: end; margin-bottom: 0.65rem; }
+    .deploy-marker {
+      font-size: 0.85rem;
+      padding: 0.5rem 0.65rem;
+      border-radius: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+    }
+    .deploy-marker a { color: var(--accent); }
+    .deploy-marker.empty { color: var(--muted); font-style: italic; }
     .status-ok { color: var(--ok); }
     .status-err { color: var(--danger); font-weight: 600; }
     .status-warn { color: var(--warn); }
@@ -175,6 +186,28 @@
       <section class="panel">
         <h2 style="margin:0 0 0.75rem;font-size:1.05rem;">Overview</h2>
         <div class="stats-grid" id="statsGrid"></div>
+      </section>
+
+      <section class="panel deploy-panel">
+        <h2 style="margin:0 0 0.5rem;font-size:1.05rem;">Deploy marker (GitHub)</h2>
+        <p class="meta" style="margin:0 0 0.75rem;">
+          Fetches the latest commit on <a href="https://github.com/Kastaling/Tf2LogSearcher" target="_blank" rel="noopener noreferrer">Kastaling/Tf2LogSearcher</a>
+          (one HTTPS request to GitHub; nothing is uploaded from your CSV). Use this to show only log rows <strong>on or after</strong> that commit time (UTC) — useful when measuring a caching deploy.
+          Commit time is when code landed on GitHub; your server may restart later.
+        </p>
+        <div class="deploy-row">
+          <div>
+            <label for="deployBranch">Branch</label>
+            <input type="text" id="deployBranch" value="main" style="width:7rem;" spellcheck="false" />
+          </div>
+          <button type="button" class="secondary" id="btnFetchDeploy">Fetch latest commit</button>
+          <button type="button" class="secondary" id="btnClearDeploy" disabled>Clear marker</button>
+        </div>
+        <div id="deployMarkerBox" class="deploy-marker empty" aria-live="polite">No deploy marker loaded.</div>
+        <p style="margin:0.65rem 0 0;">
+          <label><input type="checkbox" id="filterSinceCommit" disabled> Only rows at or after this commit (UTC)</label>
+        </p>
+        <p class="meta" id="deployStatus" style="margin:0.5rem 0 0;" aria-live="polite"></p>
       </section>
 
       <section class="panel">
@@ -361,6 +394,10 @@
   var PAGE_SIZE_DEFAULT = 50;
   var MAX_FILE_BYTES = 80 * 1024 * 1024;
   var DEBOUNCE_MS = 120;
+  var GITHUB_REPO = 'Kastaling/Tf2LogSearcher';
+  var GITHUB_REPO_URL = 'https://github.com/' + GITHUB_REPO;
+  var GITHUB_API_COMMITS = 'https://api.github.com/repos/' + GITHUB_REPO + '/commits';
+  var LS_DEPLOY_MARKER = 'tf2ls-request-log-deploy-marker';
 
   var state = {
     rows: [],
@@ -368,7 +405,8 @@
     filtered: [],
     page: 0,
     pageSize: PAGE_SIZE_DEFAULT,
-    filterTimer: null
+    filterTimer: null,
+    deployMarker: null
   };
 
   var el = {
@@ -398,7 +436,13 @@
     btnCopyReport: document.getElementById('btnCopyReport'),
     copyReportStatus: document.getElementById('copyReportStatus'),
     redactIps: document.getElementById('redactIps'),
-    redactSteamIds: document.getElementById('redactSteamIds')
+    redactSteamIds: document.getElementById('redactSteamIds'),
+    deployBranch: document.getElementById('deployBranch'),
+    btnFetchDeploy: document.getElementById('btnFetchDeploy'),
+    btnClearDeploy: document.getElementById('btnClearDeploy'),
+    deployMarkerBox: document.getElementById('deployMarkerBox'),
+    filterSinceCommit: document.getElementById('filterSinceCommit'),
+    deployStatus: document.getElementById('deployStatus')
   };
 
   function escapeHtml(s) {
@@ -630,7 +674,8 @@
     }).join('');
   }
 
-  function rowMatchesFilters(r, idx) {
+  function rowMatchesFilters(r, idx, opts) {
+    opts = opts || {};
     var ep = trim(r.endpoint);
     var mode = el.filterApiOnly.value;
     if (mode === 'api' && !isApiEndpoint(ep)) return false;
@@ -652,18 +697,23 @@
       if (dm == null || dm < slowMin) return false;
     }
 
-    var from = el.filterFrom.value;
-    var to = el.filterTo.value;
-    if (from || to) {
-      var t = parseTimestampMs(r.timestamp_utc);
-      if (t == null) return false;
-      if (from) {
-        var f0 = Date.parse(from + 'T00:00:00Z');
-        if (t < f0) return false;
-      }
-      if (to) {
-        var f1 = Date.parse(to + 'T23:59:59.999Z');
-        if (t > f1) return false;
+    var tRow = parseTimestampMs(r.timestamp_utc);
+    if (!opts.ignoreDeployCutoff && el.filterSinceCommit.checked && state.deployMarker) {
+      var sinceMs = state.deployMarker.sinceMs;
+      if (tRow == null || tRow < sinceMs) return false;
+    } else {
+      var from = el.filterFrom.value;
+      var to = el.filterTo.value;
+      if (from || to) {
+        if (tRow == null) return false;
+        if (from) {
+          var f0 = Date.parse(from + 'T00:00:00Z');
+          if (tRow < f0) return false;
+        }
+        if (to) {
+          var f1 = Date.parse(to + 'T23:59:59.999Z');
+          if (tRow > f1) return false;
+        }
       }
     }
 
@@ -805,10 +855,152 @@
     if (el.filterEndpoint.value) parts.push('endpoint=' + el.filterEndpoint.value);
     if (el.filterStatus.value) parts.push('status=' + el.filterStatus.value);
     if (trim(el.filterSlow.value)) parts.push('slow>=' + trim(el.filterSlow.value) + 'ms');
-    if (el.filterFrom.value) parts.push('from=' + el.filterFrom.value);
+    if (el.filterSinceCommit.checked && state.deployMarker) {
+      parts.push('since_commit=' + state.deployMarker.sha + '@' + state.deployMarker.dateIso);
+    } else {
+      if (el.filterFrom.value) parts.push('from=' + el.filterFrom.value);
+    }
     if (el.filterTo.value) parts.push('to=' + el.filterTo.value);
     if (trim(el.filterQuery.value)) parts.push('q=' + truncate(el.filterQuery.value, 40));
     return parts.join(', ');
+  }
+
+  function commitApiToMarker(commit, branch) {
+    if (!commit || !commit.commit) return null;
+    var dateIso = trim(commit.commit.committer && commit.commit.committer.date);
+    if (!dateIso) dateIso = trim(commit.commit.author && commit.commit.author.date);
+    var sinceMs = Date.parse(dateIso);
+    if (!Number.isFinite(sinceMs)) return null;
+    var msg = trim(commit.commit.message).split('\n')[0];
+    var shaFull = trim(commit.sha);
+    return {
+      sha: shaFull.slice(0, 7),
+      shaFull: shaFull,
+      dateIso: dateIso,
+      sinceMs: sinceMs,
+      message: msg,
+      branch: trim(branch) || 'main',
+      htmlUrl: trim(commit.html_url) || (GITHUB_REPO_URL + '/commit/' + shaFull)
+    };
+  }
+
+  function saveDeployMarker(marker) {
+    try {
+      localStorage.setItem(LS_DEPLOY_MARKER, JSON.stringify(marker));
+    } catch (e) { /* ignore quota */ }
+  }
+
+  function loadDeployMarkerFromStorage() {
+    try {
+      var raw = localStorage.getItem(LS_DEPLOY_MARKER);
+      if (!raw) return;
+      var m = JSON.parse(raw);
+      if (m && Number.isFinite(m.sinceMs) && m.shaFull) {
+        state.deployMarker = m;
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  function renderDeployMarker() {
+    var m = state.deployMarker;
+    if (!m) {
+      el.deployMarkerBox.className = 'deploy-marker empty';
+      el.deployMarkerBox.textContent = 'No deploy marker loaded.';
+      el.filterSinceCommit.disabled = true;
+      el.filterSinceCommit.checked = false;
+      el.btnClearDeploy.disabled = true;
+      return;
+    }
+    el.deployMarkerBox.className = 'deploy-marker';
+    el.deployMarkerBox.innerHTML =
+      '<strong><a href="' + escapeHtml(m.htmlUrl) + '" target="_blank" rel="noopener noreferrer">' +
+      escapeHtml(m.sha) + '</a></strong> on <code>' + escapeHtml(m.branch) + '</code> — ' +
+      escapeHtml(m.dateIso) + ' UTC<br>' + escapeHtml(truncate(m.message, 120));
+    el.filterSinceCommit.disabled = false;
+    el.btnClearDeploy.disabled = false;
+    if (el.deployBranch) el.deployBranch.value = m.branch;
+  }
+
+  function applyDeployMarker(marker, autoEnableFilter) {
+    state.deployMarker = marker;
+    saveDeployMarker(marker);
+    renderDeployMarker();
+    if (autoEnableFilter) {
+      el.filterSinceCommit.checked = true;
+      el.filterFrom.value = marker.dateIso.slice(0, 10);
+    }
+    if (state.rows.length) scheduleFilter();
+  }
+
+  function clearDeployMarker() {
+    state.deployMarker = null;
+    try { localStorage.removeItem(LS_DEPLOY_MARKER); } catch (e) { /* ignore */ }
+    renderDeployMarker();
+    el.deployStatus.textContent = '';
+    if (state.rows.length) scheduleFilter();
+  }
+
+  function fetchLatestGithubCommit() {
+    var branch = trim(el.deployBranch.value) || 'main';
+    el.deployStatus.textContent = 'Fetching from GitHub…';
+    el.deployStatus.className = 'meta';
+    el.btnFetchDeploy.disabled = true;
+    var url = GITHUB_API_COMMITS + '?sha=' + encodeURIComponent(branch) + '&per_page=1';
+    fetch(url, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28'
+      }
+    }).then(function (res) {
+      if (!res.ok) {
+        throw new Error('GitHub API HTTP ' + res.status + (res.status === 403 ? ' (rate limit?)' : ''));
+      }
+      return res.json();
+    }).then(function (data) {
+      if (!Array.isArray(data) || !data.length) throw new Error('No commits returned.');
+      var marker = commitApiToMarker(data[0], branch);
+      if (!marker) throw new Error('Could not parse commit date.');
+      applyDeployMarker(marker, true);
+      el.deployStatus.textContent = 'Loaded latest commit on ' + branch + '.';
+    }).catch(function (err) {
+      el.deployStatus.textContent = 'Fetch failed: ' + (err && err.message ? err.message : String(err));
+      el.deployStatus.className = 'meta error';
+    }).finally(function () {
+      el.btnFetchDeploy.disabled = false;
+    });
+  }
+
+  function profileDurationMetrics(indices) {
+    var durs = [];
+    indices.forEach(function (idx) {
+      var r = state.rows[idx];
+      if (trim(r.endpoint) !== '/api/player/profile') return;
+      if (parseIntSafe(r.status_code) !== 200) return;
+      var d = parseIntSafe(r.duration_ms);
+      if (d != null) durs.push(d);
+    });
+    durs.sort(function (a, b) { return a - b; });
+    if (!durs.length) return null;
+    var sum = 0;
+    for (var i = 0; i < durs.length; i++) sum += durs[i];
+    return {
+      n: durs.length,
+      avg: Math.round(sum / durs.length),
+      p95: percentile(durs, 0.95),
+      max: durs[durs.length - 1]
+    };
+  }
+
+  function indicesBeforeDeploy() {
+    if (!state.deployMarker) return [];
+    var sinceMs = state.deployMarker.sinceMs;
+    var out = [];
+    for (var i = 0; i < state.rows.length; i++) {
+      if (!rowMatchesFilters(state.rows[i], i, { ignoreDeployCutoff: true })) continue;
+      var t = parseTimestampMs(state.rows[i].timestamp_utc);
+      if (t != null && t < sinceMs) out.push(i);
+    }
+    return out;
   }
 
   function buildIssuesReport(indices) {
@@ -835,6 +1027,34 @@
     if (dateMin != null) {
       lines.push('Time range (filtered): ' + new Date(dateMin).toISOString().slice(0, 10) +
         ' → ' + new Date(dateMax).toISOString().slice(0, 10) + ' UTC');
+      lines.push('');
+    }
+
+    if (state.deployMarker && el.filterSinceCommit.checked) {
+      var dm = state.deployMarker;
+      lines.push('=== Deploy filter (GitHub) ===');
+      lines.push('- Repo: ' + GITHUB_REPO_URL);
+      lines.push('- Since commit: ' + dm.sha + ' (' + dm.shaFull + ') @ ' + dm.dateIso + ' UTC');
+      lines.push('- Branch: ' + dm.branch);
+      lines.push('- Message: ' + truncate(dm.message, 120));
+      lines.push('- Note: commit time is when code landed on GitHub; restart/recreate the web container after pull for true deploy time.');
+      lines.push('');
+      var preIdx = indicesBeforeDeploy();
+      var postProf = profileDurationMetrics(indices);
+      var preProf = profileDurationMetrics(preIdx);
+      lines.push('=== /api/player/profile (HTTP 200, same filters except before/after commit) ===');
+      function profLine(label, m) {
+        if (!m) return '- ' + label + ': no matching rows';
+        return '- ' + label + ': n=' + m.n + ', avg=' + formatDuration(m.avg) +
+          ', p95=' + formatDuration(m.p95) + ', max=' + formatDuration(m.max);
+      }
+      lines.push(profLine('Before commit', preProf));
+      lines.push(profLine('After commit (current filter)', postProf));
+      if (preProf && postProf && preProf.p95 != null && postProf.p95 != null && preProf.p95 > 0) {
+        var pct = Math.round((1 - postProf.p95 / preProf.p95) * 100);
+        lines.push('- p95 change (after vs before): ' + (pct >= 0 ? '↓ ' : '↑ ') +
+          Math.abs(pct) + '% (negative = slower)');
+      }
       lines.push('');
     }
 
@@ -1223,6 +1443,12 @@
   }
 
   buildGlossary();
+  loadDeployMarkerFromStorage();
+  renderDeployMarker();
+
+  el.btnFetchDeploy.addEventListener('click', fetchLatestGithubCommit);
+  el.btnClearDeploy.addEventListener('click', clearDeployMarker);
+  el.filterSinceCommit.addEventListener('change', scheduleFilter);
 
   el.fileInput.addEventListener('change', function () {
     var f = el.fileInput.files && el.fileInput.files[0];
@@ -1231,7 +1457,7 @@
   el.btnClear.addEventListener('click', clearData);
   [
     el.filterApiOnly, el.filterEndpoint, el.filterStatus, el.filterSlow,
-    el.filterFrom, el.filterTo, el.filterQuery, el.pageSize
+    el.filterFrom, el.filterTo, el.filterQuery, el.pageSize, el.filterSinceCommit
   ].forEach(function (node) {
     node.addEventListener('input', scheduleFilter);
     node.addEventListener('change', scheduleFilter);

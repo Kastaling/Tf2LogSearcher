@@ -12,6 +12,7 @@ from typing import Any
 from app import combined_logs
 from app.chat_db import CHAT_ALIAS_FTS_READY_META_KEY
 from app.config import CHAT_DB_PATH, CHAT_SEARCH_MAX_RESULTS_STEAMID, STATS_DB_PATH
+from app.poisoned_logs import is_poisoned, poisoned_log_exclusion_sql, poisoned_log_id_column_sql
 from app.gamemodes import gamemode_sql_filter, normalize_gamemode, player_count_matches_gamemode
 from app.log_utils import winner_team_from_log as _winner_team_from_log
 from app.stats_db import (
@@ -20,6 +21,7 @@ from app.stats_db import (
     player_stats_agg_nonempty,
     player_weapons_agg_nonempty,
     stats_log_ids_for_player,
+    stats_player_stats_cache_token_parts,
 )
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
 from app.weapon_classes import is_weapon_kill_whitelisted, weapons_for_class
@@ -803,7 +805,11 @@ def local_log_ids_for_player(steamid64: str, logs_dir: str | Path) -> frozenset[
     """Set of log IDs we have locally for this player (intersection of API list and existing files)."""
     logs_dir = Path(logs_dir)
     log_ids = get_log_list_for_player(steamid64)
-    return frozenset(lid for lid in log_ids if (logs_dir / f"{lid}.json").exists())
+    return frozenset(
+        lid
+        for lid in log_ids
+        if (logs_dir / f"{lid}.json").exists() and not is_poisoned(lid)
+    )
 
 
 def _player_count_filter(player_count: int, gamemode: str) -> bool:
@@ -1071,6 +1077,7 @@ def chat_search_sqlite(
           AND (? IS NULL OR cl.log_date_ts <= ?)
           AND (? = '' OR instr(lower(cl.map), ?) > 0)
     """
+        + poisoned_log_exclusion_sql("cl")
         + order_limit
     )
 
@@ -1123,7 +1130,8 @@ def chat_search_sqlite(
             params = tuple(params_list)
         rows = conn.execute(sql, params).fetchall()
         log_rows = conn.execute(
-            "SELECT DISTINCT log_id FROM chat_messages WHERE steamid3 = ?",
+            "SELECT DISTINCT log_id FROM chat_messages WHERE steamid3 = ?"
+            + poisoned_log_id_column_sql("log_id"),
             (steamid3,),
         ).fetchall()
     finally:
@@ -1170,6 +1178,7 @@ def chat_leaderboard_search_sqlite(
     q_lower = q.lower()
     mq = (map_query or "").strip().lower()
     start_ts, end_ts = _date_range_to_unix_bounds(date_from, date_to)
+    poisoned_excl = poisoned_log_exclusion_sql("cl")
 
     conn = sqlite3.connect(str(db_path), timeout=30)
     try:
@@ -1203,6 +1212,7 @@ def chat_leaderboard_search_sqlite(
                 AND (? IS NULL OR cl.log_date_ts >= ?)
                 AND (? IS NULL OR cl.log_date_ts <= ?)
                 AND (? = '' OR instr(lower(cl.map), ?) > 0)
+                {poisoned_excl}
             ),
             agg AS (
               SELECT
@@ -1254,6 +1264,7 @@ def chat_leaderboard_search_sqlite(
               AND (? IS NULL OR cl.log_date_ts >= ?)
               AND (? IS NULL OR cl.log_date_ts <= ?)
               AND (? = '' OR instr(lower(cl.map), ?) > 0)
+              {poisoned_excl}
         """
         params: tuple[Any, ...] = (
             query_word,
@@ -1329,6 +1340,8 @@ def chat_search(
     log_ids = get_log_list_for_player(steamid)
     cap = CHAT_SEARCH_MAX_RESULTS_STEAMID
     for log_id in log_ids:
+        if is_poisoned(log_id):
+            continue
         if cap is not None and len(results) >= cap:
             break
         path = logs_dir / f"{log_id}.json"
@@ -1412,6 +1425,8 @@ def _stats_search_files(
     rows: list[dict[str, Any]] = []
     log_ids_used: set[int] = set()
     for log_id in log_ids:
+        if is_poisoned(log_id):
+            continue
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
             continue
@@ -1549,6 +1564,7 @@ def stats_search(
                 if map_q:
                     sql += " AND instr(lower(l.map), ?) > 0"
                     params.append(map_q)
+                sql += poisoned_log_exclusion_sql("l")
                 sql += " ORDER BY l.date_ts DESC, l.log_id DESC"
                 cur = conn.execute(sql, params)
                 rows_out: list[dict[str, Any]] = []
@@ -1653,6 +1669,8 @@ def _coplayers_search_files(
     log_ids = get_log_list_for_player(steamid)
 
     for log_id in log_ids:
+        if is_poisoned(log_id):
+            continue
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
             continue
@@ -1769,11 +1787,18 @@ def coplayers_search(
     logs_dir: str | Path,
     gamemode: str = "",
     map_query: str = "",
-) -> tuple[list[dict[str, Any]], frozenset[int]]:
-    """Frequent co-players; uses stats DB when available, else scans JSON files."""
+) -> tuple[list[dict[str, Any]], int]:
+    """Frequent co-players; uses stats DB when available, else scans JSON files.
+
+    Returns ``(rows, logs_searched)`` where ``logs_searched`` is the player's log count
+    in scope (from stats token on DB path, or distinct log files on file fallback).
+    """
     sid64 = (steamid or "").strip()
     if not _stats_db_available_for_player(sid64):
-        return _coplayers_search_files(steamid, logs_dir, gamemode=gamemode, map_query=map_query)
+        rows, log_ids_used = _coplayers_search_files(
+            steamid, logs_dir, gamemode=gamemode, map_query=map_query
+        )
+        return rows, len(log_ids_used)
     try:
         path = Path(STATS_DB_PATH)
         conn = _sqlite_connect_ro(path)
@@ -1803,6 +1828,7 @@ def coplayers_search(
             if mq:
                 inner += " AND instr(lower(l.map), ?) > 0"
                 params.append(mq)
+            inner += poisoned_log_exclusion_sql("l")
             inner += " GROUP BY o.steamid64"
             lim = int(_COPLAYERS_DB_RESULT_LIMIT)
             sql = f"""
@@ -1851,11 +1877,12 @@ def coplayers_search(
         alias_map = _lookup_aliases_from_chat_db(all_coplayer_sid64s)
         for row in rows:
             row["name"] = alias_map.get(row["steamid64"], "")
-        cache_ids = stats_log_ids_for_player(STATS_DB_PATH, sid64)
-        return rows, cache_ids
+        log_count, _, _ = stats_player_stats_cache_token_parts(STATS_DB_PATH, sid64)
+        return rows, int(log_count)
     except Exception as e:
         logger.warning("Co-players DB search failed, using log files: %s", e)
-    return _coplayers_search_files(steamid, logs_dir, gamemode=gamemode, map_query=map_query)
+    rows, log_ids_used = _coplayers_search_files(steamid, logs_dir, gamemode=gamemode, map_query=map_query)
+    return rows, len(log_ids_used)
 
 
 def _player_stats_row_logmatch(
@@ -1945,6 +1972,8 @@ def log_match(
     results: list[dict[str, Any]] = []
     matching_log_ids: set[int] = set()
     for log_id in log_ids:
+        if is_poisoned(log_id):
+            continue
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
             continue
@@ -3029,9 +3058,12 @@ def _profile_fetch_log_date_ts_by_log(
     log_ids: list[int] = []
     for row in id_rows:
         try:
-            log_ids.append(int(row[0]))
+            lid = int(row[0])
         except (TypeError, ValueError):
             continue
+        if is_poisoned(lid):
+            continue
+        log_ids.append(lid)
     if not log_ids:
         return {}
     out: dict[int, int | None] = {}
@@ -3140,6 +3172,8 @@ def _profile_fetch_favorite_words(
             log_id = int(log_id_raw)
             message_idx = int(message_idx_raw)
         except (TypeError, ValueError):
+            continue
+        if is_poisoned(log_id):
             continue
         if not msg:
             continue
@@ -4493,6 +4527,8 @@ def log_match_matching_log_ids(steamids: list[str], logs_dir: str | Path) -> fro
     log_ids = get_log_list_for_player(steamids[0])
     out: set[int] = set()
     for log_id in log_ids:
+        if is_poisoned(log_id):
+            continue
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
             continue
@@ -4625,6 +4661,7 @@ def player_name_search_sqlite(
         conn.execute("PRAGMA busy_timeout=60000")
         _player_name_require_index_ready(conn)
         use_fts = len(needle) >= _PLAYER_NAME_FTS_MIN_LEN and _player_name_use_alias_fts(conn)
+        poisoned_excl = poisoned_log_exclusion_sql("cl")
         if use_fts:
             match_arg = _fts5_trigram_phrase(needle)
             # FTS5 MATCH must use the virtual table name; some SQLite builds reject a table
@@ -4633,11 +4670,13 @@ def player_name_search_sqlite(
                 "INNER JOIN chat_messages_alias_fts "
                 "ON chat_messages_alias_fts.rowid = cm.id "
                 "WHERE chat_messages_alias_fts MATCH ? AND TRIM(cm.steamid3) != ''"
+                + poisoned_excl
             )
             params: tuple[Any, ...] = (match_arg, lim)
         else:
             filter_clause = (
                 "WHERE instr(lower(cm.alias), ?) > 0 AND TRIM(cm.steamid3) != ''"
+                + poisoned_excl
             )
             params = (needle, lim)
 

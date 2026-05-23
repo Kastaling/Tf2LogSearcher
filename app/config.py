@@ -23,6 +23,14 @@ LOGS_DIR = Path(_str("LOGS_DIR", "/data/logs"))
 # Downloader state directory: downloader_state.json and skipped_log_ids.json (kept out of LOGS_DIR)
 DOWNLOADER_STATE_DIR = Path(_str("DOWNLOADER_STATE_DIR", "/app/downloader_state"))
 
+# Curated logs.tf log IDs excluded from indexing and all search (downloader_state/poisoned_log_ids.json).
+_POISONED_PATH_RAW = _str("POISONED_LOG_IDS_PATH", "").strip()
+POISONED_LOG_IDS_PATH = (
+    Path(_POISONED_PATH_RAW)
+    if _POISONED_PATH_RAW
+    else DOWNLOADER_STATE_DIR / "poisoned_log_ids.json"
+)
+
 # logs.tf API base URL
 LOGS_TF_API_BASE = _str("LOGS_TF_API_BASE", "https://logs.tf").rstrip("/")
 

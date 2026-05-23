@@ -52,10 +52,14 @@ from app.rate_limit import rate_limit_exceeded
 from app.request_log import append_request_log
 from app.profile_cache_db import (
     connect_profile_cache_db,
+    default_coplayers_cache_key,
     default_profile_cache_key,
+    get_default_coplayers_cache,
     get_default_profile_cache,
     init_profile_cache_db,
+    is_default_coplayers_scope,
     is_default_profile_scope,
+    set_default_coplayers_cache,
     set_default_profile_cache,
 )
 from app.profile_views import record_profile_view, visitor_fingerprint
@@ -82,7 +86,7 @@ from app.search.search import (
     stats_leaderboard,
     stats_search,
 )
-from app.search_cache import get as cache_get, set_ as cache_set
+from app.search_cache import get as cache_get, set_ as cache_set, singleflight_build
 from app.steam_resolver import SteamVanityRateLimited, resolve_to_steamid64
 from app.subscriptions import (
     LEADERBOARD_SUB_WORD_MIN_LEN,
@@ -260,6 +264,91 @@ def _load_default_profile_disk(steamid64: str, token: tuple[int, int, int]) -> d
             conn.close()
     except OSError:
         return None
+
+
+def _persist_default_coplayers_disk(
+    steamid64: str,
+    gamemode: str,
+    map_query: str,
+    payload: dict[str, Any],
+    token: tuple[int, int, int],
+) -> None:
+    """Write default-scope co-players to disk cache (best-effort)."""
+    try:
+        conn = connect_profile_cache_db(PROFILE_CACHE_DB_PATH)
+        try:
+            set_default_coplayers_cache(conn, steamid64, gamemode, map_query, payload, token)
+        finally:
+            conn.close()
+    except OSError:
+        pass
+
+
+def _load_default_coplayers_disk(
+    steamid64: str,
+    gamemode: str,
+    map_query: str,
+    token: tuple[int, int, int],
+) -> dict[str, Any] | None:
+    """Read co-players from disk when token matches (best-effort)."""
+    try:
+        conn = connect_profile_cache_db(PROFILE_CACHE_DB_PATH)
+        try:
+            return get_default_coplayers_cache(conn, steamid64, gamemode, map_query, token)
+        finally:
+            conn.close()
+    except OSError:
+        return None
+
+
+def _maybe_prefetch_coplayers_for_profile(steamid64: str) -> None:
+    """Background-warm default co-players after a profile view (best-effort)."""
+    import threading
+
+    threading.Thread(
+        target=_prefetch_coplayers_background,
+        args=(steamid64,),
+        daemon=True,
+        name="coplayers-prefetch-profile",
+    ).start()
+
+
+def _prefetch_coplayers_background(steamid64: str) -> None:
+    """
+    Warm in-process (and disk) default co-players cache for one SteamID64.
+    Runs in a worker thread; silently skips when already cached.
+    """
+    sid64 = (steamid64 or "").strip()
+    if not sid64 or not re.fullmatch(r"\d{17}", sid64):
+        return
+    gm = _PREFETCH_GAMEMODE_DEFAULT
+    mq = ""
+    ck = default_coplayers_cache_key(sid64)
+    if cache_get("coplayers", ck) is not None:
+        return
+    token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, sid64)
+    disk = _load_default_coplayers_disk(sid64, gm, mq, token_parts)
+    if disk is not None:
+        cache_set(
+            "coplayers",
+            ck,
+            disk,
+            stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+        )
+        return
+    try:
+        rows, logs_searched = coplayers_search(sid64, LOGS_DIR, gamemode=gm, map_query=mq)
+        token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, sid64)
+        payload = {"rows": rows, "logs_searched": logs_searched}
+        cache_set(
+            "coplayers",
+            ck,
+            payload,
+            stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+        )
+        _persist_default_coplayers_disk(sid64, gm, mq, payload, token_parts)
+    except Exception:
+        pass
 
 
 def _prefetch_profiles_background(steamid64s: list[str]) -> None:
@@ -839,6 +928,17 @@ def _api_search_coplayers_impl(
     gm = normalize_gamemode(gamemode)
     cache_key = (steamid64, gm, map_query.lower())
     cached = cache_get("coplayers", cache_key)
+    if cached is None and is_default_coplayers_scope(gamemode=gm, map_query=map_query):
+        token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, steamid64)
+        disk_payload = _load_default_coplayers_disk(steamid64, gm, map_query, token_parts)
+        if disk_payload is not None:
+            cache_set(
+                "coplayers",
+                cache_key,
+                disk_payload,
+                stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+            )
+            cached = disk_payload
     if cached is not None:
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
@@ -855,10 +955,27 @@ def _api_search_coplayers_impl(
         body["resolved_steamid64"] = steamid64
         return JSONResponse(body)
     try:
-        rows, log_ids_used = coplayers_search(steamid64, LOGS_DIR, gamemode=gm, map_query=map_query)
-        payload = {"rows": rows, "logs_searched": len(log_ids_used), "resolved_steamid64": steamid64}
-        cache_set("coplayers", cache_key, payload, stats_player_stats_cache_token(STATS_DB_PATH, steamid64))
-        _sids_to_warm = [r["steamid64"] for r in rows if r.get("steamid64")]
+
+        def _build_coplayers_payload() -> dict[str, Any]:
+            rows, logs_searched = coplayers_search(
+                steamid64, LOGS_DIR, gamemode=gm, map_query=map_query
+            )
+            token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, steamid64)
+            payload: dict[str, Any] = {"rows": rows, "logs_searched": logs_searched}
+            cache_set(
+                "coplayers",
+                cache_key,
+                payload,
+                stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+            )
+            if is_default_coplayers_scope(gamemode=gm, map_query=map_query):
+                _persist_default_coplayers_disk(steamid64, gm, map_query, payload, token_parts)
+            return payload
+
+        payload = singleflight_build("coplayers", cache_key, _build_coplayers_payload)
+        payload = dict(payload)
+        payload["resolved_steamid64"] = steamid64
+        _sids_to_warm = [r["steamid64"] for r in payload.get("rows", []) if r.get("steamid64")]
         if _sids_to_warm:
             import threading
 
@@ -874,7 +991,7 @@ def _api_search_coplayers_impl(
             "/api/search/coplayers",
             200,
             duration_ms,
-            result_count=len(rows),
+            result_count=len(payload.get("rows", [])),
             steamid=steamid64,
             gamemode=gm,
             map_query=map_query,
@@ -1689,6 +1806,13 @@ def _api_profile_impl(
             )
             cached = disk_profile
     if cached is not None:
+        if is_default_profile_scope(
+            gamemode=gm,
+            date_from=date_from,
+            date_to=date_to,
+            map_query=map_query,
+        ):
+            _maybe_prefetch_coplayers_for_profile(steamid64)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
             request,
@@ -1722,27 +1846,39 @@ def _api_profile_impl(
         )
         return rl
     try:
-        profile, _log_ids = player_profile(
-            steamid64,
-            gamemode=gm,
-            date_from=date_from,
-            date_to=date_to,
-            map_query=map_query,
-        )
-        token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, steamid64)
-        cache_set(
-            "profile",
-            cache_key,
-            profile,
-            stats_player_stats_cache_token_frozenset_from_parts(token_parts),
-        )
+
+        def _build_profile_payload() -> dict[str, Any]:
+            built, _log_ids = player_profile(
+                steamid64,
+                gamemode=gm,
+                date_from=date_from,
+                date_to=date_to,
+                map_query=map_query,
+            )
+            token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, steamid64)
+            cache_set(
+                "profile",
+                cache_key,
+                built,
+                stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+            )
+            if is_default_profile_scope(
+                gamemode=gm,
+                date_from=date_from,
+                date_to=date_to,
+                map_query=map_query,
+            ):
+                _persist_default_profile_disk(steamid64, built, token_parts)
+            return built
+
+        profile = singleflight_build("profile", cache_key, _build_profile_payload)
         if is_default_profile_scope(
             gamemode=gm,
             date_from=date_from,
             date_to=date_to,
             map_query=map_query,
         ):
-            _persist_default_profile_disk(steamid64, profile, token_parts)
+            _maybe_prefetch_coplayers_for_profile(steamid64)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
             request,

@@ -51,13 +51,16 @@ docker compose logs -f downloader
 | Downloader state | `./downloader_state` |
 | Chat SQLite DB | `./downloader_state/chat.db` |
 | Stats SQLite DB | `./downloader_state/stats.db` |
-| Default profile disk cache | `./downloader_state/profile_cache.db` |
+| Default profile & co-players disk cache | `./downloader_state/profile_cache.db` |
+| Poisoned log blocklist (JSON) | `./downloader_state/poisoned_log_ids.json` |
 | Raw events DB | `./downloader_state/raw_events.db` |
 | Request logs | `./request_logs` |
 
 ### Request log viewer (offline)
 
 `scripts/request-log-viewer.html` parses `request_log.csv` in the browser only (no upload, no server). Copy the HTML file and CSV off the host, open the HTML locally, and load the CSV. Filters, charts, per-endpoint latency, and a copyable issues summary are included. Logs may contain IPs and Steam IDs; ~80 MB file size limit.
+
+Use **Deploy marker (GitHub)** in the viewer to fetch the latest commit on [Kastaling/Tf2LogSearcher](https://github.com/Kastaling/Tf2LogSearcher) `main` (one request to `api.github.com`, no CSV upload), then enable **Only rows at or after this commit** to measure latency after a deploy (e.g. profile disk cache). The issues report includes before/after `/api/player/profile` p95 when that filter is on. Commit time is not exact container restart time—recreate the `web` service after pulling if needed.
 
 The default web port is `8027` on the host mapped to `8000` in the container. Change the left side of the port mapping in your local `docker-compose.yml` if needed.
 
@@ -71,6 +74,10 @@ Copy `.env.example` to `.env` when you need to override defaults. Common options
 - `DOWNLOAD_JSON_ENABLED`, `DOWNLOAD_RAW_ENABLED` - enable or disable JSON/raw download paths.
 - `RATE_LIMIT_PROFILE_PER_MINUTE`, `RATE_LIMIT_LEADERBOARD_PER_MINUTE`, `RATE_LIMIT_STEAM_VANITY_PER_MINUTE` - public endpoint and outbound Steam vanity rate limits.
 - `SHOW_STORAGE_STATS` - set to `1` to show disk usage in the Log Library panel. It defaults to `0`; keep it disabled on public instances if storage details are sensitive. Restart/recreate the `web` container after changing it.
+
+### Poisoned logs
+
+Some logs.tf uploads are manually edited (fake chat, inflated stats). Add their numeric log IDs to [`downloader_state/poisoned_log_ids.json`](downloader_state/poisoned_log_ids.json) (same gitignored directory as `skipped_log_ids.json` and the SQLite DBs). Those logs are excluded from chat search, word leaderboards, stats, profiles, co-players, and indexing. Optional `notes` entries are documentation only. Override the file path with `POISONED_LOG_IDS_PATH`. After editing the file, restart the `web` and `downloader` services (or wait for the next downloader cycle) so existing DB rows are purged.
 
 Raw zips are usually much larger than JSON files, so plan disk space before enabling raw downloads at scale.
 
