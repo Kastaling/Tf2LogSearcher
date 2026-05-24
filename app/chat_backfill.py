@@ -10,7 +10,7 @@ from pathlib import Path
 
 from app.chat_db import connect_chat_db, init_chat_db, rebuild_alias_fts_if_needed, replace_chat_for_log
 from app.config import CHAT_DB_PATH, LOGS_DIR
-from app.poisoned_logs import is_poisoned
+from app.poisoned_logs import is_log_excluded
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -46,9 +46,9 @@ def run_backfill(logs_dir: Path, db_path: Path, batch_size: int) -> None:
             processed += 1
             try:
                 log_id = int(p.stem)
-                if is_poisoned(log_id):
-                    continue
                 logtext = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+                if is_log_excluded(log_id, logtext):
+                    continue
                 inserted_messages += replace_chat_for_log(conn, log_id, logtext)
             except (OSError, ValueError, TypeError) as e:
                 parse_errors += 1

@@ -44,7 +44,7 @@ from app.raw_log_parser import parse_raw_log
 from app.raw_zip_io import extract_log_content_from_zip, fetch_raw_log_zip_with_retry, save_raw_log_zip
 from app.logs_tf import fetch_log_list, fetch_log_json, steamid3_to_steamid64
 from app.subscriptions import check_log_for_subscriptions
-from app.poisoned_logs import is_poisoned, purge_poisoned_logs
+from app.poisoned_logs import is_log_excluded, is_poisoned, purge_poisoned_logs
 from app.download_eta_checkpoint import (
     load_eta_checkpoint,
     maybe_save_eta_checkpoint,
@@ -727,6 +727,9 @@ def run_catch_up_newest(
         time.sleep(REQUEST_DELAY_MS / 1000.0)
         data, success = fetch_log_json_with_retry(log_id)
         if success and data:
+            if is_log_excluded(log_id, data):
+                logger.info("Skipping blocklisted log %s (poisoned log/uploader)", log_id)
+                continue
             logs_dir.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             if chat_db_conn is not None:
@@ -877,6 +880,9 @@ def run_backfill_from_offset(
             time.sleep(REQUEST_DELAY_MS / 1000.0)
             data, success = fetch_log_json_with_retry(log_id)
             if success and data:
+                if is_log_excluded(log_id, data):
+                    logger.info("Skipping blocklisted log %s (poisoned log/uploader)", log_id)
+                    continue
                 logs_dir.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                 if chat_db_conn is not None:

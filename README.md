@@ -77,7 +77,12 @@ Copy `.env.example` to `.env` when you need to override defaults. Common options
 
 ### Poisoned logs
 
-Some logs.tf uploads are manually edited (fake chat, inflated stats). Add their numeric log IDs to [`downloader_state/poisoned_log_ids.json`](downloader_state/poisoned_log_ids.json) (same gitignored directory as `skipped_log_ids.json` and the SQLite DBs). Those logs are excluded from chat search, word leaderboards, stats, profiles, co-players, and indexing. Optional `notes` entries are documentation only. Override the file path with `POISONED_LOG_IDS_PATH`. After editing the file, restart the `web` and `downloader` services (or wait for the next downloader cycle) so existing DB rows are purged.
+Some logs.tf uploads are manually edited (fake chat, inflated stats), or come from repeat troll uploaders. Edit [`downloader_state/poisoned_log_ids.json`](downloader_state/poisoned_log_ids.json) (same gitignored directory as `skipped_log_ids.json` and the SQLite DBs):
+
+- **`log_ids`** — block specific numeric log IDs.
+- **`uploader_steamid64`** — block every log uploaded by those 17-digit SteamID64 values. Uploader checks happen at download/index time; on startup the service resolves those uploaders to log IDs via logs.tf and purges them from the DBs. Search queries only exclude by log ID (no uploader column needed in SQLite).
+
+Excluded logs are omitted from chat search, word leaderboards, stats, profiles, co-players, and indexing. Optional `notes` entries are documentation only. Override the file path with `POISONED_LOG_IDS_PATH`. After editing the file, restart the `web` and `downloader` services (or wait for the next downloader cycle) so existing DB rows are purged.
 
 Raw zips are usually much larger than JSON files, so plan disk space before enabling raw downloads at scale.
 

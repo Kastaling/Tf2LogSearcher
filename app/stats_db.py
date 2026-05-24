@@ -334,6 +334,7 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
     _migrate_log_players_imported_at(conn)
+    _migrate_logs_uploader_steamid64(conn)
     _migrate_player_stats_agg_avg_deaths(conn)
     _migrate_player_stats_agg_avg_killstreak(conn)
     _migrate_player_stats_agg_total_damage_taken(conn)
@@ -564,6 +565,23 @@ def _migrate_log_players_imported_at(conn: sqlite3.Connection) -> None:
         raise
 
 
+def _migrate_logs_uploader_steamid64(conn: sqlite3.Connection) -> None:
+    """Add ``uploader_steamid64`` to ``logs`` for poisoned-uploader exclusion in SQL."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(logs)").fetchall()}
+    if "uploader_steamid64" in cols:
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("ALTER TABLE logs ADD COLUMN uploader_steamid64 TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_logs_uploader_steamid64 ON logs(uploader_steamid64)"
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
 def _ubertype_breakdown(stats: dict[str, Any]) -> tuple[int, int, int, int]:
     """Returns (total_ubers, medigun, kritz, other) from ubertypes dict or top-level ubers."""
     ut = stats.get("ubertypes")
@@ -645,6 +663,8 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
     imported_at = int(time.time())
     winner = _winner_team_from_logtext(logtext)
 
+    from app.poisoned_logs import extract_uploader_steamid64
+
     log_row = {
         "log_id": log_id,
         "title": title,
@@ -656,6 +676,7 @@ def extract_log_stats(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
         "blue_score": team_score(teams, "Blue"),
         "winner": winner,
         "imported_at": imported_at,
+        "uploader_steamid64": extract_uploader_steamid64(logtext),
     }
 
     name_rows: list[dict[str, Any]] = []
@@ -989,9 +1010,9 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
     Does not update ``player_stats_agg``; callers that need leaderboard aggregates should
     collect affected SteamID64s and call ``flush_player_stats_agg`` after a batch of writes.
     """
-    from app.poisoned_logs import is_poisoned
+    from app.poisoned_logs import is_log_excluded
 
-    if is_poisoned(log_id):
+    if is_log_excluded(log_id, logtext):
         conn.execute("DELETE FROM logs WHERE log_id = ?", (log_id,))
         return 0
     conn.execute("DELETE FROM logs WHERE log_id = ?", (log_id,))
@@ -999,8 +1020,11 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
     lr = data["log_row"]
     conn.execute(
         """
-        INSERT INTO logs (log_id, title, map, date_ts, duration_secs, num_players, red_score, blue_score, winner, imported_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO logs (
+          log_id, title, map, date_ts, duration_secs, num_players, red_score, blue_score,
+          winner, imported_at, uploader_steamid64
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             lr["log_id"],
@@ -1013,6 +1037,7 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
             lr["blue_score"],
             lr["winner"],
             lr["imported_at"],
+            lr.get("uploader_steamid64"),
         ),
     )
 

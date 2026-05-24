@@ -32,6 +32,37 @@ def steamid3_to_steamid64(steamid3: str) -> str | None:
     return str(STEAMID64_OFFSET + account_id)
 
 
+def get_log_list_for_uploader(steamid64: str, max_logs: int = 30000) -> list[int]:
+    """Fetch log IDs uploaded by a SteamID64 from logs.tf API (paginated)."""
+    log_ids: list[int] = []
+    limit = 10000
+    offset = 0
+    sid = (steamid64 or "").strip()
+    if not sid:
+        return log_ids
+    while offset < max_logs:
+        url = f"{LOGS_TF_API_BASE}/api/v1/log?limit={limit}&offset={offset}&uploader={sid}"
+        try:
+            r = requests.get(url, timeout=REQUEST_TIMEOUT)
+            r.raise_for_status()
+            data = r.json()
+        except (requests.RequestException, ValueError) as e:
+            if not log_ids:
+                raise
+            break
+        logs = data.get("logs") or []
+        if not logs:
+            break
+        for log in logs:
+            lid = log.get("id")
+            if lid is not None:
+                log_ids.append(int(lid))
+        offset += limit
+        if len(logs) < limit:
+            break
+    return log_ids
+
+
 def get_log_list_for_player(steamid64: str, max_logs: int = 30000) -> list[int]:
     """Fetch log IDs for a player from logs.tf API (paginated). Returns list of log IDs."""
     log_ids: list[int] = []

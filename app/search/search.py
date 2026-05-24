@@ -12,7 +12,7 @@ from typing import Any
 from app import combined_logs
 from app.chat_db import CHAT_ALIAS_FTS_READY_META_KEY
 from app.config import CHAT_DB_PATH, CHAT_SEARCH_MAX_RESULTS_STEAMID, STATS_DB_PATH
-from app.poisoned_logs import is_poisoned, poisoned_log_exclusion_sql, poisoned_log_id_column_sql
+from app.poisoned_logs import is_log_excluded, is_poisoned, poisoned_log_exclusion_sql
 from app.gamemodes import gamemode_sql_filter, normalize_gamemode, player_count_matches_gamemode
 from app.log_utils import winner_team_from_log as _winner_team_from_log
 from app.stats_db import (
@@ -1130,8 +1130,10 @@ def chat_search_sqlite(
             params = tuple(params_list)
         rows = conn.execute(sql, params).fetchall()
         log_rows = conn.execute(
-            "SELECT DISTINCT log_id FROM chat_messages WHERE steamid3 = ?"
-            + poisoned_log_id_column_sql("log_id"),
+            "SELECT DISTINCT cm.log_id FROM chat_messages cm "
+            "INNER JOIN chat_logs cl ON cl.log_id = cm.log_id "
+            "WHERE cm.steamid3 = ?"
+            + poisoned_log_exclusion_sql("cl"),
             (steamid3,),
         ).fetchall()
     finally:
@@ -1340,19 +1342,19 @@ def chat_search(
     log_ids = get_log_list_for_player(steamid)
     cap = CHAT_SEARCH_MAX_RESULTS_STEAMID
     for log_id in log_ids:
-        if is_poisoned(log_id):
-            continue
         if cap is not None and len(results) >= cap:
             break
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
             continue
-        log_ids_used.add(log_id)
         try:
             data = path.read_text(encoding="utf-8", errors="replace")
             logtext = json.loads(data)
         except (OSError, ValueError):
             continue
+        if is_log_excluded(log_id, logtext):
+            continue
+        log_ids_used.add(log_id)
         chat = logtext.get("chat")
         if not chat:
             continue
@@ -1425,17 +1427,17 @@ def _stats_search_files(
     rows: list[dict[str, Any]] = []
     log_ids_used: set[int] = set()
     for log_id in log_ids:
-        if is_poisoned(log_id):
-            continue
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
             continue
-        log_ids_used.add(log_id)
         try:
             data = path.read_text(encoding="utf-8", errors="replace")
             logtext = json.loads(data)
         except (OSError, ValueError):
             continue
+        if is_log_excluded(log_id, logtext):
+            continue
+        log_ids_used.add(log_id)
         names = logtext.get("names") or {}
         namesid = list(names.keys())
         if not _player_count_filter(len(namesid), gamemode):
@@ -1669,8 +1671,6 @@ def _coplayers_search_files(
     log_ids = get_log_list_for_player(steamid)
 
     for log_id in log_ids:
-        if is_poisoned(log_id):
-            continue
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
             continue
@@ -1678,6 +1678,8 @@ def _coplayers_search_files(
             data = path.read_text(encoding="utf-8", errors="replace")
             logtext = json.loads(data)
         except (OSError, ValueError):
+            continue
+        if is_log_excluded(log_id, logtext):
             continue
 
         names = logtext.get("names") or {}
@@ -1972,8 +1974,6 @@ def log_match(
     results: list[dict[str, Any]] = []
     matching_log_ids: set[int] = set()
     for log_id in log_ids:
-        if is_poisoned(log_id):
-            continue
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
             continue
@@ -1981,6 +1981,8 @@ def log_match(
             data = path.read_text(encoding="utf-8", errors="replace")
             logtext = json.loads(data)
         except (OSError, ValueError):
+            continue
+        if is_log_excluded(log_id, logtext):
             continue
         names = logtext.get("names") or {}
         namesid = set(names.keys())
@@ -3049,10 +3051,12 @@ def _profile_fetch_log_date_ts_by_log(
         return {}
     id_rows = conn.execute(
         """
-        SELECT DISTINCT log_id
-        FROM chat_messages
-        WHERE steamid64 = ?
-        """,
+        SELECT DISTINCT cm.log_id
+        FROM chat_messages cm
+        INNER JOIN chat_logs cl ON cl.log_id = cm.log_id
+        WHERE cm.steamid64 = ?
+        """
+        + poisoned_log_exclusion_sql("cl"),
         (sid,),
     ).fetchall()
     log_ids: list[int] = []
@@ -3060,8 +3064,6 @@ def _profile_fetch_log_date_ts_by_log(
         try:
             lid = int(row[0])
         except (TypeError, ValueError):
-            continue
-        if is_poisoned(lid):
             continue
         log_ids.append(lid)
     if not log_ids:
@@ -3146,10 +3148,14 @@ def _profile_fetch_favorite_words(
             log_date_ts_by_log = _profile_fetch_log_date_ts_by_log(conn, sid)
             rows = conn.execute(
                 """
-                SELECT log_id, message_idx, msg
-                FROM chat_messages
-                WHERE steamid64 = ?
-                ORDER BY log_id ASC, message_idx ASC
+                SELECT cm.log_id, cm.message_idx, cm.msg
+                FROM chat_messages cm
+                INNER JOIN chat_logs cl ON cl.log_id = cm.log_id
+                WHERE cm.steamid64 = ?
+                """
+                + poisoned_log_exclusion_sql("cl")
+                + """
+                ORDER BY cm.log_id ASC, cm.message_idx ASC
                 """,
                 (sid,),
             ).fetchall()
@@ -3172,8 +3178,6 @@ def _profile_fetch_favorite_words(
             log_id = int(log_id_raw)
             message_idx = int(message_idx_raw)
         except (TypeError, ValueError):
-            continue
-        if is_poisoned(log_id):
             continue
         if not msg:
             continue
@@ -4527,8 +4531,6 @@ def log_match_matching_log_ids(steamids: list[str], logs_dir: str | Path) -> fro
     log_ids = get_log_list_for_player(steamids[0])
     out: set[int] = set()
     for log_id in log_ids:
-        if is_poisoned(log_id):
-            continue
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
             continue
@@ -4536,6 +4538,8 @@ def log_match_matching_log_ids(steamids: list[str], logs_dir: str | Path) -> fro
             data = path.read_text(encoding="utf-8", errors="replace")
             logtext = json.loads(data)
         except (OSError, ValueError):
+            continue
+        if is_log_excluded(log_id, logtext):
             continue
         names = logtext.get("names") or {}
         if steamid3_set.issubset(set(names.keys())):

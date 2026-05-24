@@ -327,6 +327,23 @@ def init_chat_db(conn: sqlite3.Connection) -> None:
     )
     _init_fts_if_available(conn)
     _init_alias_trigram_fts(conn)
+    _migrate_chat_logs_uploader_steamid64(conn)
+
+
+def _migrate_chat_logs_uploader_steamid64(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(chat_logs)").fetchall()}
+    if "uploader_steamid64" in cols:
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("ALTER TABLE chat_logs ADD COLUMN uploader_steamid64 TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_logs_uploader_steamid64 ON chat_logs(uploader_steamid64)"
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _team_from_players(players: Any, steamid3: str) -> str | None:
@@ -377,14 +394,14 @@ def local_chat_log_ids_for_player(steamid64: str, db_path: str | Path) -> frozen
         return frozenset()
     conn = sqlite3.connect(str(path), timeout=30)
     try:
+        from app.poisoned_logs import is_poisoned
+
         rows = conn.execute(
             "SELECT DISTINCT log_id FROM chat_messages WHERE steamid3 = ?",
             (steamid3,),
         ).fetchall()
     finally:
         conn.close()
-    from app.poisoned_logs import is_poisoned
-
     return frozenset(
         int(r[0]) for r in rows if r and r[0] is not None and not is_poisoned(int(r[0]))
     )
@@ -470,20 +487,26 @@ def replace_chat_for_log(
 
     Caller controls transaction scope. Returns number of inserted chat rows.
     """
-    from app.poisoned_logs import is_poisoned
+    from app.poisoned_logs import extract_uploader_steamid64, is_log_excluded
 
-    if is_poisoned(log_id):
+    if is_log_excluded(log_id, logtext):
         conn.execute("DELETE FROM chat_messages WHERE log_id = ?", (log_id,))
         conn.execute("DELETE FROM chat_logs WHERE log_id = ?", (log_id,))
         return 0
     ts = int(time.time()) if imported_at_ts is None else int(imported_at_ts)
     log_date_ts, map_name, rows = _extract_chat_rows(log_id, logtext)
 
+    uploader_sid = extract_uploader_steamid64(logtext)
+
     conn.execute("DELETE FROM chat_messages WHERE log_id = ?", (log_id,))
     conn.execute("DELETE FROM chat_logs WHERE log_id = ?", (log_id,))
     conn.execute(
-        "INSERT INTO chat_logs (log_id, log_date_ts, map, imported_at_ts, chat_count) VALUES (?, ?, ?, ?, ?)",
-        (log_id, log_date_ts, map_name, ts, len(rows)),
+        """
+        INSERT INTO chat_logs (
+          log_id, log_date_ts, map, imported_at_ts, chat_count, uploader_steamid64
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (log_id, log_date_ts, map_name, ts, len(rows), uploader_sid),
     )
     if rows:
         conn.executemany(
