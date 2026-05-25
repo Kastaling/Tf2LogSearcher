@@ -2183,6 +2183,7 @@ _PROFILE_TOP_LOG_SPECS: tuple[tuple[str, str, str, str], ...] = (
     ("backstabs", "Most backstabs (one game)", "", "lp.backstabs DESC, l.date_ts DESC, l.log_id DESC"),
     ("ubers", "Most ubers (one game)", "", "lp.ubers DESC, l.date_ts DESC, l.log_id DESC"),
     ("healing_taken", "Most healing received (one game)", "", "lp.healing_taken DESC, l.date_ts DESC, l.log_id DESC"),
+    ("healing_done", "Most healing done (one game)", "", ""),
     ("captures", "Most captures (one game)", "", "lp.captures DESC, l.date_ts DESC, l.log_id DESC"),
     (
         "killstreak",
@@ -2202,6 +2203,7 @@ _PROFILE_TOP_LOG_POSITIVE_METRICS: frozenset[str] = frozenset({
     "backstabs",
     "ubers",
     "healing_taken",
+    "healing_done",
     "captures",
     "killstreak",
 })
@@ -2256,6 +2258,49 @@ def _profile_fetch_all_supplemental(
         if shared_chat:
             combined_logs.detach_chat_db(conn)
     return top_logs, top_maps, top_coplayers, top_coplayers_opposing
+
+
+def _profile_top_log_healing_done_sql(combined_excl: str, filter_sql: str, extra_where: str) -> str:
+    """Best single log by total healing dealt (``log_player_healspread`` as healer)."""
+    return f"""
+        SELECT
+          l.log_id,
+          l.map,
+          l.title,
+          l.date_ts,
+          l.duration_secs,
+          lp.team,
+          lp.kills,
+          lp.deaths,
+          lp.assists,
+          lp.damage,
+          lp.damage_taken,
+          lp.dapm,
+          lp.kdr,
+          lp.kadr,
+          lp.headshots_hit,
+          lp.backstabs,
+          lp.ubers,
+          lp.healing_taken,
+          lp.captures,
+          lp.longest_killstreak,
+          hpl.heal_in_log
+        FROM (
+          SELECT lph.log_id, SUM(lph.healing) AS heal_in_log
+          FROM log_player_healspread lph
+          WHERE lph.healer_steamid64 = ?
+          GROUP BY lph.log_id
+        ) hpl
+        INNER JOIN logs l ON l.log_id = hpl.log_id
+        INNER JOIN log_players lp ON lp.log_id = l.log_id AND lp.steamid64 = ?
+          AND lp.team IN ('Red', 'Blue')
+        WHERE 1=1
+          {combined_excl}
+          {filter_sql}
+          {extra_where}
+        ORDER BY hpl.heal_in_log DESC, l.date_ts DESC, l.log_id DESC
+        LIMIT 1
+    """
 
 
 def _profile_fetch_top_logs(
@@ -2316,8 +2361,12 @@ def _profile_fetch_top_logs(
 
         out: list[dict[str, Any]] = []
         for metric, label, extra_where, order_clause in _PROFILE_TOP_LOG_SPECS:
-            sql = base_sql + extra_where + f" ORDER BY {order_clause} LIMIT 1"
-            row = conn.execute(sql, (sid, *filter_params)).fetchone()
+            if metric == "healing_done":
+                sql = _profile_top_log_healing_done_sql(combined_excl, filter_sql, extra_where)
+                row = conn.execute(sql, (sid, sid, *filter_params)).fetchone()
+            else:
+                sql = base_sql + extra_where + f" ORDER BY {order_clause} LIMIT 1"
+                row = conn.execute(sql, (sid, *filter_params)).fetchone()
             if not row:
                 continue
             (
@@ -2341,7 +2390,10 @@ def _profile_fetch_top_logs(
                 healing_taken,
                 captures,
                 longest_killstreak,
-            ) = row
+            ) = row[:20]
+            heal_in_log = (
+                int(row[20] or 0) if metric == "healing_done" and len(row) > 20 else None
+            )
 
             val: float | int | None
             if metric == "dpm":
@@ -2375,6 +2427,8 @@ def _profile_fetch_top_logs(
                 val = int(ubers or 0)
             elif metric == "healing_taken":
                 val = int(healing_taken or 0)
+            elif metric == "healing_done":
+                val = heal_in_log if heal_in_log is not None else 0
             elif metric == "captures":
                 val = int(captures or 0)
             elif metric == "killstreak":
@@ -3952,6 +4006,9 @@ def _class_label_norm(raw: Any) -> str:
     return str(raw or "").strip().lower()
 
 
+_PROFILE_VICTIM_CLASS_SKIP: frozenset[str] = frozenset({"", "undefined", "none", "unknown"})
+
+
 def _split_profile_class_rows(
     rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -4063,6 +4120,93 @@ def _profile_healspread_partner_peaks(
                 "heals_per_min": hv,
             }
         out[pid] = {"peak_total_heal": peak_total, "peak_heals_per_min": peak_hpm}
+    return out
+
+
+def _profile_classkills_peaks(
+    conn: sqlite3.Connection,
+    *,
+    subject_sid: str,
+    filter_sql: str,
+    filter_params: list[Any],
+) -> dict[str, dict[str, Any | None]]:
+    """
+    Per victim class: log with most kills in one game, and log with highest kills/min
+    (uses ``logs.duration_secs``; classes with no log having duration omit the per-min peak).
+    """
+    sql = f"""
+        WITH agg AS (
+          SELECT
+            lpck.victim_class,
+            lpck.log_id,
+            lpck.kills AS kills_log,
+            MAX(l.duration_secs) AS dur
+          FROM log_player_classkills lpck
+          JOIN logs l ON l.log_id = lpck.log_id
+          WHERE lpck.steamid64 = ?
+            AND lower(trim(lpck.victim_class)) NOT IN ('undefined', 'none', 'unknown')
+            {filter_sql}
+          GROUP BY lpck.victim_class, lpck.log_id, lpck.kills
+        ),
+        kill_pick AS (
+          SELECT victim_class, log_id, kills_log, dur,
+            ROW_NUMBER() OVER (
+              PARTITION BY victim_class ORDER BY kills_log DESC, log_id DESC
+            ) AS rn
+          FROM agg
+        ),
+        kpm_pick AS (
+          SELECT victim_class, log_id, kills_log, dur,
+            ROW_NUMBER() OVER (
+              PARTITION BY victim_class
+              ORDER BY (CAST(kills_log AS REAL) * 60.0 / CAST(dur AS REAL)) DESC, log_id DESC
+            ) AS rn
+          FROM agg
+          WHERE dur IS NOT NULL AND CAST(dur AS REAL) > 0
+        )
+        SELECT
+          k.victim_class,
+          k.log_id AS kill_log_id,
+          k.kills_log AS kill_amount,
+          k.dur AS kill_dur,
+          p.log_id AS kpm_log_id,
+          p.kills_log AS kpm_amount,
+          p.dur AS kpm_dur
+        FROM kill_pick k
+        LEFT JOIN kpm_pick p ON p.victim_class = k.victim_class AND p.rn = 1
+        WHERE k.rn = 1
+    """
+    params: list[Any] = [subject_sid, *filter_params]
+    out: dict[str, dict[str, Any | None]] = {}
+    for row in conn.execute(sql, params).fetchall():
+        vc = _class_label_norm(row[0])
+        if not vc or vc in _PROFILE_VICTIM_CLASS_SKIP:
+            continue
+        tk_id, tk_amt, tk_dur = row[1], int(row[2] or 0), row[3]
+        kpm_id, kpm_amt_r, kpm_dur_r = row[4], row[5], row[6]
+
+        peak_total: dict[str, Any] | None = None
+        if tk_id is not None:
+            dur_i = int(tk_dur) if tk_dur is not None else None
+            kpm_here = round(tk_amt * 60.0 / dur_i, 2) if dur_i and dur_i > 0 else None
+            peak_total = {
+                "log_id": int(tk_id),
+                "kills": tk_amt,
+                "duration_secs": dur_i,
+                "kills_per_min": kpm_here,
+            }
+        peak_kpm: dict[str, Any] | None = None
+        if kpm_id is not None:
+            ka = int(kpm_amt_r or 0)
+            kd = int(kpm_dur_r) if kpm_dur_r is not None else 0
+            kv = round(ka * 60.0 / kd, 2) if kd > 0 else None
+            peak_kpm = {
+                "log_id": int(kpm_id),
+                "kills": ka,
+                "duration_secs": kd if kd > 0 else None,
+                "kills_per_min": kv,
+            }
+        out[vc] = {"peak_total_kills": peak_total, "peak_kills_per_min": peak_kpm}
     return out
 
 
@@ -4311,19 +4455,38 @@ def player_profile(
         ck_sql = f"""
             SELECT
               lpck.victim_class,
-              SUM(lpck.kills) AS total_kills
+              SUM(lpck.kills) AS total_kills,
+              COUNT(DISTINCT lpck.log_id) AS logs_count
             FROM log_player_classkills lpck
             JOIN logs l ON l.log_id = lpck.log_id
             WHERE lpck.steamid64 = ?
+              AND lower(trim(lpck.victim_class)) NOT IN ('undefined', 'none', 'unknown')
               {filter_sql}
             GROUP BY lpck.victim_class
             ORDER BY total_kills DESC
         """
-        class_kills_out = [
-            {"victim_class": _class_label_norm(x[0]), "total_kills": int(x[1] or 0)}
-            for x in conn.execute(ck_sql, (sid, *filter_params)).fetchall()
-            if _class_label_norm(x[0]) not in ("", "undefined", "none")
-        ]
+        ck_peaks = _profile_classkills_peaks(
+            conn,
+            subject_sid=sid,
+            filter_sql=filter_sql,
+            filter_params=filter_params,
+        )
+        class_kills_out: list[dict[str, Any]] = []
+        for x in conn.execute(ck_sql, (sid, *filter_params)).fetchall():
+            vc = _class_label_norm(x[0])
+            if vc in _PROFILE_VICTIM_CLASS_SKIP:
+                continue
+            tk = int(x[1] or 0)
+            lc = int(x[2] or 0)
+            peaks = ck_peaks.get(vc) or {}
+            class_kills_out.append({
+                "victim_class": vc,
+                "total_kills": tk,
+                "logs_count": lc,
+                "avg_kills_per_log": round(tk / lc, 2) if lc else None,
+                "peak_total_kills": peaks.get("peak_total_kills"),
+                "peak_kills_per_min": peaks.get("peak_kills_per_min"),
+            })
 
         # --- Rounds ---
         rounds_a_sql = f"""

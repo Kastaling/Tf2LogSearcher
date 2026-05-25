@@ -1,7 +1,8 @@
 """One-off migration: rebuild ``log_rounds`` for logs already in stats.db from local JSON.
 
 Uses the same ``extract_log_stats`` round logic as the downloader (``duration``/``length``,
-first blood from ``events``). Only updates the ``log_rounds`` table.
+first blood from round ``events`` and, when ``raw_events.db`` is present, from raw kill lines).
+Only updates the ``log_rounds`` table.
 
 Run inside the downloader container (same as other backfills)::
 
@@ -19,8 +20,9 @@ import sys
 import time
 from pathlib import Path
 
-from app.config import LOGS_DIR, STATS_DB_PATH
-from app.stats_db import extract_log_stats
+from app.config import LOGS_DIR, RAW_EVENTS_DB_PATH, STATS_DB_PATH
+from app.raw_db import connect_raw_db
+from app.stats_db import extract_log_stats, update_log_rounds_first_blood_from_raw
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -93,6 +95,10 @@ def run_fix(
     if wr_conn is not None:
         wr_conn.execute("PRAGMA foreign_keys=ON")
 
+    raw_conn = None
+    if not dry_run and RAW_EVENTS_DB_PATH.is_file():
+        raw_conn = connect_raw_db(RAW_EVENTS_DB_PATH)
+
     try:
         for i, log_id in enumerate(log_ids):
             path = logs_dir / f"{log_id}.json"
@@ -114,6 +120,8 @@ def run_fix(
                 assert wr_conn is not None
                 with wr_conn:
                     n = _replace_rounds_for_log(wr_conn, log_id, logtext)
+                    if raw_conn is not None:
+                        update_log_rounds_first_blood_from_raw(wr_conn, raw_conn, log_id)
                 round_rows_total += n
             updated += 1
 
@@ -127,6 +135,8 @@ def run_fix(
                     elapsed,
                 )
     finally:
+        if raw_conn is not None:
+            raw_conn.close()
         if wr_conn is not None:
             wr_conn.close()
 

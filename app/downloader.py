@@ -38,6 +38,7 @@ from app.stats_db import (
     flush_player_stats_agg,
     init_stats_db,
     replace_stats_for_log,
+    update_log_rounds_first_blood_from_raw,
 )
 from app.raw_db import connect_raw_db, init_raw_db, replace_raw_events_for_log
 from app.raw_log_parser import parse_raw_log
@@ -599,6 +600,7 @@ def try_raw_download_and_index(
     state_dir: Path | None = None,
     session_start_time_ref: list[float] | None = None,
     last_eta_ckpt_save_ref: list[float] | None = None,
+    stats_db_conn: sqlite3.Connection | None = None,
 ) -> bool:
     """
     Rate-limit, fetch raw zip, save, parse, store in raw_events.db.
@@ -649,6 +651,15 @@ def try_raw_download_and_index(
         logger.warning("Raw log parse/store failed for %s: %s", log_id, e)
         progress_interval_ref[0]["raw_failed_index"] += 1
         return False
+
+    if stats_db_conn is not None:
+        try:
+            with stats_db_conn:
+                n_fb = update_log_rounds_first_blood_from_raw(stats_db_conn, raw_db_conn, log_id)
+            if n_fb:
+                logger.info("First blood from raw for log %s: %s round(s)", log_id, n_fb)
+        except Exception as e:
+            logger.warning("First blood enrichment failed for log %s: %s", log_id, e)
 
     progress_interval_ref[0]["raw_ok"] += 1
     _bump_download_tracking(
@@ -716,6 +727,7 @@ def run_catch_up_newest(
                 state_dir=state_dir,
                 session_start_time_ref=session_start_time_ref,
                 last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
+                stats_db_conn=stats_db_conn,
             ):
                 downloaded += 1
             continue
@@ -776,6 +788,7 @@ def run_catch_up_newest(
                 state_dir=state_dir,
                 session_start_time_ref=session_start_time_ref,
                 last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
+                stats_db_conn=stats_db_conn,
             )
         else:
             progress_interval_ref[0]["json_failed"] += 1
@@ -868,6 +881,7 @@ def run_backfill_from_offset(
                     state_dir=state_dir,
                     session_start_time_ref=session_start_time_ref,
                     last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
+                    stats_db_conn=stats_db_conn,
                 ):
                     downloaded += 1
                 continue
@@ -929,6 +943,7 @@ def run_backfill_from_offset(
                     state_dir=state_dir,
                     session_start_time_ref=session_start_time_ref,
                     last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
+                    stats_db_conn=stats_db_conn,
                 )
             else:
                 progress_interval_ref[0]["json_failed"] += 1

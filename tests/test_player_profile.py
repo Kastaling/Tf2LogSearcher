@@ -200,6 +200,77 @@ def healspread_peaks_db(stats_db):
     return stats_db
 
 
+@pytest.fixture()
+def classkills_peaks_db(stats_db):
+    """Player A: soldier kills across three logs; peak total vs peak KPM differ by duration."""
+    conn = connect_stats_db(stats_db)
+    with conn:
+        replace_stats_for_log(conn, 6001, _make_logtext(PLAYER_A_3, PLAYER_B_3, date_ts=1_700_000_000))
+        replace_stats_for_log(conn, 6002, _make_logtext(PLAYER_A_3, PLAYER_B_3, date_ts=1_700_050_000))
+        replace_stats_for_log(conn, 6003, _make_logtext(PLAYER_A_3, PLAYER_B_3, date_ts=1_700_100_000))
+        conn.executemany(
+            """
+            INSERT INTO log_player_classkills (log_id, steamid64, victim_class, kills)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (6001, PLAYER_A, "soldier", 5),
+                (6002, PLAYER_A, "soldier", 20),
+                (6003, PLAYER_A, "soldier", 8),
+                (6001, PLAYER_A, "scout", 2),
+                (6002, PLAYER_A, "scout", 4),
+            ],
+        )
+        conn.execute("UPDATE logs SET duration_secs = 300 WHERE log_id = ?", (6001,))
+        conn.execute("UPDATE logs SET duration_secs = 600 WHERE log_id = ?", (6002,))
+        conn.execute("UPDATE logs SET duration_secs = 2400 WHERE log_id = ?", (6003,))
+    conn.close()
+    return stats_db
+
+
+def test_profile_class_kills_excludes_unknown(classkills_peaks_db, monkeypatch):
+    conn = connect_stats_db(classkills_peaks_db)
+    with conn:
+        conn.execute(
+            "INSERT INTO log_player_classkills (log_id, steamid64, victim_class, kills) VALUES (?, ?, ?, ?)",
+            (6001, PLAYER_A, "unknown", 99),
+        )
+    conn.close()
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", classkills_peaks_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+    profile, _ = player_profile(PLAYER_A)
+    assert all(r["victim_class"] != "unknown" for r in profile["class_kills"])
+
+
+def test_profile_class_kills_peaks_and_per_log(classkills_peaks_db, monkeypatch):
+    monkeypatch.setattr("app.search.search.STATS_DB_PATH", classkills_peaks_db)
+    monkeypatch.setattr("app.search.search._lookup_aliases_from_chat_db", lambda sids: {})
+
+    profile, _ = player_profile(PLAYER_A)
+    ck = {r["victim_class"]: r for r in profile["class_kills"]}
+    assert "soldier" in ck
+    s = ck["soldier"]
+    assert s["total_kills"] == 33
+    assert s["logs_count"] == 3
+    assert s["avg_kills_per_log"] == 11.0
+    pt = s["peak_total_kills"]
+    assert pt is not None
+    assert pt["log_id"] == 6002
+    assert pt["kills"] == 20
+    pk = s["peak_kills_per_min"]
+    assert pk is not None
+    assert pk["log_id"] == 6002
+    assert pk["kills"] == 20
+    assert pk["kills_per_min"] == 2.0
+
+    sc = ck["scout"]
+    assert sc["total_kills"] == 6
+    assert sc["logs_count"] == 2
+    assert sc["avg_kills_per_log"] == 3.0
+    assert sc["peak_total_kills"]["log_id"] == 6002
+    assert sc["peak_kills_per_min"]["log_id"] == 6002
+
+
 def test_profile_healspread_peaks_and_per_log(healspread_peaks_db, monkeypatch):
     _conn_chk = connect_stats_db(healspread_peaks_db)
     try:
@@ -250,6 +321,16 @@ def test_profile_healspread_peaks_and_per_log(healspread_peaks_db, monkeypatch):
     assert hb[0]["peak_total_heal"]["healing"] == 1600
     assert hb[0]["peak_heals_per_min"]["log_id"] == 5002
     assert hb[0]["peak_heals_per_min"]["heals_per_min"] == 160.0
+
+    tl = profile.get("top_logs") or []
+    hd = next((x for x in tl if x.get("metric") == "healing_done"), None)
+    assert hd is not None
+    assert hd["label"] == "Most healing done (one game)"
+    assert hd["log_id"] == 5003
+    assert hd["value"] == 5000
+    ht_row = next((x for x in tl if x.get("metric") == "healing_taken"), None)
+    if ht_row is not None:
+        assert tl.index(hd) == tl.index(ht_row) + 1
 
 
 def test_profile_overview_counts(populated_db, monkeypatch):

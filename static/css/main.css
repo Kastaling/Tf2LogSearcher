@@ -58,7 +58,7 @@
       --word-cloud-outline: #000000;
       --tab-selected-bg: #000;
       --tab-selected-text: #fff;
-      --tab-selected-border: #e8e8e8;
+      --tab-selected-border: #555;
     }
     /* Theme is controlled by data-theme (set in head script). color-scheme for form controls/scrollbars. */
     html { color-scheme: light; }
@@ -86,12 +86,12 @@
     [data-theme="dark"] h2 { color: #6eb5c0; }
     a, a:visited { color: var(--link); }
     /* Explicit button text color so it stays visible in Vivaldi/browser dark mode */
-    button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item), input[type="submit"], input[type="button"], input[type="reset"], .back-button, .js-chat-subscribe {
+    button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn), input[type="submit"], input[type="button"], input[type="reset"], .back-button, .js-chat-subscribe {
       background-color: var(--accent);
       border-color: var(--accent);
       color: #fff;
     }
-    button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):hover, input[type="submit"]:hover, input[type="button"]:hover, input[type="reset"]:hover, .back-button:hover, .js-chat-subscribe:hover {
+    button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn):hover, input[type="submit"]:hover, input[type="button"]:hover, input[type="reset"]:hover, .back-button:hover, .js-chat-subscribe:hover {
       background-color: var(--accent-hover);
       border-color: var(--accent-hover);
       color: #fff;
@@ -110,7 +110,7 @@
     a.back-button:visited:hover {
       color: var(--accent-text);
     }
-    [data-theme="dark"] button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item), [data-theme="dark"] input[type="submit"], [data-theme="dark"] input[type="button"], [data-theme="dark"] input[type="reset"], [data-theme="dark"] .back-button, [data-theme="dark"] .js-chat-subscribe {
+    [data-theme="dark"] button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn), [data-theme="dark"] input[type="submit"], [data-theme="dark"] input[type="button"], [data-theme="dark"] input[type="reset"], [data-theme="dark"] .back-button, [data-theme="dark"] .js-chat-subscribe {
       color: #1a1a1a;
     }
     [data-theme="dark"] a.back-button,
@@ -118,7 +118,7 @@
     [data-theme="dark"] a.back-button:visited {
       color: #1a1a1a;
     }
-    [data-theme="dark"] button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):hover, [data-theme="dark"] input[type="submit"]:hover, [data-theme="dark"] input[type="button"]:hover, [data-theme="dark"] input[type="reset"]:hover, [data-theme="dark"] .back-button:hover, [data-theme="dark"] .js-chat-subscribe:hover {
+    [data-theme="dark"] button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn):hover, [data-theme="dark"] input[type="submit"]:hover, [data-theme="dark"] input[type="button"]:hover, [data-theme="dark"] input[type="reset"]:hover, [data-theme="dark"] .back-button:hover, [data-theme="dark"] .js-chat-subscribe:hover {
       color: #1a1a1a;
     }
     [data-theme="dark"] a.back-button:hover,
@@ -947,9 +947,9 @@
     .stats-trend-btn.active {
       background: var(--tab-selected-bg);
       color: var(--tab-selected-text);
-      border: 2px solid var(--tab-selected-border);
-      font-weight: 700;
-      box-shadow: 0 1px 2px color-mix(in srgb, #000 18%, transparent);
+      border: 1px solid var(--tab-selected-border);
+      font-weight: 600;
+      box-shadow: 0 1px 2px color-mix(in srgb, #000 30%, transparent);
     }
     /* Fine pointers only: avoids sticky :hover on touch after tap (iOS / some WebKit). */
     @media (hover: hover) and (pointer: fine) {
@@ -960,13 +960,11 @@
       }
       .stats-trend-btn.active:hover,
       .stats-trend-btn.active:focus-visible {
-        background: color-mix(in srgb, var(--link) 18%, var(--tab-selected-bg));
+        background: var(--tab-selected-bg);
         border-color: var(--tab-selected-border);
         color: var(--tab-selected-text);
-        font-weight: 700;
-        box-shadow:
-          0 0 0 1px color-mix(in srgb, var(--link) 45%, transparent),
-          0 1px 3px color-mix(in srgb, #000 22%, transparent);
+        font-weight: 600;
+        box-shadow: 0 1px 2px color-mix(in srgb, #000 30%, transparent);
       }
     }
     .stats-trend-btn:focus-visible {
@@ -1554,6 +1552,9 @@
     .home-page-controls .theme-toggle {
       position: static;
     }
+    body.tf2ls-results-page .home-reset-all-btn {
+      display: none;
+    }
     .theme-toggle,
     .home-reset-all-btn {
       border-radius: 6px;
@@ -1655,13 +1656,44 @@
       padding-right: 2.25rem;
       box-sizing: border-box;
     }
-    /* Same look as chat result “copy link” (.chat-hit-link); button needs native resets */
+    /* Profile overview copy-link: SVG chain (white + dark outline), not emoji */
     button.profile-copy-link-btn.chat-hit-link {
       z-index: 2;
-      border: none;
-      background: transparent;
-      font: inherit;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--accent);
+      background-color: var(--accent);
       cursor: pointer;
+      padding: 0.3rem;
+      border-radius: 4px;
+      line-height: 0;
+    }
+    button.profile-copy-link-btn .profile-copy-link-icon {
+      display: block;
+      width: 1.25rem;
+      height: 1.25rem;
+    }
+    button.profile-copy-link-btn .profile-copy-link-icon-outline {
+      stroke: #1a1a1a;
+    }
+    button.profile-copy-link-btn .profile-copy-link-icon-stroke {
+      stroke: #fff;
+    }
+    button.profile-copy-link-btn.chat-hit-link:hover,
+    button.profile-copy-link-btn.chat-hit-link:focus-visible {
+      background-color: var(--accent-hover);
+      border-color: var(--accent-hover);
+      outline: none;
+    }
+    [data-theme="dark"] button.profile-copy-link-btn.chat-hit-link {
+      background-color: #3d7a88;
+      border-color: #3d7a88;
+    }
+    [data-theme="dark"] button.profile-copy-link-btn.chat-hit-link:hover,
+    [data-theme="dark"] button.profile-copy-link-btn.chat-hit-link:focus-visible {
+      background-color: #4a8f9e;
+      border-color: #4a8f9e;
     }
     @media (max-width: 600px) {
       .home-page-controls { top: 0.25rem; right: 0.25rem; }

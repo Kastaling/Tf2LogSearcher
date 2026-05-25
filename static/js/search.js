@@ -1740,6 +1740,7 @@ if (frmLb) {
   var resultsPage = document.getElementById('resultsPage');
   var resultsContent = document.getElementById('resultsContent');
   if (!homePage || !resultsPage || !resultsContent) return;
+  document.body.classList.add('tf2ls-results-page');
   homePage.style.display = 'none';
   resultsPage.style.display = 'block';
   if (!mode) {

@@ -13,7 +13,7 @@ from app.logs_tf import steamid3_to_steamid64
 from app import combined_logs as _combined_logs
 
 # Garbage / non-class strings sometimes seen in logs.tf class_stats (skip inserts).
-_BAD_CLASS_NAMES: frozenset[str] = frozenset({"", "undefined", "none"})
+_BAD_CLASS_NAMES: frozenset[str] = frozenset({"", "undefined", "none", "unknown"})
 
 # SQLite bind parameter limit (stay under 999).
 _PSA_CHUNK = 900
@@ -67,9 +67,18 @@ def _steamid64_from_logs_tf_player_field(raw: Any) -> str | None:
     return None
 
 
+# logs.tf v3 round summaries rarely include plain ``kill`` events (often only ``medic_death``).
+_ROUND_FIRST_BLOOD_EVENT_TYPES: frozenset[str] = frozenset({"kill", "medic_death"})
+
+
 def _first_blood_steamid64_from_round(rnd: dict) -> str | None:
     """
-    First kill of the round from ``events`` (logs.tf). ``firstcap`` is a team, not a player — do not use it.
+    First kill of the round from logs.tf round ``events``.
+
+    Public JSON usually omits generic kill lines; ``medic_death`` (with ``killer``) is the
+    earliest player elimination in most rounds. When raw logs are indexed,
+    ``update_log_rounds_first_blood_from_raw`` overwrites with the first kill after each
+    ``Round_Start``. ``firstcap`` is a team, not a player — do not use it.
     """
     for key in ("first_blood", "firstblood", "firstBlood"):
         sid64 = _steamid64_from_logs_tf_player_field(rnd.get(key))
@@ -90,13 +99,99 @@ def _first_blood_steamid64_from_round(rnd: dict) -> str | None:
     scored.sort(key=lambda x: x[0])
     for _, ev in scored:
         et = str(ev.get("type") or "").lower()
-        if "kill" not in et:
+        if et not in _ROUND_FIRST_BLOOD_EVENT_TYPES:
+            continue
+        if et == "medic_death":
+            sid64 = _steamid64_from_logs_tf_player_field(ev.get("killer"))
+            if sid64:
+                return sid64
             continue
         for kk in ("killer", "steamid", "attacker"):
             sid64 = _steamid64_from_logs_tf_player_field(ev.get(kk))
             if sid64:
                 return sid64
     return None
+
+
+def _first_blood_steamid64s_from_raw_rounds(
+    round_start_ticks: list[int],
+    kills: list[tuple[int, str]],
+) -> list[str | None]:
+    """First non-suicide kill attacker per round window (between consecutive ``Round_Start`` ticks)."""
+    if not round_start_ticks:
+        return []
+    out: list[str | None] = [None] * len(round_start_ticks)
+    ki = 0
+    n_k = len(kills)
+    for ri, start in enumerate(round_start_ticks):
+        end = round_start_ticks[ri + 1] if ri + 1 < len(round_start_ticks) else None
+        while ki < n_k and kills[ki][0] < start:
+            ki += 1
+        if ki >= n_k:
+            break
+        tick, attacker = kills[ki]
+        if end is not None and tick >= end:
+            continue
+        out[ri] = attacker
+    return out
+
+
+def update_log_rounds_first_blood_from_raw(
+    stats_conn: sqlite3.Connection,
+    raw_conn: sqlite3.Connection,
+    log_id: int,
+) -> int:
+    """
+    Set ``log_rounds.first_blood_steamid64`` from raw kill + round-start events.
+
+    Overwrites JSON-derived values when a qualifying kill exists in the round window.
+    Returns the number of round rows updated.
+    """
+    starts = [
+        int(r[0])
+        for r in raw_conn.execute(
+            """
+            SELECT tick FROM round_events
+            WHERE log_id = ? AND event_type = 'round_start' AND tick IS NOT NULL
+            ORDER BY tick
+            """,
+            (log_id,),
+        ).fetchall()
+    ]
+    if not starts:
+        return 0
+    kills = [
+        (int(r[0]), str(r[1]))
+        for r in raw_conn.execute(
+            """
+            SELECT tick, attacker_steamid64
+            FROM kill_events
+            WHERE log_id = ?
+              AND tick IS NOT NULL
+              AND attacker_steamid64 IS NOT NULL
+              AND victim_steamid64 IS NOT NULL
+              AND attacker_steamid64 != victim_steamid64
+            ORDER BY tick
+            """,
+            (log_id,),
+        ).fetchall()
+        if r[0] is not None and r[1]
+    ]
+    fb_by_idx = _first_blood_steamid64s_from_raw_rounds(starts, kills)
+    updated = 0
+    for round_idx, fb64 in enumerate(fb_by_idx):
+        if not fb64:
+            continue
+        cur = stats_conn.execute(
+            """
+            UPDATE log_rounds
+            SET first_blood_steamid64 = ?
+            WHERE log_id = ? AND round_idx = ?
+            """,
+            (fb64, log_id, round_idx),
+        )
+        updated += cur.rowcount
+    return updated
 
 
 def _int_safe(x: Any, default: int = 0) -> int:

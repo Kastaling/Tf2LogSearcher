@@ -193,6 +193,97 @@ function profileCoplayersSearchHref(data) {
   return base + '?' + p.toString();
 }
 
+var PROFILE_COPLAYERS_WITH_COLUMNS = [
+  { key: 'player', label: 'Player', kind: 'text' },
+  { key: 'logs', label: 'Logs', kind: 'number' },
+  { key: 'winpct', label: 'Win% (with)', kind: 'winpct' },
+  { key: 'class', label: 'Class (with you)', kind: 'class' },
+  { key: 'playtime', label: 'Playtime (with you)', kind: 'playtime' },
+];
+
+var PROFILE_COPLAYERS_AGAINST_COLUMNS = [
+  { key: 'player', label: 'Player', kind: 'text' },
+  { key: 'logs', label: 'Logs', kind: 'number' },
+  { key: 'winpct', label: 'Win% (vs)', kind: 'winpct' },
+  { key: 'class', label: 'Class (vs you)', kind: 'class' },
+  { key: 'playtime', label: 'Playtime (vs you)', kind: 'playtime' },
+];
+
+function profileTopCoplayersColumns(mode) {
+  return mode === 'against' ? PROFILE_COPLAYERS_AGAINST_COLUMNS : PROFILE_COPLAYERS_WITH_COLUMNS;
+}
+
+function profileTopCoplayersSortValue(r, colDef, mode) {
+  if (colDef.kind === 'text') {
+    var name = r.name != null ? String(r.name) : '';
+    var sid = r.steamid64 != null ? String(r.steamid64).trim() : '';
+    var display = name.trim() ? name : sid;
+    return display.toLowerCase();
+  }
+  if (colDef.kind === 'number') {
+    var n = Number(r.total_logs);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (colDef.kind === 'winpct') {
+    var wr = mode === 'against' ? r.win_rate_against : r.win_rate_with;
+    var wn = Number(wr);
+    return Number.isFinite(wn) ? wn : null;
+  }
+  if (colDef.kind === 'class') {
+    var mc = mode === 'against' ? r.most_common_class_against : r.most_common_class_with;
+    return mc != null ? String(mc).toLowerCase() : '';
+  }
+  if (colDef.kind === 'playtime') {
+    var pt = mode === 'against' ? r.total_playtime_opposing_secs : r.total_playtime_together_secs;
+    var pn = Number(pt);
+    return Number.isFinite(pn) ? pn : null;
+  }
+  return null;
+}
+
+function profileTopCoplayersSortedRows(rows, sortCol, sortDir, mode) {
+  var columns = profileTopCoplayersColumns(mode);
+  var colDef = columns.find(function(c) { return c.key === sortCol; });
+  if (!colDef || !rows || !rows.length) return rows ? rows.slice() : [];
+  var sorted = rows.slice();
+  sorted.sort(function(a, b) {
+    var va = profileTopCoplayersSortValue(a, colDef, mode);
+    var vb = profileTopCoplayersSortValue(b, colDef, mode);
+    if (va === null && vb === null) return 0;
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    if (colDef.kind === 'text' || colDef.kind === 'class') {
+      if (va < vb) return -sortDir;
+      if (va > vb) return sortDir;
+      return 0;
+    }
+    if (va < vb) return -sortDir;
+    if (va > vb) return sortDir;
+    return 0;
+  });
+  return sorted;
+}
+
+function profileTopCoplayersTableInnerHtml(rows, sortCol, sortDir, mode) {
+  var columns = profileTopCoplayersColumns(mode);
+  var thead = '<tr>';
+  columns.forEach(function(c) {
+    var cls = 'sortable';
+    if (c.key === sortCol) cls += sortDir === 1 ? ' sorted-asc' : ' sorted-desc';
+    thead += '<th class="' + cls + '" data-col="' + escapeHtml(c.key) + '" scope="col">' + escapeHtml(c.label) + '</th>';
+  });
+  thead += '</tr>';
+  var bodyRows = rows && rows.length
+    ? profileTopCoplayersSortedRows(rows, sortCol, sortDir, mode)
+    : [];
+  var tbody = bodyRows.length
+    ? bodyRows.map(function(r) { return profileTopCoplayersRowHtml(r, mode); }).join('')
+    : '<tr><td colspan="5" class="stats-summary-meta">' +
+      escapeHtml(mode === 'against' ? 'No qualifying opponents in this filter.' : 'No qualifying co-players in this filter.') +
+      '</td></tr>';
+  return '<thead>' + thead + '</thead><tbody>' + tbody + '</tbody>';
+}
+
 function profileTopCoplayersRowHtml(r, mode) {
   var name = r.name != null ? String(r.name) : '';
   var sid = r.steamid64 != null ? String(r.steamid64).trim() : '';
@@ -236,16 +327,14 @@ function profileTopCoplayersBlock(data) {
   var more = href
     ? ('<p class="stats-summary-meta"><a href="' + escapeAttr(href) + '">Open full co-players search</a> (same gamemode / map filter).</p>')
     : '';
-  var theadWith = '<tr><th>Player</th><th>Logs</th><th>Win% (with)</th><th>Class (with you)</th><th>Playtime (with you)</th></tr>';
-  var theadAgainst = '<tr><th>Player</th><th>Logs</th><th>Win% (vs)</th><th>Class (vs you)</th><th>Playtime (vs you)</th></tr>';
-  var bodyWith = hasWith
-    ? withRows.map(function(r) { return profileTopCoplayersRowHtml(r, 'with'); }).join('')
-    : '<tr><td colspan="5" class="stats-summary-meta">No qualifying co-players in this filter.</td></tr>';
-  var bodyAgainst = hasAgainst
-    ? againstRows.map(function(r) { return profileTopCoplayersRowHtml(r, 'against'); }).join('')
-    : '<tr><td colspan="5" class="stats-summary-meta">No qualifying opponents in this filter.</td></tr>';
+  var theadWith = '';
+  var theadAgainst = '';
+  var bodyWith = '';
+  var bodyAgainst = '';
   var emptyWith = hasWith ? '0' : '1';
   var emptyAgainst = hasAgainst ? '0' : '1';
+  var defaultSortCol = 'logs';
+  var defaultSortDir = -1;
   return '<div class="stats-summary profile-top-coplayers js-profile-coplayers" data-with-empty="' + emptyWith + '" data-against-empty="' + emptyAgainst + '">' +
     '<p class="stats-summary-title">Most frequent co-players</p>' +
     '<div class="profile-coplayers-toolbar">' +
@@ -254,12 +343,332 @@ function profileTopCoplayersBlock(data) {
     '<button type="button" class="stats-trend-btn js-coplayers-tab active" data-pane="with" role="tab" aria-selected="true">With you</button>' +
     '<button type="button" class="stats-trend-btn js-coplayers-tab" data-pane="against" role="tab" aria-selected="false">Against you</button>' +
     '</div></div>' +
-    '<p class="stats-summary-meta js-coplayers-desc" data-pane="with">Top 5 by shared logs (teammate + opponent). Win rate, class, and playtime count only games on the same team.</p>' +
-    '<p class="stats-summary-meta js-coplayers-desc" data-pane="against" hidden>Top 5 by games on opposite teams. Logs column: total shared logs (teammate + opponent), same meaning as With you. Win rate, class, and playtime: opposite-team games only.</p>' +
+    '<p class="stats-summary-meta js-coplayers-desc" data-pane="with">Top 5 by shared logs (teammate + opponent). Win rate, class, and playtime count only games on the same team. Click a column header to sort.</p>' +
+    '<p class="stats-summary-meta js-coplayers-desc" data-pane="against" hidden>Top 5 by games on opposite teams. Logs column: total shared logs (teammate + opponent), same meaning as With you. Win rate, class, and playtime: opposite-team games only. Click a column header to sort.</p>' +
     more +
-    '<div class="js-coplayers-pane" data-pane="with"><div class="stats-table-wrap"><table class="stats-table"><thead>' + theadWith + '</thead><tbody>' + bodyWith + '</tbody></table></div></div>' +
-    '<div class="js-coplayers-pane" data-pane="against" hidden><div class="stats-table-wrap"><table class="stats-table"><thead>' + theadAgainst + '</thead><tbody>' + bodyAgainst + '</tbody></table></div></div>' +
+    '<div class="js-coplayers-pane" data-pane="with"><div class="stats-table-wrap"><table class="stats-table js-profile-coplayers-table" data-coplayers-mode="with">' +
+    profileTopCoplayersTableInnerHtml(hasWith ? withRows : [], defaultSortCol, defaultSortDir, 'with') +
+    '</table></div></div>' +
+    '<div class="js-coplayers-pane" data-pane="against" hidden><div class="stats-table-wrap"><table class="stats-table js-profile-coplayers-table" data-coplayers-mode="against">' +
+    profileTopCoplayersTableInnerHtml(hasAgainst ? againstRows : [], defaultSortCol, defaultSortDir, 'against') +
+    '</table></div></div>' +
     '</div>';
+}
+
+function bindProfileCoplayersTableSort(wrap) {
+  if (!wrap) return;
+  wrap.querySelectorAll('table.js-profile-coplayers-table').forEach(function(table) {
+    if (table._tf2lsCoplayersSortBound) return;
+    table._tf2lsCoplayersSortBound = true;
+    var mode = (table.getAttribute('data-coplayers-mode') || 'with').trim();
+    if (mode !== 'with' && mode !== 'against') mode = 'with';
+    table._coplayersMode = mode;
+    table.addEventListener('click', function(ev) {
+      var th = ev.target.closest('th.sortable');
+      if (!th || !table.contains(th)) return;
+      var col = th.getAttribute('data-col');
+      if (!col) return;
+      var rows = table._profileCoplayersRows;
+      if (!rows || !rows.length) return;
+      if (table._sortCol === col) {
+        table._sortDir *= -1;
+      } else {
+        table._sortCol = col;
+        table._sortDir = col === 'player' || col === 'class' ? 1 : -1;
+      }
+      table.innerHTML = profileTopCoplayersTableInnerHtml(
+        rows,
+        table._sortCol,
+        table._sortDir,
+        table._coplayersMode
+      );
+      loadAvatarsInContainer(table);
+    });
+  });
+}
+
+function bindProfileCoplayersTables(root, data) {
+  var wrap = root.querySelector('.js-profile-coplayers');
+  if (!wrap) return;
+  var withRows = data.top_coplayers;
+  var againstRows = data.top_coplayers_opposing;
+  wrap.querySelectorAll('table.js-profile-coplayers-table').forEach(function(table) {
+    var mode = (table.getAttribute('data-coplayers-mode') || 'with').trim();
+    if (mode === 'against') {
+      table._profileCoplayersRows = againstRows && againstRows.length ? againstRows.slice() : [];
+    } else {
+      table._profileCoplayersRows = withRows && withRows.length ? withRows.slice() : [];
+    }
+    table._coplayersMode = mode;
+    table._sortCol = 'logs';
+    table._sortDir = -1;
+  });
+  bindProfileCoplayersTableSort(wrap);
+}
+
+var PROFILE_CLASS_KILLS_COLUMNS = [
+  { key: 'victim_class', label: 'Victim class', kind: 'class' },
+  { key: 'total_kills', label: 'Kills', kind: 'number' },
+  { key: 'logs_count', label: 'Logs', kind: 'number' },
+  { key: 'avg_kills_per_log', label: 'Kills/log', kind: 'number' },
+  { key: 'peak_total_kills', label: 'Most kills (log)', kind: 'peak_kills' },
+  { key: 'peak_kills_per_min', label: 'Highest kills/min (log)', kind: 'peak_kpm' }
+];
+var PROFILE_CLASS_KILLS_COLSPAN = String(PROFILE_CLASS_KILLS_COLUMNS.length);
+
+function profileClassKillsVictimSkipped(vc) {
+  return !vc || vc === 'undefined' || vc === 'none' || vc === 'unknown';
+}
+
+function profileClassKillsFilterRows(rows) {
+  if (!rows || !rows.length) return [];
+  return rows.filter(function(r) {
+    var vc = r.victim_class != null ? String(r.victim_class).trim().toLowerCase() : '';
+    return !profileClassKillsVictimSkipped(vc);
+  });
+}
+
+/** One log peak for class kills: logs.tf link + kills, duration, kills/min (server fields only). */
+function profileClassKillsPeakHtml(peak) {
+  if (!peak || peak.log_id == null || peak.log_id === '') return '\u2014';
+  var lid = Number(peak.log_id);
+  if (!Number.isFinite(lid) || lid < 1) return '\u2014';
+  var idStr = String(Math.floor(lid));
+  if (!/^\d+$/.test(idStr)) return '\u2014';
+  var k = peak.kills;
+  var kStr = k != null && Number.isFinite(Number(k)) ? String(Math.floor(Number(k))) : '\u2014';
+  var link = profileLogsTfDateLink(idStr, '#' + idStr);
+  var parts = [link + ' <span class="stats-summary-meta">(' + escapeHtml(kStr) + ')</span>'];
+  var d = peak.duration_secs;
+  if (d != null && Number.isFinite(Number(d)) && Number(d) > 0) {
+    parts.push('<span class="stats-summary-meta">' + escapeHtml(profileFormatDurationMinSec(d)) + '</span>');
+  }
+  var kpm = peak.kills_per_min;
+  if (kpm != null && Number.isFinite(Number(kpm))) {
+    parts.push('<span class="stats-summary-meta">' + escapeHtml(String(Math.round(Number(kpm) * 100) / 100)) + ' kills/min</span>');
+  }
+  return '<div class="profile-heal-peak-cell">' + parts.join(' ') + '</div>';
+}
+
+function profileClassKillsSortValue(row, colDef) {
+  if (colDef.kind === 'class') {
+    return row.victim_class != null ? String(row.victim_class).toLowerCase() : '';
+  }
+  if (colDef.kind === 'peak_kills') {
+    var pt = row.peak_total_kills;
+    if (!pt || pt.kills == null) return null;
+    var pk = Number(pt.kills);
+    return Number.isFinite(pk) ? pk : null;
+  }
+  if (colDef.kind === 'peak_kpm') {
+    var pm = row.peak_kills_per_min;
+    if (!pm || pm.kills_per_min == null) return null;
+    var pv = Number(pm.kills_per_min);
+    return Number.isFinite(pv) ? pv : null;
+  }
+  var v = row[colDef.key];
+  var n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function profileClassKillsSortedRows(rows, sortCol, sortDir) {
+  var colDef = PROFILE_CLASS_KILLS_COLUMNS.find(function(c) { return c.key === sortCol; });
+  if (!colDef) return rows.slice();
+  var sorted = rows.slice();
+  sorted.sort(function(a, b) {
+    var va = profileClassKillsSortValue(a, colDef);
+    var vb = profileClassKillsSortValue(b, colDef);
+    if (va === null && vb === null) return 0;
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    if (colDef.kind === 'class') {
+      if (va < vb) return -sortDir;
+      if (va > vb) return sortDir;
+      return 0;
+    }
+    if (va < vb) return -sortDir;
+    if (va > vb) return sortDir;
+    return 0;
+  });
+  return sorted;
+}
+
+function profileClassKillsTableRow(r) {
+  var kpl = r.avg_kills_per_log != null && Number.isFinite(Number(r.avg_kills_per_log))
+    ? String(Math.round(Number(r.avg_kills_per_log) * 100) / 100)
+    : '\u2014';
+  return '<tr><td>' + profileClassCell(r.victim_class) + '</td><td>' +
+    escapeHtml(r.total_kills != null ? String(r.total_kills) : '\u2014') + '</td><td>' +
+    escapeHtml(r.logs_count != null ? String(r.logs_count) : '\u2014') + '</td><td>' +
+    escapeHtml(kpl) + '</td><td>' +
+    profileClassKillsPeakHtml(r.peak_total_kills) + '</td><td>' +
+    profileClassKillsPeakHtml(r.peak_kills_per_min) + '</td></tr>';
+}
+
+function profileClassKillsTableInnerHtml(rows, sortCol, sortDir) {
+  var thead = '<tr>';
+  PROFILE_CLASS_KILLS_COLUMNS.forEach(function(c) {
+    var cls = 'sortable';
+    if (c.key === sortCol) cls += sortDir === 1 ? ' sorted-asc' : ' sorted-desc';
+    thead += '<th class="' + cls + '" data-col="' + escapeHtml(c.key) + '" scope="col">' + escapeHtml(c.label) + '</th>';
+  });
+  thead += '</tr>';
+  var bodyRows = profileClassKillsSortedRows(rows, sortCol, sortDir);
+  var tbody = bodyRows.length
+    ? bodyRows.map(profileClassKillsTableRow).join('')
+    : '<tr><td colspan="' + escapeHtml(PROFILE_CLASS_KILLS_COLSPAN) + '" class="stats-summary-meta">\u2014</td></tr>';
+  return '<thead>' + thead + '</thead><tbody>' + tbody + '</tbody>';
+}
+
+function profileClassKillsBlock(rows) {
+  var filtered = profileClassKillsFilterRows(rows);
+  if (!filtered.length) return '';
+  var inner = profileClassKillsTableInnerHtml(filtered, 'total_kills', -1);
+  return '<div class="stats-summary js-profile-class-kills">' +
+    '<p class="stats-summary-title">Kills by victim class</p>' +
+    '<p class="stats-summary-meta">Kills/log uses logs where you have at least one kill on that class. Peak columns link to logs.tf. Click column headers to sort.</p>' +
+    '<div class="stats-table-wrap"><table class="stats-table js-profile-class-kills-table">' + inner + '</table></div></div>';
+}
+
+function bindProfileClassKillsTableSort(table) {
+  if (table._tf2lsClassKillsSortBound) return;
+  table._tf2lsClassKillsSortBound = true;
+  table.addEventListener('click', function(ev) {
+    var th = ev.target.closest('th.sortable');
+    if (!th || !table.contains(th)) return;
+    var col = th.getAttribute('data-col');
+    if (!col) return;
+    var rows = table._profileClassKillsRows;
+    if (!rows || !rows.length) return;
+    if (table._sortCol === col) {
+      table._sortDir *= -1;
+    } else {
+      table._sortCol = col;
+      table._sortDir = col === 'victim_class' ? 1 : -1;
+    }
+    table.innerHTML = profileClassKillsTableInnerHtml(rows, table._sortCol, table._sortDir);
+  });
+}
+
+function bindProfileClassKillsTable(root, data) {
+  var table = root.querySelector('table.js-profile-class-kills-table');
+  if (!table) return;
+  var rows = profileClassKillsFilterRows(data.class_kills);
+  table._profileClassKillsRows = rows.length ? rows : [];
+  table._sortCol = 'total_kills';
+  table._sortDir = -1;
+  bindProfileClassKillsTableSort(table);
+}
+
+var PROFILE_WEAPONS_COLUMNS = [
+  { key: 'weapon', label: 'Weapon', kind: 'text' },
+  { key: 'logs_count', label: 'Logs', kind: 'number' },
+  { key: 'total_kills', label: 'Kills', kind: 'number' },
+  { key: 'total_damage', label: 'Damage', kind: 'number' },
+  { key: 'accuracy', label: 'Accuracy', kind: 'number' },
+  { key: 'avg_damage_per_shot', label: 'Avg dmg/hit', kind: 'number' }
+];
+var PROFILE_WEAPONS_COLSPAN = String(PROFILE_WEAPONS_COLUMNS.length);
+
+function profileWeaponsDisplayName(w) {
+  if (w.weapon_display && String(w.weapon_display).trim()) return String(w.weapon_display).trim();
+  return w.weapon != null ? String(w.weapon) : '';
+}
+
+function profileWeaponsSortValue(row, colDef) {
+  if (colDef.kind === 'text') {
+    return profileWeaponsDisplayName(row).toLowerCase();
+  }
+  var v = row[colDef.key];
+  var n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function profileWeaponsSortedRows(rows, sortCol, sortDir) {
+  var colDef = PROFILE_WEAPONS_COLUMNS.find(function(c) { return c.key === sortCol; });
+  if (!colDef) return rows.slice();
+  var sorted = rows.slice();
+  sorted.sort(function(a, b) {
+    var va = profileWeaponsSortValue(a, colDef);
+    var vb = profileWeaponsSortValue(b, colDef);
+    if (va === null && vb === null) return 0;
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    if (colDef.kind === 'text') {
+      if (va < vb) return -sortDir;
+      if (va > vb) return sortDir;
+      return 0;
+    }
+    if (va < vb) return -sortDir;
+    if (va > vb) return sortDir;
+    return 0;
+  });
+  return sorted;
+}
+
+function profileWeaponsTableRow(w) {
+  var wname = profileWeaponsDisplayName(w);
+  var acc = w.accuracy != null ? (Math.round(Number(w.accuracy) * 10000) / 100 + '%') : '\u2014';
+  var adh = w.avg_damage_per_shot != null ? String(w.avg_damage_per_shot) : '\u2014';
+  return '<tr><td>' + escapeHtml(wname) + '</td><td>' +
+    escapeHtml(w.logs_count != null ? String(w.logs_count) : '\u2014') + '</td><td>' +
+    escapeHtml(w.total_kills != null ? String(w.total_kills) : '\u2014') + '</td><td>' +
+    escapeHtml(w.total_damage != null ? String(w.total_damage) : '\u2014') + '</td><td>' +
+    escapeHtml(acc) + '</td><td>' + escapeHtml(adh) + '</td></tr>';
+}
+
+function profileWeaponsTableInnerHtml(rows, sortCol, sortDir) {
+  var thead = '<tr>';
+  PROFILE_WEAPONS_COLUMNS.forEach(function(c) {
+    var cls = 'sortable';
+    if (c.key === sortCol) cls += sortDir === 1 ? ' sorted-asc' : ' sorted-desc';
+    thead += '<th class="' + cls + '" data-col="' + escapeHtml(c.key) + '" scope="col">' + escapeHtml(c.label) + '</th>';
+  });
+  thead += '</tr>';
+  var bodyRows = profileWeaponsSortedRows(rows, sortCol, sortDir);
+  var tbody = bodyRows.length
+    ? bodyRows.map(profileWeaponsTableRow).join('')
+    : '<tr><td colspan="' + escapeHtml(PROFILE_WEAPONS_COLSPAN) + '" class="stats-summary-meta">\u2014</td></tr>';
+  return '<thead>' + thead + '</thead><tbody>' + tbody + '</tbody>';
+}
+
+function profileWeaponsBlock(rows) {
+  if (!rows || !rows.length) return '';
+  var inner = profileWeaponsTableInnerHtml(rows, 'total_kills', -1);
+  return '<div class="stats-summary js-profile-weapons">' +
+    '<p class="stats-summary-title">Weapons</p>' +
+    '<p class="stats-summary-meta">Click a column header to sort; click again to reverse. Default: kills (high to low).</p>' +
+    '<div class="stats-table-wrap"><table class="stats-table js-profile-weapons-table">' + inner + '</table></div></div>';
+}
+
+function bindProfileWeaponsTableSort(table) {
+  if (table._tf2lsWeaponsSortBound) return;
+  table._tf2lsWeaponsSortBound = true;
+  table.addEventListener('click', function(ev) {
+    var th = ev.target.closest('th.sortable');
+    if (!th || !table.contains(th)) return;
+    var col = th.getAttribute('data-col');
+    if (!col) return;
+    var rows = table._profileWeaponsRows;
+    if (!rows || !rows.length) return;
+    if (table._sortCol === col) {
+      table._sortDir *= -1;
+    } else {
+      table._sortCol = col;
+      table._sortDir = col === 'weapon' ? 1 : -1;
+    }
+    table.innerHTML = profileWeaponsTableInnerHtml(rows, table._sortCol, table._sortDir);
+  });
+}
+
+function bindProfileWeaponsTable(root, data) {
+  var table = root.querySelector('table.js-profile-weapons-table');
+  if (!table) return;
+  var rows = data.weapons;
+  table._profileWeaponsRows = rows && rows.length ? rows.slice() : [];
+  table._sortCol = 'total_kills';
+  table._sortDir = -1;
+  bindProfileWeaponsTableSort(table);
 }
 
 /** One log peak for heal spread: logs.tf link + healing, duration, HP/min (server fields only). */
@@ -1339,6 +1748,18 @@ function copyProfileShareUrlFallback(text, onOk, onFail) {
   }
 }
 
+/** Chain-link icon for profile copy-link (two interlocking hooks; readable at small sizes). */
+function profileCopyLinkButtonHtml() {
+  return '<button type="button" class="chat-hit-link profile-copy-link-btn js-profile-copy-link" title="Copy link to this search" aria-label="Copy link to this profile search">' +
+    '<svg class="profile-copy-link-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">' +
+    '<g fill="none" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path class="profile-copy-link-icon-outline" stroke-width="3.25" d="M9.5 14.5l-3.25-3.25a3.75 3.75 0 0 1 5.3-5.3l1.7 1.7"/>' +
+    '<path class="profile-copy-link-icon-outline" stroke-width="3.25" d="M14.5 9.5l3.25 3.25a3.75 3.75 0 0 1-5.3 5.3l-1.7-1.7"/>' +
+    '<path class="profile-copy-link-icon-stroke" stroke-width="2" d="M9.5 14.5l-3.25-3.25a3.75 3.75 0 0 1 5.3-5.3l1.7 1.7"/>' +
+    '<path class="profile-copy-link-icon-stroke" stroke-width="2" d="M14.5 9.5l3.25 3.25a3.75 3.75 0 0 1-5.3 5.3l-1.7-1.7"/>' +
+    '</g></svg></button>';
+}
+
 function bindProfileCopyLinkButton(profileRoot) {
   var btn = profileRoot.querySelector('.js-profile-copy-link');
   if (!btn) return;
@@ -1434,7 +1855,7 @@ function renderProfileResult(el, data, elapsedMs) {
     : '';
   var overviewCard =
     '<div class="stats-summary profile-overview">' +
-    '<button type="button" class="chat-hit-link profile-copy-link-btn js-profile-copy-link" title="Copy link to this search" aria-label="Copy link to this profile search">\ud83d\udd17</button>' +
+    profileCopyLinkButtonHtml() +
     '<div class="profile-overview-head">' + avatarHtml + '<div class="profile-overview-text">' +
     '<p class="stats-summary-title">' + name + logsTfLinkHtml + '</p>' +
     dateRange + mpcLine + pvLine +
@@ -1519,28 +1940,10 @@ function renderProfileResult(el, data, elapsedMs) {
   }
 
   var weapons = data.weapons || [];
-  var weaponsTable = '';
-  if (weapons.length) {
-    var wthead = '<tr><th>Weapon</th><th>Logs</th><th>Kills</th><th>Damage</th><th>Accuracy</th><th>Avg dmg/hit</th></tr>';
-    var wbody = weapons.map(function(w) {
-      var acc = w.accuracy != null ? (Math.round(Number(w.accuracy) * 10000) / 100 + '%') : '\u2014';
-      var adh = w.avg_damage_per_shot != null ? String(w.avg_damage_per_shot) : '\u2014';
-      var wname = (w.weapon_display && String(w.weapon_display).trim()) ? String(w.weapon_display) : String(w.weapon);
-      return '<tr><td>' + escapeHtml(wname) + '</td><td>' + escapeHtml(String(w.logs_count)) + '</td><td>' +
-        escapeHtml(String(w.total_kills)) + '</td><td>' + escapeHtml(String(w.total_damage)) + '</td><td>' + escapeHtml(acc) + '</td><td>' + escapeHtml(adh) + '</td></tr>';
-    }).join('');
-    weaponsTable = '<div class="stats-summary"><p class="stats-summary-title">Weapons</p><div class="stats-table-wrap"><table class="stats-table"><thead>' + wthead + '</thead><tbody>' + wbody + '</tbody></table></div></div>';
-  }
+  var weaponsTable = weapons.length ? profileWeaponsBlock(weapons) : '';
 
-  var ck = data.class_kills || [];
-  var ckTable = '';
-  if (ck.length) {
-    var ckhead = '<tr><th>Victim class</th><th>Kills</th></tr>';
-    var ckbody = ck.map(function(r) {
-      return '<tr><td>' + profileClassCell(r.victim_class) + '</td><td>' + escapeHtml(String(r.total_kills != null ? r.total_kills : '')) + '</td></tr>';
-    }).join('');
-    ckTable = '<div class="stats-summary"><p class="stats-summary-title">Kills by victim class</p><div class="stats-table-wrap"><table class="stats-table"><thead>' + ckhead + '</thead><tbody>' + ckbody + '</tbody></table></div></div>';
-  }
+  var ck = profileClassKillsFilterRows(data.class_kills || []);
+  var ckTable = ck.length ? profileClassKillsBlock(ck) : '';
 
   var rounds = data.rounds || {};
   var roundsCard = '';
@@ -1621,6 +2024,9 @@ function renderProfileResult(el, data, elapsedMs) {
   }
 
   bindProfileCoplayersToggle(el);
+  bindProfileCoplayersTables(el, data);
+  bindProfileClassKillsTable(el, data);
+  bindProfileWeaponsTable(el, data);
 
   var favoriteWordsRoot = el.querySelector('.js-profile-favorite-words');
   if (favoriteWordsRoot && favoriteWords.length) {
