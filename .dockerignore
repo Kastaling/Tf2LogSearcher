@@ -11,6 +11,7 @@
 .env.*
 !.env.example
 logs
+docs/
 downloader_state
 request_logs
 raw_logs

@@ -208,7 +208,8 @@ function renderStatsTable(container, rows, elapsedMs) {
   sortedRows.forEach(function(x) {
     var teamClass = (x.team === 'Red') ? ' chat-team-red' : ((x.team === 'Blue') ? ' chat-team-blue' : '');
     var aliasCell = teamClass ? ('<span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>') : escapeHtml(x.alias);
-    tbody += '<tr><td>' + aliasCell + '</td><td>' + escapeHtml(x.character) + '</td><td>' + escapeHtml(x.kills) + '</td><td>' + escapeHtml(x.assists) + '</td><td>' + escapeHtml(x.deaths) + '</td><td>' + escapeHtml(x.kdr) + '</td><td>' + escapeHtml(x.kadr) + '</td><td>' + escapeHtml(x.dpm) + '</td><td>' + escapeHtml(x.dmg) + '</td><td>' + escapeHtml(x.headshots_hit) + '</td><td>' + escapeHtml(x.backstabs) + '</td><td>' + escapeHtml(x.map) + '</td><td>' + escapeHtml(x.date) + '</td><td><a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">Link</a></td></tr>';
+    var logExt = (x.url && !isInternalLogHref(x.url)) ? ' target="_blank" rel="noopener noreferrer"' : '';
+    tbody += '<tr><td>' + aliasCell + '</td><td>' + escapeHtml(x.character) + '</td><td>' + escapeHtml(x.kills) + '</td><td>' + escapeHtml(x.assists) + '</td><td>' + escapeHtml(x.deaths) + '</td><td>' + escapeHtml(x.kdr) + '</td><td>' + escapeHtml(x.kadr) + '</td><td>' + escapeHtml(x.dpm) + '</td><td>' + escapeHtml(x.dmg) + '</td><td>' + escapeHtml(x.headshots_hit) + '</td><td>' + escapeHtml(x.backstabs) + '</td><td>' + escapeHtml(x.map) + '</td><td>' + escapeHtml(x.date) + '</td><td><a href="' + escapeHtml(x.url) + '"' + logExt + '>Link</a></td></tr>';
   });
 
   container.innerHTML = (container._statsSummaryHtml || '') +

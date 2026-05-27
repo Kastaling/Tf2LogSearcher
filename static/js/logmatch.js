@@ -174,7 +174,8 @@ function renderLogmatchResult(el, data, elapsedMs) {
     html += '<div class="logmatch-header">';
     html += '<div class="logmatch-title">' + escapeHtml(x.title || '') + '</div>';
     html += '<div class="logmatch-meta">' + escapeHtml(x.map || '') + ' \u00b7 ' + escapeHtml(dateShown) + '</div>';
-    html += '<a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a>';
+    var logExt = (x.url && !isInternalLogHref(x.url)) ? ' target="_blank" rel="noopener noreferrer"' : '';
+    html += '<a href="' + escapeHtml(x.url) + '"' + logExt + '>' + escapeHtml(x.url) + '</a>';
     html += '</div>';
     if (rows.length === 0) {
       html += '<details class="logmatch-details"><summary>Matched players \u2014 Stats</summary><p class="logmatch-no-stats">No player stats available for this log.</p></details>';

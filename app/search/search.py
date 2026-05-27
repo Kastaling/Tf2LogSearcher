@@ -23,13 +23,14 @@ from app.stats_db import (
     stats_log_ids_for_player,
     stats_player_stats_cache_token_parts,
 )
+from app.log_links import log_url_for_id
 from app.logs_tf import get_log_list_for_player, steamid3_to_steamid64, steamid64_to_steamid3
 from app.weapon_classes import is_weapon_kill_whitelisted, weapons_for_class
 from app.weapon_names import get_weapon_name
 
 logger = logging.getLogger(__name__)
 
-LOGS_TF_URL_BASE = "https://logs.tf"
+LOGS_TF_URL_BASE = "https://logs.tf"  # logs.tf player profiles (always external)
 
 # SQLite bind parameter limit (max 999); stay under with margin for IN lists.
 _SQLITE_MAX_VARS = 900
@@ -1152,7 +1153,7 @@ def chat_search_sqlite(
                 "msg": msg,
                 "context_prev": _ctx_from_db_row(r[4], r[5], r[6]),
                 "context_next": _ctx_from_db_row(r[7], r[8], r[9]),
-                "url": f"{LOGS_TF_URL_BASE}/{log_id}",
+                "url": log_url_for_id(log_id),
                 "team": team,
             }
         )
@@ -1309,7 +1310,7 @@ def chat_leaderboard_search_sqlite(
                 "logs_count": logs_count,
                 "word_per_log": (occurrences / logs_count) if logs_count > 0 else 0.0,
                 "top_log_id": top_log_id if top_log_id > 0 else None,
-                "top_log_url": f"{LOGS_TF_URL_BASE}/{top_log_id}" if top_log_id > 0 else "",
+                "top_log_url": log_url_for_id(top_log_id) if top_log_id > 0 else "",
                 "profile_url": f"{LOGS_TF_URL_BASE}/profile/{sid64}",
             }
         )
@@ -1400,7 +1401,7 @@ def chat_search(
                 "msg": m,
                 "context_prev": _ctx(prev_entry),
                 "context_next": _ctx(next_entry),
-                "url": f"{LOGS_TF_URL_BASE}/{log_id}",
+                "url": log_url_for_id(log_id),
                 "team": team,
             })
     searched_name = results[0]["alias"] if results else None
@@ -1497,7 +1498,7 @@ def _stats_search_files(
                 "backstabs": bs,
                 "map": map_name,
                 "date": date_str,
-                "url": f"{LOGS_TF_URL_BASE}/{log_id}",
+                "url": log_url_for_id(log_id),
             })
     return rows, frozenset(log_ids_used)
 
@@ -1617,7 +1618,7 @@ def stats_search(
                             "backstabs": int(bs or 0),
                             "map": str(map_name or ""),
                             "date": date_str,
-                            "url": f"{LOGS_TF_URL_BASE}/{int(log_id)}",
+                            "url": log_url_for_id(int(log_id)),
                         }
                     )
             finally:
@@ -2014,7 +2015,7 @@ def log_match(
             "map": map_name,
             "date": date_str,
             "date_ts": date_ts,
-            "url": f"{LOGS_TF_URL_BASE}/{log_id}",
+            "url": log_url_for_id(log_id),
             "player_stats": player_stats,
             "_winner_team": _winner_team_from_log(logtext),
         })
@@ -2463,6 +2464,7 @@ def _profile_fetch_top_logs(
                     "dapm": _round2(dapm),
                     "kdr": _round2(kdr),
                     "kadr": _round2(kadr),
+                    "log_url": log_url_for_id(int(log_id)),
                 }
             )
 

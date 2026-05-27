@@ -117,7 +117,14 @@ def _purge_poisoned_logs_background() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     from app.avatar_db import connect_avatar_db, init_avatar_db
-    from app.config import AVATAR_DB_PATH, DOWNLOAD_RAW_ENABLED, PROFILE_CACHE_DB_PATH, RAW_EVENTS_DB_PATH
+    from app.config import (
+        AVATAR_DB_PATH,
+        DOWNLOAD_RAW_ENABLED,
+        LOG_DETAIL_CACHE_DB_PATH,
+        PROFILE_CACHE_DB_PATH,
+        RAW_EVENTS_DB_PATH,
+    )
+    from app.log_detail_cache_db import connect_log_detail_cache_db, init_log_detail_cache_db
     from app.profile_cache_db import connect_profile_cache_db, init_profile_cache_db
     from app.raw_db import connect_raw_db, init_raw_db
 
@@ -132,6 +139,12 @@ async def lifespan(_app: FastAPI):
         init_profile_cache_db(pconn)
     finally:
         pconn.close()
+
+    lconn = connect_log_detail_cache_db(LOG_DETAIL_CACHE_DB_PATH)
+    try:
+        init_log_detail_cache_db(lconn)
+    finally:
+        lconn.close()
 
     if DOWNLOAD_RAW_ENABLED or Path(RAW_EVENTS_DB_PATH).is_file():
         rconn = connect_raw_db(RAW_EVENTS_DB_PATH)

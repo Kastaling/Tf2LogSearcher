@@ -1714,6 +1714,57 @@
       outline: 2px solid var(--accent);
       outline-offset: 2px;
     }
+    .tf2ls-log-detail-page .log-detail-title {
+      margin-top: 0;
+      font-size: 1.35rem;
+      line-height: 1.25;
+    }
+    .log-detail-actions a {
+      margin-right: 0.75rem;
+    }
+    .log-detail-team-cols {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    @media (max-width: 520px) {
+      .log-detail-team-cols { grid-template-columns: 1fr; }
+    }
+    .log-detail-team-col h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+    .log-detail-stat-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .log-detail-stat-list li { padding: 0.15rem 0; }
+    .log-detail-round { margin: 0.35rem 0; }
+    .log-detail-events {
+      font-size: 0.9rem;
+      margin: 0.5rem 0 0 1rem;
+      max-height: 14rem;
+      overflow-y: auto;
+    }
+    .log-detail-medic-card {
+      border: 1px solid var(--border);
+      border-radius: var(--standard-border-radius, 5px);
+      padding: 0.5rem 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+    .log-detail-medic-card h4 { margin: 0 0 0.35rem; font-size: 1rem; }
+    .log-detail-chat {
+      max-height: 24rem;
+      overflow-y: auto;
+      font-size: 0.92rem;
+    }
+    .log-detail-chat-line { padding: 0.2rem 0; }
+    details.log-detail-collapsible > summary {
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .team-red { color: #c44; }
+    .team-blue { color: #48c; }
+    [data-theme="dark"] .team-red { color: #f88; }
+    [data-theme="dark"] .team-blue { color: #8cf; }
     /* Checkbox checkmarks: white with black outline so they’re visible in both themes */
     input[type="checkbox"]:checked,
     input[type="radio"]:checked {

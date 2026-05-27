@@ -32,6 +32,8 @@ from app.config import (
     STORAGE_STATS_MEMORY_TTL_SEC,
     STORAGE_STATS_RECOMPUTE_AFTER_SEC,
 )
+from app.log_detail import get_log_detail_payload
+from app.log_links import parse_log_id
 from app.avatar_db import (
     connect_avatar_db,
     get_cached_avatar,
@@ -2160,6 +2162,41 @@ async def api_leaderboard_get(
         min_logs or "",
         weapon or "",
     )
+
+
+@router.get("/api/log/{log_id}")
+async def api_log_detail(request: Request, log_id: str):
+    """Structured log detail payload (local library only; section cache)."""
+    start = time.perf_counter()
+    lid = parse_log_id(log_id)
+    if lid is None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, f"/api/log/{log_id}", 400, duration_ms)
+        return JSONResponse({"error": "invalid log id"}, status_code=400)
+    try:
+        payload = await asyncio.to_thread(get_log_detail_payload, lid)
+    except Exception:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, f"/api/log/{lid}", 500, duration_ms)
+        raise
+    if payload is None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, f"/api/log/{lid}", 404, duration_ms)
+        return JSONResponse({"error": "log not found locally"}, status_code=404)
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    _log_request(request, f"/api/log/{lid}", 200, duration_ms)
+    return JSONResponse(payload)
+
+
+@router.get("/log/{log_id}")
+async def log_detail_page(request: Request, log_id: str):
+    """Serve SPA shell for built-in log detail page."""
+    start = time.perf_counter()
+    if parse_log_id(log_id) is None:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, f"/log/{log_id}", 404, duration_ms)
+        return JSONResponse({"error": "invalid log id"}, status_code=404)
+    return await _serve_index(request, f"/log/{log_id}")
 
 
 @router.get("/")

@@ -107,6 +107,24 @@ PROFILE_VIEW_HASH_SECRET: bytes | None = (
     _PROFILE_HASH_SECRET_RAW.encode("utf-8") if _PROFILE_HASH_SECRET_RAW else None
 )
 
+# Built-in log detail page link mode: external (logs.tf) or internal (/log/{id})
+_LOG_DETAIL_LINK_MODE_RAW = _str("LOG_DETAIL_LINK_MODE", "external").strip().lower()
+LOG_DETAIL_LINK_MODE = (
+    "internal" if _LOG_DETAIL_LINK_MODE_RAW == "internal" else "external"
+)
+if _LOG_DETAIL_LINK_MODE_RAW not in ("external", "internal", ""):
+    logger.warning(
+        "Invalid LOG_DETAIL_LINK_MODE=%r — using external",
+        os.environ.get("LOG_DETAIL_LINK_MODE"),
+    )
+
+_LOG_DETAIL_CACHE_PATH_RAW = _str("LOG_DETAIL_CACHE_DB_PATH", "").strip()
+LOG_DETAIL_CACHE_DB_PATH = (
+    Path(_LOG_DETAIL_CACHE_PATH_RAW)
+    if _LOG_DETAIL_CACHE_PATH_RAW
+    else (DOWNLOADER_STATE_DIR / "log_detail_cache.db")
+)
+
 # SQLite DB for per-log player stats (populated by downloader and backfill script)
 STATS_DB_PATH = Path(_str("STATS_DB_PATH", "./downloader_state/stats.db"))
 

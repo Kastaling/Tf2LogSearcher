@@ -8,8 +8,8 @@ function profileFormatUnixDate(ts) {
   }
 }
 
-/** Safe link element to logs.tf log page; null/invalid id renders an em dash (security). */
-function profileLogsTfLogIdLinkEl(logId) {
+/** Safe link element to log page; null/invalid id renders an em dash (security). */
+function profileLogsTfLogIdLinkEl(logId, optionalUrl) {
   var td = document.createElement('td');
   if (logId == null || logId === '') {
     td.textContent = '\u2014';
@@ -20,23 +20,32 @@ function profileLogsTfLogIdLinkEl(logId) {
     td.textContent = '\u2014';
     return td;
   }
+  var url = logPageHref(idStr, optionalUrl);
+  if (!url) {
+    td.textContent = '\u2014';
+    return td;
+  }
   var a = document.createElement('a');
-  a.href = 'https://logs.tf/' + encodeURIComponent(idStr);
-  a.target = '_blank';
-  a.rel = 'noopener noreferrer';
+  a.href = url;
+  if (!isInternalLogHref(url)) {
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+  }
   a.textContent = '#' + idStr;
   td.appendChild(a);
   return td;
 }
 
-/** Link to logs.tf for a numeric log id; otherwise escape label as plain text (security). */
-function profileLogsTfDateLink(logId, dateLabel) {
+/** Link for a numeric log id; otherwise escape label as plain text (security). */
+function profileLogsTfDateLink(logId, dateLabel, optionalUrl) {
   var label = dateLabel != null ? String(dateLabel) : '\u2014';
   if (logId == null || logId === '') return escapeHtml(label);
   var idStr = String(logId).trim();
   if (!/^\d+$/.test(idStr)) return escapeHtml(label);
-  var url = 'https://logs.tf/' + encodeURIComponent(idStr);
-  return '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(label) + '</a>';
+  var url = logPageHref(idStr, optionalUrl);
+  if (!url) return escapeHtml(label);
+  var ext = isInternalLogHref(url) ? '' : ' target="_blank" rel="noopener noreferrer"';
+  return '<a href="' + escapeAttr(url) + '"' + ext + '>' + escapeHtml(label) + '</a>';
 }
 
 function profileFormatPlaytime(totalSec) {
@@ -1890,7 +1899,7 @@ function renderProfileResult(el, data, elapsedMs) {
         var best = formatTopLogPrimaryValue(r);
         var mapStr = r.map != null ? String(r.map) : '';
         var logId = r.log_id != null ? String(r.log_id) : '';
-        var logUrl = logId ? ('https://logs.tf/' + encodeURIComponent(logId)) : '';
+        var logUrl = logPageHref(logId, r.log_url);
         var k = r.kills != null ? String(r.kills) : '';
         var d = r.deaths != null ? String(r.deaths) : '';
         var a = r.assists != null ? String(r.assists) : '';
@@ -1900,8 +1909,9 @@ function renderProfileResult(el, data, elapsedMs) {
           + (r.dapm != null ? escapeHtml(' · ' + String(r.dapm) + ' DPM') : '');
         var rowTitle = (r.title != null && String(r.title).trim()) ? ('<br><span class="stats-summary-meta">' + escapeHtml(String(r.title)) + '</span>') : '';
         var teamStr = r.team != null && String(r.team).trim() ? (' <span class="stats-summary-meta">(' + escapeHtml(String(r.team)) + ')</span>') : '';
+        var linkExt = logUrl && !isInternalLogHref(logUrl) ? ' target="_blank" rel="noopener noreferrer"' : '';
         var linkCell = logUrl
-          ? ('<a href="' + escapeAttr(logUrl) + '" target="_blank" rel="noopener noreferrer">View log</a>')
+          ? ('<a href="' + escapeAttr(logUrl) + '"' + linkExt + '>View log</a>')
           : '\u2014';
         return '<tr><td>' + escapeHtml(String(r.label || '')) + '</td><td><strong>' + escapeHtml(best) + '</strong>' + teamStr + '<br><span class="stats-summary-meta">' + metaLine + '</span>' + rowTitle + '</td><td>' + escapeHtml(mapStr) + '</td><td>' + profileFormatUnixDate(r.date_ts) + '</td><td>' + linkCell + '</td></tr>';
       }).join('');

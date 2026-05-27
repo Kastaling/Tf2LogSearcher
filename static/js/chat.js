@@ -205,7 +205,8 @@ function chatHitHtml(x, i, word) {
   html += '<div class="chat-context-wrap">' + prevLine + '</div>';
   html += '<div class="chat-line chat-main chat-hit-main"><span class="' + teamClass + '">' + escapeHtml(x.alias) + '</span>: ' + highlightChatMatch(x.msg, word) + '</div>';
   html += '<div class="chat-context-wrap">' + nextLine + '</div>';
-  html += '<a class="chat-log-link" href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(x.url) + '</a>';
+  var logExt = (x.url && !isInternalLogHref(x.url)) ? ' target="_blank" rel="noopener noreferrer"' : '';
+  html += '<a class="chat-log-link" href="' + escapeHtml(x.url) + '"' + logExt + '>' + escapeHtml(x.url) + '</a>';
   html += '</div>';
   return html;
 }

@@ -23,6 +23,7 @@ __pycache__/
 *.pyc
 static/favicon.ico
 examples/
+docs/
 .cursorrules
 .cursor/
 node_modules/

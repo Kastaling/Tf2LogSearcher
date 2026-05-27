@@ -531,6 +531,19 @@ function internalProfileHref(steamid64) {
   return /^\d{17}$/.test(s) ? ('/?mode=profile&steamid=' + encodeURIComponent(s)) : '';
 }
 
+/** Log page URL: prefer server-provided ``log_url``; fallback to logs.tf for numeric ids. */
+function logPageHref(logId, optionalUrl) {
+  if (optionalUrl != null && String(optionalUrl).trim()) return String(optionalUrl).trim();
+  var idStr = String(logId == null ? '' : logId).trim();
+  if (!/^\d+$/.test(idStr)) return '';
+  return 'https://logs.tf/' + encodeURIComponent(idStr);
+}
+
+function isInternalLogHref(url) {
+  var u = String(url || '').trim();
+  return u.indexOf('/log/') === 0;
+}
+
 function loadAvatarsInContainer(container) {
   if (!container || !container.querySelectorAll) return;
   var wraps = container.querySelectorAll('.steam-avatar-wrap[data-steamid64]:not([data-avatar-loaded])');
