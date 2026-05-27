@@ -531,6 +531,50 @@ function internalProfileHref(steamid64) {
   return /^\d{17}$/.test(s) ? ('/?mode=profile&steamid=' + encodeURIComponent(s)) : '';
 }
 
+function steamProfileHref(steamid64) {
+  var s = String(steamid64 || '').trim();
+  return /^\d{17}$/.test(s) ? ('https://steamcommunity.com/profiles/' + encodeURIComponent(s)) : '';
+}
+
+function logsTfProfileHref(steamid64) {
+  var s = String(steamid64 || '').trim();
+  return /^\d{17}$/.test(s) ? ('https://logs.tf/profile/' + encodeURIComponent(s)) : '';
+}
+
+function playerProfileMenuLinks(player) {
+  var sid64 = player && player.steamid64 != null ? String(player.steamid64).trim() : '';
+  var internal = (player && player.profile_href) ? String(player.profile_href).trim() : '';
+  if (!internal) internal = internalProfileHref(sid64);
+  return {
+    internal: internal,
+    steam: steamProfileHref(sid64),
+    logsTf: logsTfProfileHref(sid64)
+  };
+}
+
+function playerTeamClass(team) {
+  if (team === 'Red') return 'team-red';
+  if (team === 'Blue') return 'team-blue';
+  return '';
+}
+
+/** Clickable player name (no underline); opens profile picker menu. */
+function playerNameMenuHtml(player, opts) {
+  opts = opts || {};
+  var alias = escapeHtml((player && player.alias) || (player && player.steamid3) || '');
+  var teamCls = playerTeamClass(player && player.team);
+  var extraCls = opts.extraClass ? String(opts.extraClass) : '';
+  var links = playerProfileMenuLinks(player);
+  if (!links.internal && !links.steam && !links.logsTf) {
+    return '<span class="player-name-plain ' + teamCls + (extraCls ? (' ' + extraCls) : '') + '">' + alias + '</span>';
+  }
+  return '<span role="button" tabindex="0" class="player-name-menu-btn ' + teamCls + (extraCls ? (' ' + extraCls) : '') + '"' +
+    ' data-profile-internal="' + escapeAttr(links.internal) + '"' +
+    ' data-profile-steam="' + escapeAttr(links.steam) + '"' +
+    ' data-profile-logstf="' + escapeAttr(links.logsTf) + '"' +
+    ' aria-haspopup="menu" aria-expanded="false">' + alias + '</span>';
+}
+
 /** Log page URL: prefer server-provided ``log_url``; fallback to logs.tf for numeric ids. */
 function logPageHref(logId, optionalUrl) {
   if (optionalUrl != null && String(optionalUrl).trim()) return String(optionalUrl).trim();
@@ -747,6 +791,125 @@ function showTooltipFor(target) {
   window.addEventListener('resize', function() {
     if (_tooltipTarget && _tooltipNode && !_tooltipNode.hidden) placeTooltip(_tooltipTarget);
   }, { passive: true });
+})();
+
+(function initPlayerProfileMenus() {
+  if (window._playerProfileMenusInit) return;
+  window._playerProfileMenusInit = true;
+  var menu = null;
+  var openBtn = null;
+
+  function getMenu() {
+    if (menu) return menu;
+    menu = document.createElement('div');
+    menu.className = 'player-profile-menu';
+    menu.hidden = true;
+    menu.setAttribute('role', 'menu');
+    menu.innerHTML =
+      '<a role="menuitem" class="player-profile-menu-item" data-kind="internal">search.kastal.ing profile</a>' +
+      '<a role="menuitem" class="player-profile-menu-item" data-kind="steam" target="_blank" rel="noopener noreferrer">Steam profile</a>' +
+      '<a role="menuitem" class="player-profile-menu-item" data-kind="logstf" target="_blank" rel="noopener noreferrer">logs.tf profile</a>';
+    document.body.appendChild(menu);
+    menu.addEventListener('click', function(ev) {
+      var item = ev.target.closest('.player-profile-menu-item');
+      if (!item || item.hidden || item.getAttribute('aria-disabled') === 'true') {
+        ev.preventDefault();
+        return;
+      }
+      closeMenu();
+    });
+    return menu;
+  }
+
+  function closeMenu() {
+    if (!menu) return;
+    menu.hidden = true;
+    if (openBtn) {
+      openBtn.setAttribute('aria-expanded', 'false');
+      openBtn = null;
+    }
+  }
+
+  function setMenuItem(el, href, external) {
+    if (!el) return;
+    if (href) {
+      el.href = href;
+      el.hidden = false;
+      el.removeAttribute('aria-disabled');
+      if (external) {
+        el.target = '_blank';
+        el.rel = 'noopener noreferrer';
+      } else {
+        el.removeAttribute('target');
+        el.removeAttribute('rel');
+      }
+    } else {
+      el.hidden = true;
+      el.href = '#';
+      el.setAttribute('aria-disabled', 'true');
+    }
+  }
+
+  function openMenu(btn) {
+    closeMenu();
+    var m = getMenu();
+    setMenuItem(m.querySelector('[data-kind="internal"]'), btn.getAttribute('data-profile-internal') || '', false);
+    setMenuItem(m.querySelector('[data-kind="steam"]'), btn.getAttribute('data-profile-steam') || '', true);
+    setMenuItem(m.querySelector('[data-kind="logstf"]'), btn.getAttribute('data-profile-logstf') || '', true);
+    var rect = btn.getBoundingClientRect();
+    m.style.left = Math.round(rect.left) + 'px';
+    m.style.top = Math.round(rect.bottom + 4) + 'px';
+    m.hidden = false;
+    openBtn = btn;
+    btn.setAttribute('aria-expanded', 'true');
+    requestAnimationFrame(function() {
+      if (!menu || menu.hidden) return;
+      var mr = menu.getBoundingClientRect();
+      var left = rect.left;
+      var top = rect.bottom + 4;
+      if (left + mr.width > window.innerWidth - 8) {
+        left = Math.max(8, window.innerWidth - mr.width - 8);
+      }
+      if (top + mr.height > window.innerHeight - 8) {
+        top = Math.max(8, rect.top - mr.height - 4);
+      }
+      menu.style.left = Math.round(left) + 'px';
+      menu.style.top = Math.round(top) + 'px';
+    });
+  }
+
+  document.addEventListener('click', function(ev) {
+    var btn = ev.target.closest('.player-name-menu-btn');
+    if (btn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (openBtn === btn && menu && !menu.hidden) closeMenu();
+      else openMenu(btn);
+      return;
+    }
+    if (menu && !menu.hidden && !ev.target.closest('.player-profile-menu')) {
+      closeMenu();
+    }
+  });
+  document.addEventListener('contextmenu', function(ev) {
+    var btn = ev.target.closest('.player-name-menu-btn');
+    if (!btn) return;
+    ev.preventDefault();
+    openMenu(btn);
+  });
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Escape') {
+      closeMenu();
+      return;
+    }
+    var btn = ev.target.closest('.player-name-menu-btn');
+    if (!btn || (ev.key !== 'Enter' && ev.key !== ' ')) return;
+    ev.preventDefault();
+    if (openBtn === btn && menu && !menu.hidden) closeMenu();
+    else openMenu(btn);
+  });
+  window.addEventListener('scroll', closeMenu, { passive: true });
+  window.addEventListener('resize', closeMenu, { passive: true });
 })();
 
 /** Escape string for use as a literal in a RegExp (security: no regex injection). */

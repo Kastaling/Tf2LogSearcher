@@ -446,7 +446,7 @@ function profileClassKillsPeakHtml(peak) {
   if (!/^\d+$/.test(idStr)) return '\u2014';
   var k = peak.kills;
   var kStr = k != null && Number.isFinite(Number(k)) ? String(Math.floor(Number(k))) : '\u2014';
-  var link = profileLogsTfDateLink(idStr, '#' + idStr);
+  var link = profileLogsTfDateLink(idStr, '#' + idStr, peak.log_url);
   var parts = [link + ' <span class="stats-summary-meta">(' + escapeHtml(kStr) + ')</span>'];
   var d = peak.duration_secs;
   if (d != null && Number.isFinite(Number(d)) && Number(d) > 0) {
@@ -689,7 +689,7 @@ function profileHealspreadPeakHtml(peak) {
   if (!/^\d+$/.test(idStr)) return '\u2014';
   var h = peak.healing;
   var hStr = h != null && Number.isFinite(Number(h)) ? profileFormatHealing(Number(h)) : '\u2014';
-  var link = profileLogsTfDateLink(idStr, '#' + idStr);
+  var link = profileLogsTfDateLink(idStr, '#' + idStr, peak.log_url);
   var parts = [link + ' <span class="stats-summary-meta">(' + escapeHtml(hStr) + ')</span>'];
   var d = peak.duration_secs;
   if (d != null && Number.isFinite(Number(d)) && Number(d) > 0) {
@@ -872,7 +872,9 @@ function renderFavoriteWords(words, container) {
       count: Number.isFinite(count) ? count : 0,
       pct: Number.isFinite(pct) ? pct : 0,
       latest_log_id: Number.isFinite(latestLid) ? latestLid : null,
-      peak_log_id: Number.isFinite(peakLid) ? peakLid : null
+      peak_log_id: Number.isFinite(peakLid) ? peakLid : null,
+      latest_log_url: w && w.latest_log_url != null ? String(w.latest_log_url) : '',
+      peak_log_url: w && w.peak_log_url != null ? String(w.peak_log_url) : ''
     };
   }).filter(function(w) {
     return w.word && w.count > 0;
@@ -936,8 +938,8 @@ function renderFavoriteWords(words, container) {
     tr.appendChild(wordTd);
     tr.appendChild(countTd);
     tr.appendChild(pctTd);
-    tr.appendChild(profileLogsTfLogIdLinkEl(w.latest_log_id));
-    tr.appendChild(profileLogsTfLogIdLinkEl(w.peak_log_id));
+    tr.appendChild(profileLogsTfLogIdLinkEl(w.latest_log_id, w.latest_log_url));
+    tr.appendChild(profileLogsTfLogIdLinkEl(w.peak_log_id, w.peak_log_url));
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
@@ -1825,8 +1827,8 @@ function renderProfileResult(el, data, elapsedMs) {
       '</p>';
   }
   var dateRange = '<p class="stats-summary-meta">Logs: ' + escapeHtml(String(data.logs_count != null ? data.logs_count : '')) +
-    ' &middot; ' + profileLogsTfDateLink(ov.first_log_id, profileFormatUnixDate(ov.first_log_ts)) +
-    ' \u2192 ' + profileLogsTfDateLink(ov.last_log_id, profileFormatUnixDate(ov.last_log_ts)) + '</p>';
+    ' &middot; ' + profileLogsTfDateLink(ov.first_log_id, profileFormatUnixDate(ov.first_log_ts), ov.first_log_url) +
+    ' \u2192 ' + profileLogsTfDateLink(ov.last_log_id, profileFormatUnixDate(ov.last_log_ts), ov.last_log_url) + '</p>';
   var gridItems = [
     { key: 'Wins', value: ov.wins != null ? String(ov.wins) : '\u2014' },
     { key: 'Losses', value: ov.losses != null ? String(ov.losses) : '\u2014' },

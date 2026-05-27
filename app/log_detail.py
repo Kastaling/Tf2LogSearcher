@@ -30,21 +30,24 @@ from app.log_detail_cache_db import (
 from app.log_links import external_log_url, is_internal_log_links, log_url_for_id
 from app.log_utils import team_score, winner_team_from_log
 from app.logs_tf import steamid3_to_steamid64
-from app.search.search import _class_playtime_for_logmatch, _LOGMATCH_CLASS_TYPES
+from app.search.search import LOGMATCH_CLASS_ORDER, _class_playtime_for_logmatch
 from app.stats_db import connect_stats_db
 
 logger = logging.getLogger(__name__)
 
+# Bump a section key (e.g. teams:v1 -> teams:v2) when its builder output shape or logic changes.
+# source_fingerprint invalidates rows when local JSON/DB inputs change; version bumps invalidate
+# after code-only fixes (stale cached JSON, new fields like summary log_url/link_mode).
 SECTION_VERSIONS: dict[str, str] = {
-    "summary": "summary:v1",
-    "teams": "teams:v1",
-    "players": "players:v1",
-    "rounds": "rounds:v1",
-    "medics": "medics:v1",
-    "class_matrix": "class_matrix:v1",
-    "chat": "chat:v1",
-    "killstreaks": "killstreaks:v1",
-    "raw_availability": "raw_availability:v1",
+    "summary": "summary:v2",
+    "teams": "teams:v2",
+    "players": "players:v2",
+    "rounds": "rounds:v2",
+    "medics": "medics:v3",
+    "class_matrix": "class_matrix:v4",
+    "chat": "chat:v3",
+    "killstreaks": "killstreaks:v3",
+    "raw_availability": "raw_availability:v2",
 }
 
 _CHAT_MAX_MESSAGES = 800
@@ -230,6 +233,29 @@ def _player_row(
         "primary_class": primary,
         "class_playtime": cpt,
         "profile_href": f"/?mode=profile&steamid={sid64}" if sid64 else "",
+    }
+
+
+def _player_log_detail_fields(
+    steamid3: str,
+    stats: dict[str, Any] | None,
+    names: dict[str, Any],
+) -> dict[str, Any]:
+    """Team/class/profile fields for chat and killstreak rows (from log JSON players)."""
+    if not steamid3 or not isinstance(stats, dict):
+        sid64 = steamid3_to_steamid64(steamid3) or "" if steamid3 else ""
+        return {
+            "team": None,
+            "primary_class": None,
+            "class_playtime": [],
+            "profile_href": f"/?mode=profile&steamid={sid64}" if sid64 else "",
+        }
+    row = _player_row(steamid3, stats, names)
+    return {
+        "team": row.get("team"),
+        "primary_class": row.get("primary_class"),
+        "class_playtime": row.get("class_playtime") or [],
+        "profile_href": row.get("profile_href") or "",
     }
 
 
@@ -451,12 +477,27 @@ def _build_medics(logtext: dict[str, Any]) -> dict[str, Any]:
                 if healing <= 0:
                     continue
                 pat_name = names.get(pat_sid3, pat_sid3) if isinstance(names, dict) else pat_sid3
+                pat_stats = players.get(pat_sid3)
+                pat_team: str | None = None
+                pat_class: str | None = None
+                pat_playtime: list[dict[str, Any]] = []
+                pat_profile = ""
+                if isinstance(pat_stats, dict):
+                    pat_row = _player_row(str(pat_sid3), pat_stats, names)
+                    pat_team = pat_row.get("team")
+                    pat_class = pat_row.get("primary_class")
+                    pat_playtime = pat_row.get("class_playtime") or []
+                    pat_profile = pat_row.get("profile_href") or ""
                 patients.append(
                     {
                         "steamid3": str(pat_sid3),
                         "steamid64": steamid3_to_steamid64(str(pat_sid3)) or "",
                         "alias": str(pat_name or pat_sid3),
                         "healing": healing,
+                        "team": pat_team,
+                        "primary_class": pat_class,
+                        "class_playtime": pat_playtime,
+                        "profile_href": pat_profile,
                     }
                 )
             patients.sort(key=lambda x: -x["healing"])
@@ -471,8 +512,9 @@ def _build_medics(logtext: dict[str, Any]) -> dict[str, Any]:
 def _build_class_matrix(logtext: dict[str, Any]) -> dict[str, Any]:
     classkills = logtext.get("classkills")
     names = logtext.get("names") if isinstance(logtext.get("names"), dict) else {}
+    players = logtext.get("players") if isinstance(logtext.get("players"), dict) else {}
     if not isinstance(classkills, dict) or not classkills:
-        return {"killers": [], "victim_classes": list(_LOGMATCH_CLASS_TYPES)}
+        return {"killers": [], "victim_classes": list(LOGMATCH_CLASS_ORDER)}
     killers: list[dict[str, Any]] = []
     victim_set: set[str] = set()
     for killer_sid3, victims in classkills.items():
@@ -493,23 +535,35 @@ def _build_class_matrix(logtext: dict[str, Any]) -> dict[str, Any]:
             by_class[vc] = by_class.get(vc, 0) + n
             victim_set.add(vc)
         if by_class:
-            killers.append(
-                {
-                    "steamid3": str(killer_sid3),
-                    "steamid64": steamid3_to_steamid64(str(killer_sid3)) or "",
-                    "alias": str(alias or killer_sid3),
-                    "kills_by_victim_class": by_class,
-                }
-            )
+            killer_row: dict[str, Any] = {
+                "steamid3": str(killer_sid3),
+                "steamid64": steamid3_to_steamid64(str(killer_sid3)) or "",
+                "alias": str(alias or killer_sid3),
+                "kills_by_victim_class": by_class,
+            }
+            killer_stats = players.get(killer_sid3)
+            if isinstance(killer_stats, dict):
+                extra = _player_row(str(killer_sid3), killer_stats, names)
+                killer_row["team"] = extra.get("team")
+                killer_row["primary_class"] = extra.get("primary_class")
+                killer_row["class_playtime"] = extra.get("class_playtime") or []
+                killer_row["profile_href"] = extra.get("profile_href") or ""
+            killers.append(killer_row)
     killers.sort(key=lambda k: -sum((k.get("kills_by_victim_class") or {}).values()))
     killers = killers[:_CLASS_MATRIX_KILLERS_MAX]
-    victim_classes = sorted(victim_set) if victim_set else list(_LOGMATCH_CLASS_TYPES)
+    victim_classes = (
+        [c for c in LOGMATCH_CLASS_ORDER if c in victim_set]
+        if victim_set
+        else list(LOGMATCH_CLASS_ORDER)
+    )
     return {"killers": killers, "victim_classes": victim_classes}
 
 
 def _build_chat(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
     messages: list[dict[str, Any]] = []
     truncated = False
+    players = logtext.get("players") if isinstance(logtext.get("players"), dict) else {}
+    names = logtext.get("names") if isinstance(logtext.get("names"), dict) else {}
     chat_path = Path(CHAT_DB_PATH)
     if chat_path.is_file():
         try:
@@ -531,15 +585,19 @@ def _build_chat(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
                 truncated = True
                 rows = rows[:_CHAT_MAX_MESSAGES]
             for r in rows:
+                sid3 = str(r[1] or "")
                 team = "Red" if r[4] == "Red" else ("Blue" if r[4] == "Blue" else None)
+                extra = _player_log_detail_fields(sid3, players.get(sid3), names)
+                if team is not None:
+                    extra["team"] = team
                 messages.append(
                     {
                         "idx": int(r[0] or 0),
-                        "steamid3": str(r[1] or ""),
-                        "steamid64": str(r[2] or "") if r[2] else (steamid3_to_steamid64(str(r[1] or "")) or ""),
+                        "steamid3": sid3,
+                        "steamid64": str(r[2] or "") if r[2] else (steamid3_to_steamid64(sid3) or ""),
                         "alias": str(r[3] or ""),
-                        "team": team,
                         "msg": str(r[5] or ""),
+                        **extra,
                     }
                 )
         except sqlite3.Error as e:
@@ -547,8 +605,6 @@ def _build_chat(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
 
     if not messages:
         chat = logtext.get("chat")
-        players = logtext.get("players") if isinstance(logtext.get("players"), dict) else {}
-        names = logtext.get("names") if isinstance(logtext.get("names"), dict) else {}
         if isinstance(chat, list):
             for i, entry in enumerate(chat):
                 if len(messages) >= _CHAT_MAX_MESSAGES:
@@ -558,19 +614,15 @@ def _build_chat(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
                     continue
                 sid3 = str(entry.get("steamid") or "")
                 alias = str(entry.get("name") or names.get(sid3) or sid3)
-                team = None
-                p = players.get(sid3)
-                if isinstance(p, dict):
-                    tr = p.get("team")
-                    team = "Red" if tr == "Red" else ("Blue" if tr == "Blue" else None)
+                extra = _player_log_detail_fields(sid3, players.get(sid3), names)
                 messages.append(
                     {
                         "idx": i,
                         "steamid3": sid3,
                         "steamid64": steamid3_to_steamid64(sid3) or "",
                         "alias": alias,
-                        "team": team,
                         "msg": str(entry.get("msg") or ""),
+                        **extra,
                     }
                 )
 
@@ -583,6 +635,7 @@ def _build_killstreaks(logtext: dict[str, Any]) -> dict[str, Any]:
         return {"killstreaks": []}
     out: list[dict[str, Any]] = []
     names = logtext.get("names") if isinstance(logtext.get("names"), dict) else {}
+    players = logtext.get("players") if isinstance(logtext.get("players"), dict) else {}
     for entry in ks[:_KILLSTREAKS_MAX]:
         if not isinstance(entry, dict):
             continue
@@ -592,12 +645,14 @@ def _build_killstreaks(logtext: dict[str, Any]) -> dict[str, Any]:
             streak = int(entry.get("killstreak") or entry.get("streak") or entry.get("length") or 0)
         except (TypeError, ValueError):
             streak = 0
+        extra = _player_log_detail_fields(sid3, players.get(sid3), names)
         out.append(
             {
                 "steamid3": sid3,
                 "steamid64": steamid3_to_steamid64(sid3) or "",
                 "alias": alias,
                 "streak": streak,
+                **extra,
             }
         )
     return {"killstreaks": out}

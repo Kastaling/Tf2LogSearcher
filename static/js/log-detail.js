@@ -3,6 +3,7 @@
  * Renders API payload with text escaping; large sections collapsed by default.
  */
 (function initLogDetailPage() {
+  var LOG_DETAIL_TITLE_SUFFIX = ' \u2014 TF2 Log Searcher';
   var m = (window.location.pathname || '').match(/^\/log\/(\d+)\/?$/);
   if (!m) return;
   var logId = m[1];
@@ -14,7 +15,6 @@
   document.body.classList.add('tf2ls-log-detail-page');
   homePage.style.display = 'none';
   resultsPage.style.display = 'block';
-  document.title = 'Log #' + logId + ' — TF2 Log Searcher';
 
   var back = document.getElementById('resultsBackLink');
   if (back) {
@@ -22,7 +22,51 @@
     back.textContent = '\u2190 Back to search';
   }
 
-  showResultsLoading(resultsContent);
+  function stopLoadingTabTitle() {
+    if (typeof stopLoadingTitleAnimation === 'function') {
+      stopLoadingTitleAnimation();
+    }
+  }
+
+  function setLogDetailTabTitle(data) {
+    var s = (data && data.summary) ? data.summary : {};
+    var parts = [];
+    var title = s.title != null ? String(s.title).trim() : '';
+    if (title) parts.push(title);
+    var mapName = s.map != null ? String(s.map).trim() : '';
+    if (mapName) parts.push(mapName);
+    var durSec = s.duration_secs;
+    if (durSec != null && Number.isFinite(Number(durSec)) && Number(durSec) > 0) {
+      parts.push(profileFormatDurationMinSec(durSec));
+    }
+    if (!parts.length) {
+      parts.push('Log #' + logId);
+    } else {
+      parts.push('#' + logId);
+    }
+    var main = parts.join(' \u00b7 ');
+    if (main.length > 120) {
+      main = main.slice(0, 117) + '\u2026';
+    }
+    document.title = main + LOG_DETAIL_TITLE_SUFFIX;
+  }
+
+  function setLogDetailTabTitleLoading() {
+    document.title = 'Log #' + logId + LOG_DETAIL_TITLE_SUFFIX;
+  }
+
+  function showLogDetailLoading(el) {
+    setLogDetailTabTitleLoading();
+    if (typeof showResultsLoading === 'function') {
+      showResultsLoading(el);
+      return;
+    }
+    if (el) {
+      el.innerHTML = '<div class="loading-state" role="status" aria-live="polite"><span class="loading-label">Loading log</span></div>';
+    }
+  }
+
+  showLogDetailLoading(resultsContent);
 
   fetch('/api/log/' + encodeURIComponent(logId), { credentials: 'same-origin' })
     .then(function(res) {
@@ -35,12 +79,16 @@
       return res.json();
     })
     .then(function(data) {
+      stopLoadingTabTitle();
+      setLogDetailTabTitle(data);
       resultsContent.innerHTML = renderLogDetail(data);
       loadAvatarsInContainer(resultsContent);
       bindLogDetailCollapsibles(resultsContent);
       bindLogDetailSort(resultsContent);
     })
     .catch(function(e) {
+      stopLoadingTabTitle();
+      document.title = 'Log #' + logId + ' (error)' + LOG_DETAIL_TITLE_SUFFIX;
       resultsContent.innerHTML = '<span class="error">' + escapeHtml(e && e.message ? e.message : 'Failed to load log') + '</span>';
     });
 
@@ -65,20 +113,26 @@
     });
   }
 
-  function bindLogDetailSort(root) {
-    var table = root && root.querySelector('.js-log-detail-players');
+  function bindLogDetailSortTable(table, opts) {
     if (!table) return;
     var thead = table.querySelector('thead');
     var tbody = table.querySelector('tbody');
     if (!thead || !tbody) return;
-    var sortKey = 'dmg';
-    var sortDir = -1;
+    opts = opts || {};
+    var sortKey = opts.defaultSort || 'dmg';
+    var sortDir = opts.defaultDir != null ? opts.defaultDir : -1;
 
     function rerender() {
       var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
       rows.sort(function(a, b) {
-        var av = a.getAttribute('data-' + sortKey);
-        var bv = b.getAttribute('data-' + sortKey);
+        var av = a.getAttribute('data-' + sortKey) || '';
+        var bv = b.getAttribute('data-' + sortKey) || '';
+        if (sortKey === 'alias' || sortKey === 'team' || sortKey === 'class') {
+          av = av.toLowerCase();
+          bv = bv.toLowerCase();
+          if (av === bv) return 0;
+          return sortDir * (av < bv ? -1 : 1);
+        }
         var an = parseFloat(av);
         var bn = parseFloat(bv);
         if (!Number.isFinite(an)) an = 0;
@@ -105,6 +159,12 @@
       });
     });
     rerender();
+  }
+
+  function bindLogDetailSort(root) {
+    if (!root) return;
+    bindLogDetailSortTable(root.querySelector('.js-log-detail-players'), { defaultSort: 'dmg', defaultDir: -1 });
+    bindLogDetailSortTable(root.querySelector('.js-log-detail-matrix'), { defaultSort: 'total', defaultDir: -1 });
   }
 
   function renderLogDetail(data) {
@@ -156,32 +216,110 @@
       renderRawSection(raw);
   }
 
+  var TEAM_SUMMARY_STATS = [
+    { key: 'kills', label: 'Kills', higherBetter: true },
+    { key: 'dmg', label: 'Damage', higherBetter: true },
+    { key: 'assists', label: 'Assists', higherBetter: true },
+    { key: 'ubers', label: 'Ubers', higherBetter: true },
+    { key: 'drops', label: 'Drops', higherBetter: false },
+    { key: 'captures', label: 'Caps', higherBetter: true },
+    { key: 'score', label: 'Score', higherBetter: true, optional: true }
+  ];
+
+  function teamSummaryStatLine(label, myVal, oppVal, higherBetter) {
+    var mine = Number(myVal) || 0;
+    var opp = Number(oppVal) || 0;
+    var sym = '';
+    var cmpCls = '';
+    if (mine === opp) {
+      sym = '=';
+      cmpCls = 'log-detail-cmp-tie';
+    } else {
+      var ahead;
+      if (higherBetter) {
+        ahead = mine > opp;
+      } else {
+        ahead = mine < opp;
+      }
+      if (ahead) {
+        sym = '&gt;';
+        cmpCls = 'log-detail-cmp-better';
+      } else {
+        sym = '&lt;';
+        cmpCls = 'log-detail-cmp-worse';
+      }
+    }
+    var valHtml = '<span class="log-detail-stat-val">' + escapeHtml(String(mine)) + '</span>';
+    var cmpHtml = sym
+      ? (' <span class="log-detail-cmp ' + cmpCls + '" aria-hidden="true">' + sym + '</span>')
+      : '';
+    return '<li><span class="log-detail-stat-label">' + escapeHtml(label) + ':</span> ' + valHtml + cmpHtml + '</li>';
+  }
+
   function renderTeamsSection(teamsWrap) {
     var teams = (teamsWrap && teamsWrap.teams) ? teamsWrap.teams : {};
+    var red = teams.Red || {};
+    var blue = teams.Blue || {};
     var html = '<div class="stats-summary log-detail-teams"><p class="stats-summary-title">Team summary</p><div class="log-detail-team-cols">';
-    ['Red', 'Blue'].forEach(function(team) {
-      var t = teams[team] || {};
-      var cls = team === 'Red' ? 'team-red' : 'team-blue';
-      html += '<div class="log-detail-team-col ' + cls + '"><h3>' + escapeHtml(team) + '</h3><ul class="log-detail-stat-list">' +
-        '<li>Kills: ' + escapeHtml(String(t.kills || 0)) + '</li>' +
-        '<li>Damage: ' + escapeHtml(String(t.dmg || 0)) + '</li>' +
-        '<li>Assists: ' + escapeHtml(String(t.assists || 0)) + '</li>' +
-        '<li>Ubers: ' + escapeHtml(String(t.ubers || 0)) + '</li>' +
-        '<li>Drops: ' + escapeHtml(String(t.drops || 0)) + '</li>' +
-        '<li>Caps: ' + escapeHtml(String(t.captures || 0)) + '</li>' +
-        (t.score != null ? ('<li>Score: ' + escapeHtml(String(t.score)) + '</li>') : '') +
-        '</ul></div>';
+    [
+      { name: 'Red', data: red, opp: blue, colCls: 'log-detail-team-col--red' },
+      { name: 'Blue', data: blue, opp: red, colCls: 'log-detail-team-col--blue' }
+    ].forEach(function(block) {
+      html += '<div class="log-detail-team-col ' + block.colCls + '"><h3>' + escapeHtml(block.name) + '</h3><ul class="log-detail-stat-list">';
+      TEAM_SUMMARY_STATS.forEach(function(spec) {
+        if (spec.optional && block.data[spec.key] == null) {
+          return;
+        }
+        html += teamSummaryStatLine(
+          spec.label,
+          block.data[spec.key],
+          block.opp[spec.key],
+          spec.higherBetter
+        );
+      });
+      html += '</ul></div>';
     });
     return html + '</div></div>';
   }
 
   function playerNameCell(p) {
-    var alias = escapeHtml(p.alias || '');
-    var href = p.profile_href || internalProfileHref(p.steamid64);
-    if (href) {
-      return '<a href="' + escapeAttr(href) + '">' + alias + '</a>';
+    if (typeof playerNameMenuHtml === 'function') {
+      return playerNameMenuHtml(p);
     }
-    return alias;
+    return escapeHtml(p.alias || '');
+  }
+
+  function primaryClassPlaytimeSec(p, classKey) {
+    var arr = p && p.class_playtime;
+    if (!arr || !Array.isArray(arr) || !classKey) return 0;
+    var key = String(classKey).toLowerCase();
+    for (var i = 0; i < arr.length; i++) {
+      var row = arr[i];
+      if (row && String(row.class).toLowerCase() === key) {
+        return Math.max(0, Math.floor(Number(row.seconds) || 0));
+      }
+    }
+    return 0;
+  }
+
+  function logDetailPlayerClassCell(p) {
+    var cls = p && p.primary_class;
+    if (!cls) return '\u2014';
+    var key = String(cls).toLowerCase();
+    var label = (typeof LOGMATCH_CLASS_LABEL !== 'undefined' && LOGMATCH_CLASS_LABEL[key])
+      ? LOGMATCH_CLASS_LABEL[key]
+      : (typeof profileClassDisplayName === 'function' ? profileClassDisplayName(cls) : String(cls));
+    var src = typeof LOGMATCH_CLASS_ICON !== 'undefined' ? LOGMATCH_CLASS_ICON[key] : '';
+    if (!src) {
+      return '<span>' + escapeHtml(label) + '</span>';
+    }
+    var sec = primaryClassPlaytimeSec(p, key);
+    var tip = label + ' \u2014 ' + (typeof formatClassTimeMinSec === 'function'
+      ? formatClassTimeMinSec(sec)
+      : String(sec) + 's') + ' (min:sec)';
+    return '<span class="log-detail-class-cell" role="img" aria-label="' + escapeAttr(tip) + '">' +
+      '<img class="logmatch-class-icon has-tooltip" src="' + escapeAttr(src) + '" alt="" width="22" height="22" loading="lazy" ' +
+      'data-tip="' + escapeAttr(tip) + '"></span>';
   }
 
   function renderPlayersSection(playersWrap) {
@@ -202,10 +340,11 @@
       var team = p.team || '';
       var teamCls = team === 'Red' ? 'team-red' : (team === 'Blue' ? 'team-blue' : '');
       var pc = p.primary_class || '';
-      return '<tr data-alias="' + escapeAttr((p.alias || '').toLowerCase()) + '" data-team="' + escapeAttr(team) + '" data-class="' + escapeAttr(pc) + '" data-kills="' + escapeAttr(p.kills) + '" data-assists="' + escapeAttr(p.assists) + '" data-deaths="' + escapeAttr(p.deaths) + '" data-dmg="' + escapeAttr(p.dmg) + '" data-dpm="' + escapeAttr(p.dpm) + '" data-ubers="' + escapeAttr(p.ubers) + '">' +
+      var classSort = (typeof profileClassDisplayName === 'function' ? profileClassDisplayName(pc) : pc).toLowerCase();
+      return '<tr data-alias="' + escapeAttr((p.alias || '').toLowerCase()) + '" data-team="' + escapeAttr(team) + '" data-class="' + escapeAttr(classSort) + '" data-kills="' + escapeAttr(p.kills) + '" data-assists="' + escapeAttr(p.assists) + '" data-deaths="' + escapeAttr(p.deaths) + '" data-dmg="' + escapeAttr(p.dmg) + '" data-dpm="' + escapeAttr(p.dpm) + '" data-ubers="' + escapeAttr(p.ubers) + '">' +
         '<td>' + playerNameCell(p) + '</td>' +
         '<td class="' + teamCls + '">' + escapeHtml(team) + '</td>' +
-        '<td>' + escapeHtml(pc) + '</td>' +
+        '<td class="log-detail-class-td">' + logDetailPlayerClassCell(p) + '</td>' +
         '<td>' + escapeHtml(p.kills) + '</td>' +
         '<td>' + escapeHtml(p.assists) + '</td>' +
         '<td>' + escapeHtml(p.deaths) + '</td>' +
@@ -215,7 +354,7 @@
         '</tr>';
     }).join('');
     return '<div class="stats-summary log-detail-players-wrap"><p class="stats-summary-title">Players</p>' +
-      '<div class="stats-table-wrap"><table class="stats-table js-log-detail-players"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div></div>';
+      '<div class="stats-table-wrap"><table class="stats-table js-log-detail-players js-log-detail-sortable"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div></div>';
   }
 
   function renderRoundsSection(roundsWrap) {
@@ -248,49 +387,148 @@
     return '<div class="stats-summary log-detail-rounds"><p class="stats-summary-title">Rounds</p>' + blocks + '</div>';
   }
 
+  function logDetailMedicStatsMod(team) {
+    if (team === 'Red') return 'log-detail-medic-stats--red';
+    if (team === 'Blue') return 'log-detail-medic-stats--blue';
+    return '';
+  }
+
+  function logDetailMedicCardMod(team) {
+    if (team === 'Red') return 'log-detail-medic-card--red';
+    if (team === 'Blue') return 'log-detail-medic-card--blue';
+    return '';
+  }
+
+  function logDetailMedicMetaLine(m) {
+    var mod = logDetailMedicStatsMod(m.team);
+    return '<p class="log-detail-medic-stats ' + mod + '">' +
+      '<span class="log-detail-stat-label">Healing done:</span> <span class="log-detail-stat-val">' + escapeHtml(String(m.healing_done || 0)) + '</span>' +
+      ' &middot; <span class="log-detail-stat-label">Ubers:</span> <span class="log-detail-stat-val">' + escapeHtml(String(m.ubers || 0)) + '</span>' +
+      ' &middot; <span class="log-detail-stat-label">Drops:</span> <span class="log-detail-stat-val">' + escapeHtml(String(m.drops || 0)) + '</span></p>';
+  }
+
+  function logDetailMedicPatientLine(p) {
+    var nameHtml = playerNameCell(p);
+    var iconHtml = logDetailPlayerClassCell(p);
+    var iconPart = iconHtml !== '\u2014'
+      ? ('<span class="log-detail-medic-patient-icon">' + iconHtml + '</span>')
+      : '';
+    return '<li class="log-detail-medic-patient">' + iconPart +
+      '<span class="log-detail-medic-patient-name">' + nameHtml + '</span>' +
+      '<span class="log-detail-medic-patient-heal"><span class="log-detail-stat-val">' + escapeHtml(String(p.healing)) + '</span> HP</span></li>';
+  }
+
   function renderMedicsSection(medicsWrap) {
     var medics = (medicsWrap && medicsWrap.medics) ? medicsWrap.medics : [];
     if (!medics.length) {
       return '<div class="stats-summary"><p class="stats-summary-title">Medics</p><p class="stats-summary-meta">No medic / healspread data.</p></div>';
     }
     var blocks = medics.map(function(m) {
-      var patients = (m.top_patients || []).map(function(p) {
-        return '<li>' + escapeHtml(p.alias || p.steamid3) + ': ' + escapeHtml(String(p.healing)) + ' HP</li>';
-      }).join('');
-      return '<div class="log-detail-medic-card"><h4>' + playerNameCell(m) + '</h4>' +
-        '<p class="stats-summary-meta">Healing done: ' + escapeHtml(String(m.healing_done || 0)) +
-        ' &middot; Ubers: ' + escapeHtml(String(m.ubers || 0)) +
-        ' &middot; Drops: ' + escapeHtml(String(m.drops || 0)) + '</p>' +
-        (patients ? ('<ul>' + patients + '</ul>') : '') + '</div>';
+      var patients = (m.top_patients || []).map(logDetailMedicPatientLine).join('');
+      return '<div class="log-detail-medic-card ' + logDetailMedicCardMod(m.team) + '">' +
+        '<h4>' + playerNameCell(m) + '</h4>' +
+        logDetailMedicMetaLine(m) +
+        (patients ? ('<ul class="log-detail-medic-patients">' + patients + '</ul>') : '') +
+        '</div>';
     }).join('');
     return '<div class="stats-summary log-detail-medics"><p class="stats-summary-title">Medics</p>' + blocks + '</div>';
+  }
+
+  var LOG_DETAIL_CLASS_ORDER = [
+    'scout', 'soldier', 'pyro', 'demoman', 'heavyweapons',
+    'engineer', 'medic', 'sniper', 'spy'
+  ];
+
+  function logDetailOrderedVictimClasses(victims) {
+    var list = victims || [];
+    var byKey = {};
+    list.forEach(function(vc) {
+      byKey[String(vc).toLowerCase()] = vc;
+    });
+    var order = (typeof KILLS_BY_CLASS_VICTIMS !== 'undefined' && KILLS_BY_CLASS_VICTIMS.length)
+      ? KILLS_BY_CLASS_VICTIMS.map(function(c) { return c.id; })
+      : LOG_DETAIL_CLASS_ORDER;
+    var out = [];
+    order.forEach(function(id) {
+      if (byKey[id] != null) {
+        out.push(byKey[id]);
+        delete byKey[id];
+      }
+    });
+    Object.keys(byKey).sort().forEach(function(k) {
+      out.push(byKey[k]);
+    });
+    return out;
+  }
+
+  function logDetailClassHeaderIcon(vc) {
+    var key = String(vc).toLowerCase();
+    var label = (typeof LOGMATCH_CLASS_LABEL !== 'undefined' && LOGMATCH_CLASS_LABEL[key])
+      ? LOGMATCH_CLASS_LABEL[key]
+      : key;
+    var src = typeof LOGMATCH_CLASS_ICON !== 'undefined' ? LOGMATCH_CLASS_ICON[key] : '';
+    if (!src) return escapeHtml(label);
+    return '<img class="logmatch-class-icon has-tooltip log-detail-matrix-class-icon" src="' + escapeAttr(src) + '" alt="" width="22" height="22" loading="lazy" data-tip="' + escapeAttr(label) + '">';
+  }
+
+  function logDetailMatrixKillerCell(k) {
+    var icon = logDetailPlayerClassCell(k);
+    var iconPart = icon !== '\u2014' ? ('<span class="log-detail-matrix-killer-icon">' + icon + '</span>') : '';
+    return '<span class="log-detail-matrix-killer-cell">' + iconPart +
+      '<span class="log-detail-matrix-killer-name">' + playerNameCell(k) + '</span></span>';
   }
 
   function renderClassMatrixSection(cm) {
     if (!cm || !(cm.killers && cm.killers.length)) {
       return '<div class="stats-summary"><p class="stats-summary-title">Class matrix</p><p class="stats-summary-meta">No class kill matrix in this log.</p></div>';
     }
-    var victims = cm.victim_classes || [];
-    var head = '<tr><th>Killer</th>' + victims.map(function(vc) {
-      return '<th>' + escapeHtml(vc) + '</th>';
+    var victims = logDetailOrderedVictimClasses(cm.victim_classes || []);
+    var head = '<tr><th class="sortable log-detail-matrix-killer-th" data-sort="alias">Killer</th>' + victims.map(function(vc) {
+      var key = String(vc).toLowerCase();
+      return '<th class="sortable log-detail-matrix-class-th" data-sort="vc_' + escapeAttr(key) + '">' + logDetailClassHeaderIcon(vc) + '</th>';
     }).join('') + '</tr>';
     var body = cm.killers.map(function(k) {
       var by = k.kills_by_victim_class || {};
-      return '<tr><td>' + playerNameCell(k) + '</td>' + victims.map(function(vc) {
-        var n = by[vc] != null ? by[vc] : (by[vc.toLowerCase()] != null ? by[vc.toLowerCase()] : 0);
-        return '<td>' + (n ? escapeHtml(String(n)) : '') + '</td>';
-      }).join('') + '</tr>';
+      var total = 0;
+      var dataAttrs = ' data-alias="' + escapeAttr((k.alias || '').toLowerCase()) + '"';
+      var cells = victims.map(function(vc) {
+        var key = String(vc).toLowerCase();
+        var n = by[vc] != null ? by[vc] : (by[key] != null ? by[key] : 0);
+        total += n;
+        dataAttrs += ' data-vc_' + escapeAttr(key) + '="' + escapeAttr(n) + '"';
+        return '<td class="log-detail-matrix-num">' + (n ? escapeHtml(String(n)) : '') + '</td>';
+      }).join('');
+      dataAttrs += ' data-total="' + escapeAttr(total) + '"';
+      return '<tr' + dataAttrs + '><td class="log-detail-matrix-killer-td">' + logDetailMatrixKillerCell(k) + '</td>' + cells + '</tr>';
     }).join('');
     return '<div class="stats-summary log-detail-matrix"><p class="stats-summary-title">Class matrix (kills by victim class)</p>' +
-      '<div class="stats-table-wrap"><table class="stats-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div></div>';
+      '<div class="stats-table-wrap"><table class="stats-table js-log-detail-matrix js-log-detail-sortable"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div></div>';
+  }
+
+  function logDetailPlayerLabelCell(p, opts) {
+    opts = opts || {};
+    var icon = logDetailPlayerClassCell(p);
+    var iconPart = icon !== '\u2014'
+      ? ('<span class="' + (opts.iconCls || 'log-detail-player-icon') + '">' + icon + '</span>')
+      : '';
+    var nameInner = opts.useProfileLink !== false
+      ? (typeof playerNameMenuHtml === 'function'
+        ? playerNameMenuHtml(p, { extraClass: opts.nameCls || '' })
+        : playerNameCell(p))
+      : escapeHtml(p.alias || '');
+    return '<span class="log-detail-player-label-cell">' + iconPart + nameInner + '</span>';
   }
 
   function renderChatSection(chat) {
     var messages = (chat && chat.messages) ? chat.messages : [];
     if (!messages.length) return '<p class="stats-summary-meta">No chat in this log.</p>';
     var lines = messages.map(function(msg) {
-      var teamCls = msg.team === 'Red' ? 'team-red' : (msg.team === 'Blue' ? 'team-blue' : '');
-      return '<div class="log-detail-chat-line ' + teamCls + '"><strong>' + escapeHtml(msg.alias || '') + ':</strong> ' + escapeHtml(msg.msg || '') + '</div>';
+      var label = logDetailPlayerLabelCell(msg, {
+        iconCls: 'log-detail-chat-icon',
+        nameCls: 'log-detail-chat-alias'
+      });
+      return '<div class="log-detail-chat-line">' + label +
+        '<span class="log-detail-chat-msg">: ' + escapeHtml(msg.msg || '') + '</span></div>';
     }).join('');
     var note = chat.truncated ? '<p class="stats-summary-meta">Chat list truncated.</p>' : '';
     return note + '<div class="log-detail-chat">' + lines + '</div>';
@@ -300,9 +538,11 @@
     var list = (ksWrap && ksWrap.killstreaks) ? ksWrap.killstreaks : [];
     if (!list.length) return '<p class="stats-summary-meta">No killstreak records.</p>';
     var rows = list.map(function(k) {
-      return '<tr><td>' + escapeHtml(k.alias || '') + '</td><td>' + escapeHtml(String(k.streak || 0)) + '</td></tr>';
+      return '<tr><td class="log-detail-ks-player-td">' +
+        logDetailPlayerLabelCell(k, { iconCls: 'log-detail-ks-icon', nameCls: 'log-detail-ks-name' }) +
+        '</td><td class="log-detail-ks-streak">' + escapeHtml(String(k.streak || 0)) + '</td></tr>';
     }).join('');
-    return '<div class="stats-table-wrap"><table class="stats-table"><thead><tr><th>Player</th><th>Streak</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    return '<div class="stats-table-wrap"><table class="stats-table log-detail-killstreaks"><thead><tr><th>Player</th><th>Streak</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   }
 
   function renderRawSection(raw) {

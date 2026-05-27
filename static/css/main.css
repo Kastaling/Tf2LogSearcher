@@ -86,12 +86,12 @@
     [data-theme="dark"] h2 { color: #6eb5c0; }
     a, a:visited { color: var(--link); }
     /* Explicit button text color so it stays visible in Vivaldi/browser dark mode */
-    button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn), input[type="submit"], input[type="button"], input[type="reset"], .back-button, .js-chat-subscribe {
+    button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn):not(.player-name-menu-btn), input[type="submit"], input[type="button"], input[type="reset"], .back-button, .js-chat-subscribe {
       background-color: var(--accent);
       border-color: var(--accent);
       color: #fff;
     }
-    button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn):hover, input[type="submit"]:hover, input[type="button"]:hover, input[type="reset"]:hover, .back-button:hover, .js-chat-subscribe:hover {
+    button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn):not(.player-name-menu-btn):hover, input[type="submit"]:hover, input[type="button"]:hover, input[type="reset"]:hover, .back-button:hover, .js-chat-subscribe:hover {
       background-color: var(--accent-hover);
       border-color: var(--accent-hover);
       color: #fff;
@@ -110,7 +110,7 @@
     a.back-button:visited:hover {
       color: var(--accent-text);
     }
-    [data-theme="dark"] button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn), [data-theme="dark"] input[type="submit"], [data-theme="dark"] input[type="button"], [data-theme="dark"] input[type="reset"], [data-theme="dark"] .back-button, [data-theme="dark"] .js-chat-subscribe {
+    [data-theme="dark"] button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn):not(.player-name-menu-btn), [data-theme="dark"] input[type="submit"], [data-theme="dark"] input[type="button"], [data-theme="dark"] input[type="reset"], [data-theme="dark"] .back-button, [data-theme="dark"] .js-chat-subscribe {
       color: #1a1a1a;
     }
     [data-theme="dark"] a.back-button,
@@ -118,7 +118,7 @@
     [data-theme="dark"] a.back-button:visited {
       color: #1a1a1a;
     }
-    [data-theme="dark"] button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn):hover, [data-theme="dark"] input[type="submit"]:hover, [data-theme="dark"] input[type="button"]:hover, [data-theme="dark"] input[type="reset"]:hover, [data-theme="dark"] .back-button:hover, [data-theme="dark"] .js-chat-subscribe:hover {
+    [data-theme="dark"] button:not(.theme-toggle):not(.home-reset-all-btn):not(.profile-word-cloud-item):not(.stats-trend-btn):not(.profile-copy-link-btn):not(.player-name-menu-btn):hover, [data-theme="dark"] input[type="submit"]:hover, [data-theme="dark"] input[type="button"]:hover, [data-theme="dark"] input[type="reset"]:hover, [data-theme="dark"] .back-button:hover, [data-theme="dark"] .js-chat-subscribe:hover {
       color: #1a1a1a;
     }
     [data-theme="dark"] a.back-button:hover,
@@ -1530,6 +1530,58 @@
       word-break: break-word;
       white-space: pre-line;
     }
+    /* Inline player names: team-colored text, not accent buttons (click opens profile menu). */
+    .player-name-menu-btn {
+      display: inline;
+      background: none;
+      border: none;
+      border-radius: 0;
+      box-shadow: none;
+      padding: 0;
+      margin: 0;
+      font: inherit;
+      font-weight: inherit;
+      line-height: inherit;
+      text-align: inherit;
+      text-decoration: none;
+      color: inherit;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      vertical-align: baseline;
+    }
+    .player-name-menu-btn:hover,
+    .player-name-menu-btn:focus-visible {
+      text-decoration: none;
+      opacity: 0.88;
+      outline: none;
+    }
+    .player-profile-menu {
+      position: fixed;
+      z-index: 3100;
+      min-width: 12rem;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--standard-border-radius, 5px);
+      padding: 0.25rem 0;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+    }
+    .player-profile-menu-item {
+      display: block;
+      padding: 0.45rem 0.75rem;
+      font-size: 0.9rem;
+      text-decoration: none;
+      color: var(--text);
+    }
+    .player-profile-menu-item:hover,
+    .player-profile-menu-item:focus-visible {
+      background: var(--table-hover, rgba(255, 255, 255, 0.06));
+      outline: none;
+    }
+    .player-profile-menu-item[aria-disabled="true"] {
+      display: none;
+    }
     .webhook-subscribe {
       margin-bottom: 1rem;
       padding: 0.75rem;
@@ -1731,12 +1783,75 @@
       .log-detail-team-cols { grid-template-columns: 1fr; }
     }
     .log-detail-team-col h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+    .log-detail-team-col--red h3 { color: #c44; }
+    .log-detail-team-col--blue h3 { color: #48c; }
+    [data-theme="dark"] .log-detail-team-col--red h3 { color: #f88; }
+    [data-theme="dark"] .log-detail-team-col--blue h3 { color: #8cf; }
     .log-detail-stat-list {
       list-style: none;
       padding: 0;
       margin: 0;
     }
     .log-detail-stat-list li { padding: 0.15rem 0; }
+    .log-detail-team-col--red .log-detail-stat-label { color: #c44; }
+    .log-detail-team-col--blue .log-detail-stat-label { color: #48c; }
+    [data-theme="dark"] .log-detail-team-col--red .log-detail-stat-label { color: #f88; }
+    [data-theme="dark"] .log-detail-team-col--blue .log-detail-stat-label { color: #8cf; }
+    .log-detail-team-col--red .log-detail-stat-val,
+    .log-detail-team-col--blue .log-detail-stat-val {
+      color: #fff;
+      font-weight: 600;
+    }
+    [data-theme="light"] .log-detail-team-col--red .log-detail-stat-val,
+    [data-theme="light"] .log-detail-team-col--blue .log-detail-stat-val {
+      color: var(--text, #1a1a1a);
+    }
+    .log-detail-cmp {
+      font-weight: 700;
+      margin-left: 0.15rem;
+    }
+    .log-detail-cmp-better { color: #3dbb6d; }
+    .log-detail-cmp-worse { color: #e05555; }
+    .log-detail-cmp-tie { color: var(--text-muted, #888); }
+    [data-theme="dark"] .log-detail-cmp-better { color: #5bd485; }
+    [data-theme="dark"] .log-detail-cmp-worse { color: #f07070; }
+    [data-theme="dark"] .log-detail-cmp-tie { color: var(--text-muted, #aaa); }
+    .log-detail-class-td {
+      text-align: center;
+      width: 2.75rem;
+    }
+    .log-detail-class-cell {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .log-detail-matrix-class-th {
+      text-align: center;
+      vertical-align: bottom;
+      padding: 0.35rem 0.25rem;
+      min-width: 2.5rem;
+    }
+    .log-detail-matrix-class-icon {
+      display: block;
+      margin: 0 auto;
+    }
+    .log-detail-matrix-killer-th { min-width: 8rem; }
+    .log-detail-matrix-killer-cell {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+    }
+    .log-detail-matrix-killer-icon { display: inline-flex; flex-shrink: 0; }
+    .log-detail-matrix-killer-name .player-name-menu-btn.team-red,
+    .log-detail-matrix-killer-name .player-name-plain.team-red { color: #c44; }
+    .log-detail-matrix-killer-name .player-name-menu-btn.team-blue,
+    .log-detail-matrix-killer-name .player-name-plain.team-blue { color: #48c; }
+    [data-theme="dark"] .log-detail-matrix-killer-name .player-name-menu-btn.team-red,
+    [data-theme="dark"] .log-detail-matrix-killer-name .player-name-plain.team-red { color: #f88; }
+    [data-theme="dark"] .log-detail-matrix-killer-name .player-name-menu-btn.team-blue,
+    [data-theme="dark"] .log-detail-matrix-killer-name .player-name-plain.team-blue { color: #8cf; }
+    .log-detail-matrix-num { text-align: center; }
     .log-detail-round { margin: 0.35rem 0; }
     .log-detail-events {
       font-size: 0.9rem;
@@ -1750,17 +1865,104 @@
       padding: 0.5rem 0.75rem;
       margin-bottom: 0.5rem;
     }
+    .log-detail-medic-card--red { border-left: 3px solid #c44; }
+    .log-detail-medic-card--blue { border-left: 3px solid #48c; }
+    [data-theme="dark"] .log-detail-medic-card--red { border-left-color: #f88; }
+    [data-theme="dark"] .log-detail-medic-card--blue { border-left-color: #8cf; }
     .log-detail-medic-card h4 { margin: 0 0 0.35rem; font-size: 1rem; }
+    .log-detail-medic-card h4 .player-name-menu-btn.team-red,
+    .log-detail-medic-card h4 .player-name-plain.team-red { color: #c44; }
+    .log-detail-medic-card h4 .player-name-menu-btn.team-blue,
+    .log-detail-medic-card h4 .player-name-plain.team-blue { color: #48c; }
+    [data-theme="dark"] .log-detail-medic-card h4 .player-name-menu-btn.team-red,
+    [data-theme="dark"] .log-detail-medic-card h4 .player-name-plain.team-red { color: #f88; }
+    [data-theme="dark"] .log-detail-medic-card h4 .player-name-menu-btn.team-blue,
+    [data-theme="dark"] .log-detail-medic-card h4 .player-name-plain.team-blue { color: #8cf; }
+    .log-detail-medic-stats { margin: 0 0 0.4rem; font-size: 0.9rem; }
+    .log-detail-medic-stats--red .log-detail-stat-label { color: #c44; }
+    .log-detail-medic-stats--blue .log-detail-stat-label { color: #48c; }
+    [data-theme="dark"] .log-detail-medic-stats--red .log-detail-stat-label { color: #f88; }
+    [data-theme="dark"] .log-detail-medic-stats--blue .log-detail-stat-label { color: #8cf; }
+    .log-detail-medic-patients {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .log-detail-medic-patient {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+      padding: 0.2rem 0;
+    }
+    .log-detail-medic-patient-icon {
+      display: inline-flex;
+      flex-shrink: 0;
+    }
+    .log-detail-medic-patient-name { flex: 1 1 auto; min-width: 0; }
+    .log-detail-medic-patient-name .player-name-menu-btn.team-red,
+    .log-detail-medic-patient-name .player-name-plain.team-red { color: #c44; }
+    .log-detail-medic-patient-name .player-name-menu-btn.team-blue,
+    .log-detail-medic-patient-name .player-name-plain.team-blue { color: #48c; }
+    [data-theme="dark"] .log-detail-medic-patient-name .player-name-menu-btn.team-red,
+    [data-theme="dark"] .log-detail-medic-patient-name .player-name-plain.team-red { color: #f88; }
+    [data-theme="dark"] .log-detail-medic-patient-name .player-name-menu-btn.team-blue,
+    [data-theme="dark"] .log-detail-medic-patient-name .player-name-plain.team-blue { color: #8cf; }
+    .log-detail-medic-patient-heal {
+      flex-shrink: 0;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+    .log-detail-medic-patient-heal .log-detail-stat-val { color: #fff; font-weight: 600; }
+    [data-theme="light"] .log-detail-medic-patient-heal .log-detail-stat-val {
+      color: var(--text, #1a1a1a);
+    }
     .log-detail-chat {
       max-height: 24rem;
       overflow-y: auto;
       font-size: 0.92rem;
     }
-    .log-detail-chat-line { padding: 0.2rem 0; }
+    .log-detail-chat-line {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+      padding: 0.2rem 0;
+    }
+    .log-detail-player-label-cell {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+    }
+    .log-detail-chat-icon { display: inline-flex; flex-shrink: 0; }
+    .log-detail-chat-alias.player-name-menu-btn,
+    .log-detail-chat-alias.player-name-plain { font-weight: 600; }
+    .log-detail-chat-alias.team-red { color: #c44; }
+    .log-detail-chat-alias.team-blue { color: #48c; }
+    [data-theme="dark"] .log-detail-chat-alias.team-red { color: #f88; }
+    [data-theme="dark"] .log-detail-chat-alias.team-blue { color: #8cf; }
+    .log-detail-chat-msg { color: var(--text, #e8e8e8); }
+    .log-detail-ks-player-td { min-width: 8rem; }
+    .log-detail-ks-name.team-red { color: #c44; }
+    .log-detail-ks-name.team-blue { color: #48c; }
+    [data-theme="dark"] .log-detail-ks-name.team-red { color: #f88; }
+    [data-theme="dark"] .log-detail-ks-name.team-blue { color: #8cf; }
+    .log-detail-ks-streak { font-weight: 600; }
     details.log-detail-collapsible > summary {
       cursor: pointer;
       font-weight: 600;
     }
+    .tf2ls-log-detail-page .stats-table .player-name-menu-btn.team-red,
+    .tf2ls-log-detail-page .stats-table .player-name-plain.team-red { color: #c44; }
+    .tf2ls-log-detail-page .stats-table .player-name-menu-btn.team-blue,
+    .tf2ls-log-detail-page .stats-table .player-name-plain.team-blue { color: #48c; }
+    [data-theme="dark"] .tf2ls-log-detail-page .stats-table .player-name-menu-btn.team-red,
+    [data-theme="dark"] .tf2ls-log-detail-page .stats-table .player-name-plain.team-red { color: #f88; }
+    [data-theme="dark"] .tf2ls-log-detail-page .stats-table .player-name-menu-btn.team-blue,
+    [data-theme="dark"] .tf2ls-log-detail-page .stats-table .player-name-plain.team-blue { color: #8cf; }
+    .log-detail-medic-patient-name .player-name-menu-btn,
+    .log-detail-medic-patient-name .player-name-plain { font-weight: 600; }
     .team-red { color: #c44; }
     .team-blue { color: #48c; }
     [data-theme="dark"] .team-red { color: #f88; }

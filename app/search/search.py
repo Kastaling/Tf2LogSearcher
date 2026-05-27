@@ -52,6 +52,19 @@ _LOGMATCH_CLASS_TYPES: frozenset[str] = frozenset({
     "spy",
 })
 
+# Standard TF2 class order (logs.tf UI / class matrix columns).
+LOGMATCH_CLASS_ORDER: tuple[str, ...] = (
+    "scout",
+    "soldier",
+    "pyro",
+    "demoman",
+    "heavyweapons",
+    "engineer",
+    "medic",
+    "sniper",
+    "spy",
+)
+
 # Default "all classes" when the stats API receives an empty class list (sorted for stable cache keys).
 STATS_SEARCH_DEFAULT_CLASSES: tuple[str, ...] = tuple(sorted(_LOGMATCH_CLASS_TYPES))
 
@@ -3272,6 +3285,8 @@ def _profile_fetch_favorite_words(
             "pct": pct,
             "latest_log_id": latest_lid,
             "peak_log_id": peak_lid,
+            "latest_log_url": log_url_for_id(latest_lid) if latest_lid > 0 else "",
+            "peak_log_url": log_url_for_id(peak_lid) if peak_lid > 0 else "",
         })
         if len(out) >= _PROFILE_FAVORITE_WORDS_LIMIT:
             break
@@ -4028,6 +4043,20 @@ def _split_profile_class_rows(
     return main, other
 
 
+def _profile_peak_with_log_url(peak: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Attach mode-aware ``log_url`` to profile peak dicts (class kills, heal spread, etc.)."""
+    if not peak:
+        return peak
+    lid = peak.get("log_id")
+    try:
+        log_id = int(lid)
+    except (TypeError, ValueError):
+        return peak
+    if log_id <= 0:
+        return peak
+    return {**peak, "log_url": log_url_for_id(log_id)}
+
+
 def _profile_healspread_partner_peaks(
     conn: sqlite3.Connection,
     *,
@@ -4104,23 +4133,23 @@ def _profile_healspread_partner_peaks(
         if th_id is not None:
             dur_i = int(th_dur) if th_dur is not None else None
             hpm_here = round(th_amt * 60.0 / dur_i, 2) if dur_i and dur_i > 0 else None
-            peak_total = {
+            peak_total = _profile_peak_with_log_url({
                 "log_id": int(th_id),
                 "healing": th_amt,
                 "duration_secs": dur_i,
                 "heals_per_min": hpm_here,
-            }
+            })
         peak_hpm: dict[str, Any] | None = None
         if hpm_id is not None:
             ha = int(hpm_amt_r or 0)
             hd = int(hpm_dur_r) if hpm_dur_r is not None else 0
             hv = round(ha * 60.0 / hd, 2) if hd > 0 else None
-            peak_hpm = {
+            peak_hpm = _profile_peak_with_log_url({
                 "log_id": int(hpm_id),
                 "healing": ha,
                 "duration_secs": hd if hd > 0 else None,
                 "heals_per_min": hv,
-            }
+            })
         out[pid] = {"peak_total_heal": peak_total, "peak_heals_per_min": peak_hpm}
     return out
 
@@ -4191,23 +4220,23 @@ def _profile_classkills_peaks(
         if tk_id is not None:
             dur_i = int(tk_dur) if tk_dur is not None else None
             kpm_here = round(tk_amt * 60.0 / dur_i, 2) if dur_i and dur_i > 0 else None
-            peak_total = {
+            peak_total = _profile_peak_with_log_url({
                 "log_id": int(tk_id),
                 "kills": tk_amt,
                 "duration_secs": dur_i,
                 "kills_per_min": kpm_here,
-            }
+            })
         peak_kpm: dict[str, Any] | None = None
         if kpm_id is not None:
             ka = int(kpm_amt_r or 0)
             kd = int(kpm_dur_r) if kpm_dur_r is not None else 0
             kv = round(ka * 60.0 / kd, 2) if kd > 0 else None
-            peak_kpm = {
+            peak_kpm = _profile_peak_with_log_url({
                 "log_id": int(kpm_id),
                 "kills": ka,
                 "duration_secs": kd if kd > 0 else None,
                 "kills_per_min": kv,
-            }
+            })
         out[vc] = {"peak_total_kills": peak_total, "peak_kills_per_min": peak_kpm}
     return out
 
@@ -4364,8 +4393,10 @@ def player_profile(
             lr = conn.execute(ll_sql, (sid, *filter_params)).fetchone()
             if fr and fr[0] is not None:
                 overview["first_log_id"] = int(fr[0])
+                overview["first_log_url"] = log_url_for_id(int(fr[0]))
             if lr and lr[0] is not None:
                 overview["last_log_id"] = int(lr[0])
+                overview["last_log_url"] = log_url_for_id(int(lr[0]))
 
         # --- Classes ---
         classes_sql = f"""

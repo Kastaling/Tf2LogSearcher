@@ -383,9 +383,33 @@ def test_profile_favorite_words_from_chat_db(populated_db, populated_chat_db, mo
 
     rows = _profile_fetch_favorite_words(PLAYER_A)
     assert rows[:3] == [
-        {"word": "nice", "count": 4, "pct": 40.0, "latest_log_id": 1002, "peak_log_id": 1001},
-        {"word": "gg", "count": 2, "pct": 20.0, "latest_log_id": 1001, "peak_log_id": 1001},
-        {"word": "lol", "count": 2, "pct": 20.0, "latest_log_id": 1001, "peak_log_id": 1001},
+        {
+            "word": "nice",
+            "count": 4,
+            "pct": 40.0,
+            "latest_log_id": 1002,
+            "peak_log_id": 1001,
+            "latest_log_url": "https://logs.tf/1002",
+            "peak_log_url": "https://logs.tf/1001",
+        },
+        {
+            "word": "gg",
+            "count": 2,
+            "pct": 20.0,
+            "latest_log_id": 1001,
+            "peak_log_id": 1001,
+            "latest_log_url": "https://logs.tf/1001",
+            "peak_log_url": "https://logs.tf/1001",
+        },
+        {
+            "word": "lol",
+            "count": 2,
+            "pct": 20.0,
+            "latest_log_id": 1001,
+            "peak_log_id": 1001,
+            "latest_log_url": "https://logs.tf/1001",
+            "peak_log_url": "https://logs.tf/1001",
+        },
     ]
     assert all(r["word"] not in {"the", "dont", "push", "uber"} for r in rows)
 
