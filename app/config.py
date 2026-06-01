@@ -137,6 +137,8 @@ RAW_EVENTS_DB_PATH = Path(_str("RAW_EVENTS_DB_PATH", "./downloader_state/raw_eve
 # Feature flags
 DOWNLOAD_JSON_ENABLED = _str("DOWNLOAD_JSON_ENABLED", "1") == "1"
 DOWNLOAD_RAW_ENABLED = _str("DOWNLOAD_RAW_ENABLED", "1") == "1"
+# Log detail kill/death/uber map overlays (off until bounds.json + UI ship; see map_overviews.py).
+LOG_DETAIL_HEATMAPS_ENABLED = _str("LOG_DETAIL_HEATMAPS_ENABLED", "0") == "1"
 
 # Storage stats visibility — disabled by default (set SHOW_STORAGE_STATS=1 to enable).
 # When off, /api/storage-stats returns {"enabled": false} and the frontend shows nothing.

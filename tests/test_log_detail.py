@@ -3,12 +3,18 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from app.log_detail import (
     SECTION_VERSIONS,
+    _build_chat,
+    _build_raw_availability,
+    _build_rounds,
+    _chat_elapsed_seconds_map,
+    _round_scores_from_json,
     compute_source_fingerprint,
     get_log_detail_payload,
     load_log_json,
@@ -74,6 +80,7 @@ def test_get_log_detail_payload_minimal_log(logs_dir, monkeypatch, tmp_path) -> 
     assert len(payload["rounds"]["rounds"]) == 1
     assert payload["chat"]["messages"][0]["msg"] == "gg"
     assert payload["killstreaks"]["killstreaks"][0]["streak"] == 5
+    assert payload["raw_availability"]["heatmaps_available"] is False
 
 
 def test_section_cache_invalidates_on_json_change(logs_dir, monkeypatch, tmp_path) -> None:
@@ -168,3 +175,70 @@ def test_load_log_json(logs_dir, monkeypatch) -> None:
         lt = load_log_json(77)
     assert lt is not None
     assert "players" in lt
+
+
+def test_build_rounds_team_score_and_medic_death_players() -> None:
+    """logs.tf v3 rounds use team.*.score (not top-level kills); medic_death uses steamid + killer."""
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    path = examples / "3752295.json"
+    if not path.is_file():
+        pytest.skip("example log missing")
+    logtext = json.loads(path.read_text(encoding="utf-8"))
+    out = _build_rounds(3752295, logtext)
+    rounds = out.get("rounds") or []
+    assert len(rounds) >= 2
+    assert rounds[0]["score"] == {"Red": 0, "Blue": 1}
+    assert rounds[1]["score"] == {"Red": 1, "Blue": 1}
+    ev0 = rounds[0]["events"][0]
+    assert ev0["type"] == "medic_death"
+    assert isinstance(ev0.get("killer"), dict)
+    assert ev0["killer"].get("alias")
+    assert isinstance(ev0.get("victim"), dict)
+    assert ev0["victim"].get("alias")
+    assert ev0["killer"]["alias"] != ev0["killer"]["steamid3"]
+
+
+def test_round_scores_db_fallback_when_json_has_no_scores() -> None:
+    rnd = {"duration": 90, "winner": "Red", "events": []}
+    db = {"red_kills": 12, "blue_kills": 8}
+    assert _round_scores_from_json(rnd, db) == {"Red": 12, "Blue": 8}
+
+
+def test_round_scores_prefers_team_score_over_db() -> None:
+    rnd = {
+        "team": {"Red": {"score": 2}, "Blue": {"score": 3}},
+    }
+    db = {"red_kills": 99, "blue_kills": 99}
+    assert _round_scores_from_json(rnd, db) == {"Red": 2, "Blue": 3}
+
+
+def test_chat_elapsed_secs_from_json_time() -> None:
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    path = examples / "12916.json"
+    if not path.is_file():
+        pytest.skip("example log missing")
+    logtext = json.loads(path.read_text(encoding="utf-8"))
+    elapsed = _chat_elapsed_seconds_map(12916, logtext)
+    assert elapsed.get(4) is not None
+    out = _build_chat(12916, logtext)
+    msgs = out.get("messages") or []
+    assert any(m.get("elapsed_secs") is not None for m in msgs)
+
+
+def test_raw_availability_heatmaps_gated(logs_dir, monkeypatch) -> None:
+    write_log(logs_dir, 5011, make_log(PLAYER_A_3, PLAYER_B_3))
+    with patch("app.log_detail.LOGS_DIR", logs_dir):
+        logtext = load_log_json(5011)
+    assert logtext is not None
+    with patch("app.log_detail.LOG_DETAIL_HEATMAPS_ENABLED", False):
+        raw = _build_raw_availability(5011, logtext)
+    assert raw["heatmaps_available"] is False
+
+
+def test_build_rounds_legacy_kills_block(logs_dir, monkeypatch) -> None:
+    logtext = make_log(PLAYER_A_3, PLAYER_B_3)
+    logtext["rounds"] = [
+        {"duration": 90, "winner": "Red", "kills": {"Red": 5, "Blue": 3}, "events": []},
+    ]
+    out = _build_rounds(1, logtext)
+    assert out["rounds"][0]["score"] == {"Red": 5, "Blue": 3}

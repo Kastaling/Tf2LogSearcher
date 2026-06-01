@@ -558,20 +558,50 @@ function playerTeamClass(team) {
   return '';
 }
 
+/** Strip zero-width / format chars often used for “invisible” Steam names. */
+function stripInvisibleNameChars(s) {
+  return String(s || '').replace(
+    /[\u200B-\u200D\u2060\uFEFF\u00AD\u180E\u034F\u061C\u17B4\u17B5\u115F\u1160\u3164]/g,
+    ''
+  );
+}
+
+/** Visible label for UI when alias is empty or only invisible characters. */
+function playerVisibleAlias(player) {
+  var raw = (player && player.alias) != null ? String(player.alias) : '';
+  var visible = stripInvisibleNameChars(raw).trim();
+  if (visible) return visible;
+  var sid3 = (player && player.steamid3) ? String(player.steamid3).trim() : '';
+  if (sid3 && !/^console$/i.test(sid3)) {
+    var m = sid3.match(/^\[U:1:(\d+)\]$/i);
+    if (m) return 'Player ' + m[1];
+    return sid3;
+  }
+  var sid64 = (player && player.steamid64) ? String(player.steamid64).trim() : '';
+  if (/^\d{17}$/.test(sid64)) return 'Player …' + sid64.slice(-4);
+  return 'Unknown';
+}
+
 /** Clickable player name (no underline); opens profile picker menu. */
 function playerNameMenuHtml(player, opts) {
   opts = opts || {};
-  var alias = escapeHtml((player && player.alias) || (player && player.steamid3) || '');
+  var rawAlias = (player && player.alias) != null ? String(player.alias) : '';
+  var label = playerVisibleAlias(player);
+  var alias = escapeHtml(label);
+  var titleAttr = (rawAlias && !stripInvisibleNameChars(rawAlias).trim())
+    ? ' title="Invisible-character name"'
+    : '';
   var teamCls = playerTeamClass(player && player.team);
   var extraCls = opts.extraClass ? String(opts.extraClass) : '';
   var links = playerProfileMenuLinks(player);
   if (!links.internal && !links.steam && !links.logsTf) {
-    return '<span class="player-name-plain ' + teamCls + (extraCls ? (' ' + extraCls) : '') + '">' + alias + '</span>';
+    return '<span class="player-name-plain ' + teamCls + (extraCls ? (' ' + extraCls) : '') + '"' + titleAttr + '>' + alias + '</span>';
   }
   return '<span role="button" tabindex="0" class="player-name-menu-btn ' + teamCls + (extraCls ? (' ' + extraCls) : '') + '"' +
     ' data-profile-internal="' + escapeAttr(links.internal) + '"' +
     ' data-profile-steam="' + escapeAttr(links.steam) + '"' +
     ' data-profile-logstf="' + escapeAttr(links.logsTf) + '"' +
+    titleAttr +
     ' aria-haspopup="menu" aria-expanded="false">' + alias + '</span>';
 }
 

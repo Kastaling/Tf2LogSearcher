@@ -15,12 +15,14 @@ from app.chat_db import connect_chat_db
 from app.config import (
     CHAT_DB_PATH,
     LOG_DETAIL_CACHE_DB_PATH,
+    LOG_DETAIL_HEATMAPS_ENABLED,
     LOGS_DIR,
     LOGS_TF_API_BASE,
     RAW_EVENTS_DB_PATH,
     RAW_LOGS_DIR,
     STATS_DB_PATH,
 )
+from app.map_overviews import log_detail_heatmaps_ready
 from app.log_detail_cache_db import (
     connect_log_detail_cache_db,
     get_cached_section,
@@ -42,12 +44,12 @@ SECTION_VERSIONS: dict[str, str] = {
     "summary": "summary:v2",
     "teams": "teams:v2",
     "players": "players:v2",
-    "rounds": "rounds:v2",
+    "rounds": "rounds:v3",
     "medics": "medics:v3",
     "class_matrix": "class_matrix:v4",
-    "chat": "chat:v3",
+    "chat": "chat:v4",
     "killstreaks": "killstreaks:v3",
-    "raw_availability": "raw_availability:v2",
+    "raw_availability": "raw_availability:v3",
 }
 
 _CHAT_MAX_MESSAGES = 800
@@ -346,7 +348,7 @@ def _simplify_round_event(ev: Any) -> dict[str, Any] | None:
     if not t:
         return None
     row: dict[str, Any] = {"type": t}
-    for key in ("killer", "victim", "medigun", "steamid", "team", "point", "assister"):
+    for key in ("medigun", "team", "point", "assister"):
         if ev.get(key) is not None:
             row[key] = str(ev[key])
     if ev.get("time") is not None:
@@ -355,6 +357,99 @@ def _simplify_round_event(ev: Any) -> dict[str, Any] | None:
         except (TypeError, ValueError):
             pass
     return row
+
+
+def _round_event_player(
+    steamid3: str,
+    players: dict[str, Any],
+    names: dict[str, Any],
+) -> dict[str, Any] | None:
+    sid3 = str(steamid3 or "").strip()
+    if not sid3:
+        return None
+    alias = names.get(sid3, sid3) if isinstance(names, dict) else sid3
+    stats = players.get(sid3) if isinstance(players, dict) else None
+    extra = _player_log_detail_fields(sid3, stats if isinstance(stats, dict) else None, names)
+    sid64 = steamid3_to_steamid64(sid3) or ""
+    return {
+        "steamid3": sid3,
+        "steamid64": sid64,
+        "alias": str(alias or sid3),
+        **extra,
+    }
+
+
+def _enrich_round_event(
+    ev: dict[str, Any],
+    players: dict[str, Any],
+    names: dict[str, Any],
+) -> dict[str, Any] | None:
+    row = _simplify_round_event(ev)
+    if not row:
+        return None
+    t = row.get("type")
+    if t == "medic_death":
+        killer_sid = ev.get("killer")
+        victim_sid = ev.get("steamid")
+        if killer_sid:
+            kp = _round_event_player(str(killer_sid), players, names)
+            if kp:
+                row["killer"] = kp
+        if victim_sid:
+            vp = _round_event_player(str(victim_sid), players, names)
+            if vp:
+                row["victim"] = vp
+        return row
+    for src_key, dst_key in (("killer", "killer"), ("victim", "victim")):
+        sid = ev.get(src_key)
+        if sid:
+            p = _round_event_player(str(sid), players, names)
+            if p:
+                row[dst_key] = p
+    actor_sid = ev.get("steamid")
+    if actor_sid and "killer" not in row and "victim" not in row:
+        p = _round_event_player(str(actor_sid), players, names)
+        if p:
+            row["player"] = p
+    return row
+
+
+def _round_scores_from_json(
+    rnd: dict[str, Any],
+    db: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """Round Red/Blue numbers for UI: v3 match score, legacy kills block, else stats.db."""
+    db_row = db if isinstance(db, dict) else {}
+    team_blk = rnd.get("team")
+    if isinstance(team_blk, dict):
+        red_score: int | None = None
+        blue_score: int | None = None
+        red_blk = team_blk.get("Red") if team_blk.get("Red") is not None else team_blk.get("red")
+        blue_blk = team_blk.get("Blue") if team_blk.get("Blue") is not None else team_blk.get("blue")
+        if isinstance(red_blk, dict) and red_blk.get("score") is not None:
+            try:
+                red_score = int(red_blk["score"])
+            except (TypeError, ValueError):
+                red_score = None
+        if isinstance(blue_blk, dict) and blue_blk.get("score") is not None:
+            try:
+                blue_score = int(blue_blk["score"])
+            except (TypeError, ValueError):
+                blue_score = None
+        if red_score is not None or blue_score is not None:
+            return {"Red": int(red_score or 0), "Blue": int(blue_score or 0)}
+    kills_blk = rnd.get("kills")
+    if isinstance(kills_blk, dict):
+        return {
+            "Red": int(kills_blk.get("Red") or kills_blk.get("red") or db_row.get("red_kills") or 0),
+            "Blue": int(kills_blk.get("Blue") or kills_blk.get("blue") or db_row.get("blue_kills") or 0),
+        }
+    if db_row.get("red_kills") is not None or db_row.get("blue_kills") is not None:
+        return {
+            "Red": int(db_row.get("red_kills") or 0),
+            "Blue": int(db_row.get("blue_kills") or 0),
+        }
+    return {"Red": 0, "Blue": 0}
 
 
 def _stats_round_rows(log_id: int) -> dict[int, dict[str, Any]]:
@@ -396,6 +491,8 @@ def _stats_round_rows(log_id: int) -> dict[int, dict[str, Any]]:
 def _build_rounds(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
     raw_rounds = logtext.get("rounds")
     db_by_idx = _stats_round_rows(log_id)
+    players = logtext.get("players") if isinstance(logtext.get("players"), dict) else {}
+    names = logtext.get("names") if isinstance(logtext.get("names"), dict) else {}
     rounds_out: list[dict[str, Any]] = []
     if not isinstance(raw_rounds, list):
         raw_rounds = []
@@ -411,11 +508,13 @@ def _build_rounds(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             dur_i = db.get("duration_secs")
         winner = rnd.get("winner") or db.get("winner")
-        kills_block = rnd.get("kills") if isinstance(rnd.get("kills"), dict) else {}
+        score = _round_scores_from_json(rnd, db)
         events_raw = rnd.get("events") if isinstance(rnd.get("events"), list) else []
         events = []
         for ev in events_raw[:_ROUND_EVENTS_MAX]:
-            row = _simplify_round_event(ev)
+            if not isinstance(ev, dict):
+                continue
+            row = _enrich_round_event(ev, players, names)
             if row:
                 events.append(row)
         rounds_out.append(
@@ -424,10 +523,8 @@ def _build_rounds(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
                 "duration_secs": dur_i,
                 "winner": str(winner) if winner else None,
                 "firstcap": rnd.get("firstcap"),
-                "kills": {
-                    "Red": int(kills_block.get("Red") or db.get("red_kills") or 0),
-                    "Blue": int(kills_block.get("Blue") or db.get("blue_kills") or 0),
-                },
+                "score": score,
+                "kills": score,
                 "first_blood_steamid64": db.get("first_blood_steamid64"),
                 "events": events,
                 "events_truncated": len(events_raw) > _ROUND_EVENTS_MAX,
@@ -559,11 +656,78 @@ def _build_class_matrix(logtext: dict[str, Any]) -> dict[str, Any]:
     return {"killers": killers, "victim_classes": victim_classes}
 
 
+def _match_start_ts(logtext: dict[str, Any]) -> int | None:
+    info = logtext.get("info")
+    if not isinstance(info, dict) or info.get("date") is None:
+        return None
+    try:
+        return int(info["date"])
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_raw_log_text(log_id: int) -> str | None:
+    zip_path = Path(RAW_LOGS_DIR) / f"log_{log_id}.log.zip"
+    if not zip_path.is_file():
+        return None
+    try:
+        from app.raw_zip_io import extract_log_content_from_zip
+
+        return extract_log_content_from_zip(zip_path.read_bytes())
+    except OSError:
+        return None
+
+
+def _chat_elapsed_seconds_map(log_id: int, logtext: dict[str, Any]) -> dict[int, float]:
+    """message_idx -> seconds from match start (or first chat timestamp / raw log)."""
+    chat = logtext.get("chat")
+    if not isinstance(chat, list):
+        chat = []
+    match_start = _match_start_ts(logtext)
+    out: dict[int, float] = {}
+    first_chat_ts: int | None = None
+    for i, entry in enumerate(chat):
+        if not isinstance(entry, dict) or entry.get("time") is None:
+            continue
+        try:
+            ts = int(entry["time"])
+        except (TypeError, ValueError):
+            continue
+        if match_start is not None:
+            out[i] = float(max(0, ts - match_start))
+        else:
+            if first_chat_ts is None:
+                first_chat_ts = ts
+            out[i] = float(max(0, ts - first_chat_ts))
+
+    raw_elapsed: list[float] = []
+    raw_text = _read_raw_log_text(log_id)
+    if raw_text:
+        try:
+            from app.raw_log_parser import parse_chat_say_elapsed_secs
+
+            raw_elapsed = parse_chat_say_elapsed_secs(raw_text)
+        except Exception:
+            raw_elapsed = []
+
+    raw_i = 0
+    for i, entry in enumerate(chat):
+        if not isinstance(entry, dict):
+            continue
+        if i in out:
+            continue
+        if raw_i < len(raw_elapsed):
+            out[i] = raw_elapsed[raw_i]
+        raw_i += 1
+    return out
+
+
 def _build_chat(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
     messages: list[dict[str, Any]] = []
     truncated = False
     players = logtext.get("players") if isinstance(logtext.get("players"), dict) else {}
     names = logtext.get("names") if isinstance(logtext.get("names"), dict) else {}
+    elapsed_by_idx = _chat_elapsed_seconds_map(log_id, logtext)
     chat_path = Path(CHAT_DB_PATH)
     if chat_path.is_file():
         try:
@@ -586,20 +750,22 @@ def _build_chat(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
                 rows = rows[:_CHAT_MAX_MESSAGES]
             for r in rows:
                 sid3 = str(r[1] or "")
+                msg_idx = int(r[0] or 0)
                 team = "Red" if r[4] == "Red" else ("Blue" if r[4] == "Blue" else None)
                 extra = _player_log_detail_fields(sid3, players.get(sid3), names)
                 if team is not None:
                     extra["team"] = team
-                messages.append(
-                    {
-                        "idx": int(r[0] or 0),
-                        "steamid3": sid3,
-                        "steamid64": str(r[2] or "") if r[2] else (steamid3_to_steamid64(sid3) or ""),
-                        "alias": str(r[3] or ""),
-                        "msg": str(r[5] or ""),
-                        **extra,
-                    }
-                )
+                row: dict[str, Any] = {
+                    "idx": msg_idx,
+                    "steamid3": sid3,
+                    "steamid64": str(r[2] or "") if r[2] else (steamid3_to_steamid64(sid3) or ""),
+                    "alias": str(r[3] or ""),
+                    "msg": str(r[5] or ""),
+                    **extra,
+                }
+                if msg_idx in elapsed_by_idx:
+                    row["elapsed_secs"] = round(elapsed_by_idx[msg_idx], 1)
+                messages.append(row)
         except sqlite3.Error as e:
             logger.debug("chat db read for log %s: %s", log_id, e)
 
@@ -615,16 +781,17 @@ def _build_chat(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
                 sid3 = str(entry.get("steamid") or "")
                 alias = str(entry.get("name") or names.get(sid3) or sid3)
                 extra = _player_log_detail_fields(sid3, players.get(sid3), names)
-                messages.append(
-                    {
-                        "idx": i,
-                        "steamid3": sid3,
-                        "steamid64": steamid3_to_steamid64(sid3) or "",
-                        "alias": alias,
-                        "msg": str(entry.get("msg") or ""),
-                        **extra,
-                    }
-                )
+                row = {
+                    "idx": i,
+                    "steamid3": sid3,
+                    "steamid64": steamid3_to_steamid64(sid3) or "",
+                    "alias": alias,
+                    "msg": str(entry.get("msg") or ""),
+                    **extra,
+                }
+                if i in elapsed_by_idx:
+                    row["elapsed_secs"] = round(elapsed_by_idx[i], 1)
+                messages.append(row)
 
     return {"messages": messages, "truncated": truncated, "count": len(messages)}
 
@@ -658,7 +825,7 @@ def _build_killstreaks(logtext: dict[str, Any]) -> dict[str, Any]:
     return {"killstreaks": out}
 
 
-def _build_raw_availability(log_id: int) -> dict[str, Any]:
+def _build_raw_availability(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
     zip_path = Path(RAW_LOGS_DIR) / f"log_{log_id}.log.zip"
     has_zip = zip_path.is_file()
     indexed = False
@@ -687,6 +854,14 @@ def _build_raw_availability(log_id: int) -> dict[str, Any]:
                 conn.close()
         except Exception:
             pass
+    info = logtext.get("info") if isinstance(logtext.get("info"), dict) else {}
+    map_name = str(info.get("map") or "")
+    heatmaps_available = log_detail_heatmaps_ready(
+        map_name,
+        feature_enabled=LOG_DETAIL_HEATMAPS_ENABLED,
+        events_indexed=indexed,
+        kill_count=kill_count,
+    )
     return {
         "raw_zip_on_disk": has_zip,
         "raw_zip_url": f"{LOGS_TF_API_BASE}/logs/log_{log_id}.log.zip",
@@ -695,7 +870,7 @@ def _build_raw_availability(log_id: int) -> dict[str, Any]:
         "kill_count": kill_count,
         "uber_count": uber_count,
         "capture_count": capture_count,
-        "heatmaps_available": False,
+        "heatmaps_available": heatmaps_available,
     }
 
 
@@ -708,7 +883,7 @@ _SECTION_BUILDERS: dict[str, Any] = {
     "class_matrix": lambda _lid, lt: _build_class_matrix(lt),
     "chat": lambda lid, lt: _build_chat(lid, lt),
     "killstreaks": lambda _lid, lt: _build_killstreaks(lt),
-    "raw_availability": lambda lid, _lt: _build_raw_availability(lid),
+    "raw_availability": lambda lid, lt: _build_raw_availability(lid, lt),
 }
 
 

@@ -1,0 +1,6 @@
+{
+  "_comment": "Hammer world axis-aligned bounds used with matching overview PNGs. Verify per map before production heatmaps. Keys match overview filename slugs (without .png).",
+  "process": { "xmin": -5222, "xmax": 5216, "ymin": -3146, "ymax": 3128 },
+  "product": { "xmin": -2859, "xmax": -171, "ymin": -3668, "ymax": 3776 },
+  "metalworks": { "xmin": -3034, "xmax": 3374, "ymin": -6699, "ymax": 4939 }
+}

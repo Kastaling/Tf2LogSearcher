@@ -203,6 +203,17 @@ Populate `player_names` from each log's `names` payload. This can run while the 
 docker compose run --rm downloader python -m app.player_names_backfill --batch-size 1000
 ```
 
+## Map overview bounds (heatmaps)
+
+Top-down PNGs live in `static/map_overviews/`. To align Hammer world coordinates with each image, build the calibration bundle (needs `stats.db` and indexed `raw_events.db`):
+
+```bash
+python tools/map_bounds_calibrator/build_bundle.py
+cd tools/map_bounds_calibrator/bundle && python -m http.server 8765
+```
+
+Open `http://localhost:8765/`, tune bounds per map, download `bounds.json`, and save it as `static/map_overviews/bounds.json`. See `tools/map_bounds_calibrator/README.md` and `static/map_overviews/README.md`.
+
 ## Tests
 
 Run the Python suite through the isolated Docker Compose test profile:

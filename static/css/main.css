@@ -1774,47 +1774,111 @@
     .log-detail-actions a {
       margin-right: 0.75rem;
     }
-    .log-detail-team-cols {
+    .log-detail-teams .log-detail-team-versus { width: 100%; }
+    .log-detail-team-versus-head {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1rem;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 0.75rem;
+      margin-bottom: 0.4rem;
+      font-size: 1rem;
+      font-weight: 600;
+      width: 100%;
     }
-    @media (max-width: 520px) {
-      .log-detail-team-cols { grid-template-columns: 1fr; }
+    .log-detail-team-versus-name--red {
+      grid-column: 1;
+      justify-self: start;
+      color: #c44;
     }
-    .log-detail-team-col h3 { margin: 0 0 0.5rem; font-size: 1rem; }
-    .log-detail-team-col--red h3 { color: #c44; }
-    .log-detail-team-col--blue h3 { color: #48c; }
-    [data-theme="dark"] .log-detail-team-col--red h3 { color: #f88; }
-    [data-theme="dark"] .log-detail-team-col--blue h3 { color: #8cf; }
+    .log-detail-team-versus-name--blue {
+      grid-column: 3;
+      justify-self: end;
+      color: #48c;
+    }
+    [data-theme="dark"] .log-detail-team-versus-name--red { color: #f88; }
+    [data-theme="dark"] .log-detail-team-versus-name--blue { color: #8cf; }
+    .log-detail-team-stat-list { list-style: none; padding: 0; margin: 0; width: 100%; }
+    .log-detail-team-stat-list .log-detail-team-stat-row {
+      padding: 0.35rem 0;
+      border-bottom: 1px solid rgba(128, 128, 128, 0.22);
+    }
+    .log-detail-team-stat-list .log-detail-team-stat-row:last-child {
+      border-bottom: none;
+      padding-bottom: 0.15rem;
+    }
+    .log-detail-team-stat-list .log-detail-team-stat-row:first-child {
+      padding-top: 0.15rem;
+    }
+    [data-theme="light"] .log-detail-team-stat-list .log-detail-team-stat-row {
+      border-bottom-color: rgba(0, 0, 0, 0.08);
+    }
+    .log-detail-team-stat-row {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 0.75rem;
+      width: 100%;
+    }
+    .log-detail-team-stat-red {
+      justify-self: start;
+      text-align: left;
+      min-width: 0;
+    }
+    .log-detail-team-stat-blue {
+      justify-self: end;
+      text-align: right;
+      min-width: 0;
+      width: 100%;
+    }
+    .log-detail-team-stat-mid {
+      justify-self: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.05rem;
+      min-width: 3.5rem;
+      padding: 0 0.25rem;
+    }
+    .log-detail-team-stat-mid .log-detail-stat-label {
+      color: var(--text-muted, #9aa3b2);
+      font-size: 0.88em;
+      font-weight: 500;
+      line-height: 1.2;
+    }
+    [data-theme="dark"] .log-detail-team-stat-mid .log-detail-stat-label { color: var(--text-muted, #aaa); }
+    .log-detail-team-stat-cmp {
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+    }
     .log-detail-stat-list {
       list-style: none;
       padding: 0;
       margin: 0;
     }
     .log-detail-stat-list li { padding: 0.15rem 0; }
-    .log-detail-team-col--red .log-detail-stat-label { color: #c44; }
-    .log-detail-team-col--blue .log-detail-stat-label { color: #48c; }
-    [data-theme="dark"] .log-detail-team-col--red .log-detail-stat-label { color: #f88; }
-    [data-theme="dark"] .log-detail-team-col--blue .log-detail-stat-label { color: #8cf; }
-    .log-detail-team-col--red .log-detail-stat-val,
-    .log-detail-team-col--blue .log-detail-stat-val {
-      color: #fff;
+    .log-detail-team-stat-red .log-detail-stat-val {
       font-weight: 600;
+      color: #c44;
+      font-variant-numeric: tabular-nums;
     }
-    [data-theme="light"] .log-detail-team-col--red .log-detail-stat-val,
-    [data-theme="light"] .log-detail-team-col--blue .log-detail-stat-val {
-      color: var(--text, #1a1a1a);
+    .log-detail-team-stat-blue .log-detail-stat-val {
+      font-weight: 600;
+      color: #48c;
+      font-variant-numeric: tabular-nums;
     }
-    .log-detail-cmp {
-      font-weight: 700;
-      margin-left: 0.15rem;
+    [data-theme="dark"] .log-detail-team-stat-red .log-detail-stat-val { color: #f88; }
+    [data-theme="dark"] .log-detail-team-stat-blue .log-detail-stat-val { color: #8cf; }
+    .log-detail-stat-val {
+      font-weight: 600;
+      color: var(--text, #e8e8e8);
     }
-    .log-detail-cmp-better { color: #3dbb6d; }
-    .log-detail-cmp-worse { color: #e05555; }
+    [data-theme="light"] .log-detail-stat-val { color: var(--text, #1a1a1a); }
+    .log-detail-cmp { font-weight: 700; }
+    .log-detail-cmp-red-wins,
+    .log-detail-cmp-blue-wins { color: #3dbb6d; }
     .log-detail-cmp-tie { color: var(--text-muted, #888); }
-    [data-theme="dark"] .log-detail-cmp-better { color: #5bd485; }
-    [data-theme="dark"] .log-detail-cmp-worse { color: #f07070; }
+    [data-theme="dark"] .log-detail-cmp-red-wins,
+    [data-theme="dark"] .log-detail-cmp-blue-wins { color: #5bd485; }
     [data-theme="dark"] .log-detail-cmp-tie { color: var(--text-muted, #aaa); }
     .log-detail-class-td {
       text-align: center;
@@ -1853,6 +1917,14 @@
     [data-theme="dark"] .log-detail-matrix-killer-name .player-name-plain.team-blue { color: #8cf; }
     .log-detail-matrix-num { text-align: center; }
     .log-detail-round { margin: 0.35rem 0; }
+    .log-detail-round summary.log-detail-round-summary { font-weight: 600; cursor: pointer; }
+    .log-detail-round summary.log-detail-round-summary.team-red { color: #c44; }
+    .log-detail-round summary.log-detail-round-summary.team-blue { color: #48c; }
+    [data-theme="dark"] .log-detail-round summary.log-detail-round-summary.team-red { color: #f88; }
+    [data-theme="dark"] .log-detail-round summary.log-detail-round-summary.team-blue { color: #8cf; }
+    .log-detail-round-ev-icon { display: inline-flex; flex-shrink: 0; vertical-align: middle; }
+    .log-detail-round-ev-name { display: inline; }
+    .log-detail-events li .log-detail-player-label-cell { display: inline-flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
     .log-detail-events {
       font-size: 0.9rem;
       margin: 0.5rem 0 0 1rem;
@@ -1934,6 +2006,14 @@
       align-items: center;
       gap: 0.35rem;
       flex-wrap: wrap;
+    }
+    .log-detail-chat-time {
+      flex-shrink: 0;
+      min-width: 2.5rem;
+      font-size: 0.82em;
+      font-variant-numeric: tabular-nums;
+      opacity: 0.42;
+      color: var(--text-muted, #9aa3b2);
     }
     .log-detail-chat-icon { display: inline-flex; flex-shrink: 0; }
     .log-detail-chat-alias.player-name-menu-btn,

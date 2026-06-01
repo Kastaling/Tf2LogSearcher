@@ -104,6 +104,8 @@ _RE_SPAWN = re.compile(
     _LOG_PREFIX + r'"(.+)" spawned as "([^"]+)"'
 )
 
+_RE_SAY = re.compile(_LOG_PREFIX + r'"(.+)" say "(.*)"\s*$')
+
 _RE_POS_GENERIC = re.compile(r'\(position "([^"]*)"\)')
 _RE_POS_ATTACKER = re.compile(r'\(attacker_position "([^"]*)"\)')
 _RE_POS_VICTIM = re.compile(r'\(victim_position "([^"]*)"\)')
@@ -168,6 +170,21 @@ class _KillRef:
         self.tick = tick
         self.victim_sid = victim_sid
         self.row = row
+
+
+def parse_chat_say_elapsed_secs(content: str) -> list[float]:
+    """Elapsed seconds from first log line timestamp for each ``say`` chat line, in order."""
+    first_ts: datetime | None = None
+    out: list[float] = []
+    for line in content.splitlines():
+        ts = _parse_ts(line)
+        if ts is None:
+            continue
+        if first_ts is None:
+            first_ts = ts
+        if _RE_SAY.search(line):
+            out.append(max(0.0, float((ts - first_ts).total_seconds())))
+    return out
 
 
 def parse_raw_log(log_id: int, content: str) -> dict[str, list[dict[str, Any]]]:

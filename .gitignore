@@ -31,3 +31,5 @@ maintenance_logs/
 static/items_game.txt
 static/tf_english.txt
 static/notification.mp3
+# Map bounds calibrator — generated bundle (see tools/map_bounds_calibrator/README.md)
+tools/
