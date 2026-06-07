@@ -183,7 +183,74 @@
    * Compact payload: { v, h: { o, x }, p: { o, c } }
    * h.x = hidden map; only keys that are true matter — we store list of hidden ids in x as object {id:true}
    */
-  function pack(home, profile) {
+  function defaultAccentId() {
+    return global.TF2LS_ACCENT_DEFAULT_ID || 'teal';
+  }
+
+  function sanitizeAccentId(id) {
+    if (typeof global.sanitizeAccentId === 'function') {
+      return global.sanitizeAccentId(id);
+    }
+    var key = String(id || '').trim().toLowerCase();
+    var presets = global.TF2LS_ACCENT_PRESETS;
+    return presets && presets[key] ? key : defaultAccentId();
+  }
+
+  function readAccentForExport() {
+    if (typeof global.readAccentPrefs !== 'function') return null;
+    if (typeof global.accentExportToken === 'function') {
+      return global.accentExportToken(global.readAccentPrefs());
+    }
+    var id = global.readAccentPrefs().id;
+    return id && id !== defaultAccentId() ? id : null;
+  }
+
+  function parseAccentHexToken(part) {
+    var t = String(part || '').trim().toLowerCase();
+    if (/^[0-9a-f]{6}$/.test(t)) return '#' + t;
+    if (/^#[0-9a-f]{6}$/.test(t)) return t;
+    if (/^[0-9a-f]{3}$/.test(t)) {
+      return '#' + t[0] + t[0] + t[1] + t[1] + t[2] + t[2];
+    }
+    return null;
+  }
+
+  /** Parse accent import token; works without accent-prefs.js (custom hex only). */
+  function parseAccentImportToken(val) {
+    if (typeof global.accentFromExportToken === 'function') {
+      return global.accentFromExportToken(val);
+    }
+    var raw = String(val || '').trim();
+    if (!raw) return null;
+    if (raw.indexOf('custom ') === 0) {
+      var parts = raw.slice(7).trim().split(/\s+/);
+      if (parts.length < 2) return null;
+      var light = parseAccentHexToken(parts[0]);
+      var dark = parseAccentHexToken(parts[1]);
+      if (!light || !dark) return null;
+      return {
+        id: 'custom',
+        custom: { light: light, dark: dark },
+      };
+    }
+    var id = sanitizeAccentId(raw);
+    if (id === defaultAccentId() && raw.toLowerCase() !== defaultAccentId()) {
+      return null;
+    }
+    return { id: id };
+  }
+
+  function packAccentField(token) {
+    if (!token) return null;
+    if (String(token).indexOf('custom ') === 0) {
+      var parts = String(token).slice(7).trim().split(/\s+/);
+      if (parts.length >= 2) return { c: [parts[0], parts[1]] };
+      return null;
+    }
+    return sanitizeAccentId(token);
+  }
+
+  function pack(home, profile, accentId) {
     var ho = sanitizeHomeOrder(home.order || []);
     var hh = sanitizeHomeHidden(home.hidden);
     var po = sanitizeProfileOrder(profile.order || []);
@@ -192,7 +259,11 @@
     HOME_ENDPOINT_IDS.forEach(function (id) {
       if (hh[id]) x[id] = true;
     });
-    return { v: LAYOUT_VERSION, h: { o: ho, x: x }, p: { o: po, c: pc ? 1 : 0 } };
+    var out = { v: LAYOUT_VERSION, h: { o: ho, x: x }, p: { o: po, c: pc ? 1 : 0 } };
+    var aid = accentId != null && accentId !== '' ? accentId : readAccentForExport();
+    var packedAccent = packAccentField(aid);
+    if (packedAccent) out.a = packedAccent;
+    return out;
   }
 
   function unpack(obj) {
@@ -202,6 +273,7 @@
     var out = {
       home: { order: HOME_ENDPOINT_IDS.slice(), hidden: {} },
       profile: { order: PROFILE_SECTION_IDS.slice(), collapseDefault: false },
+      accent: null,
     };
     var h = obj.h;
     if (h && typeof h === 'object') {
@@ -212,6 +284,11 @@
     if (p && typeof p === 'object') {
       if (Array.isArray(p.o)) out.profile.order = sanitizeProfileOrder(p.o);
       if (p.c === 1 || p.c === true) out.profile.collapseDefault = true;
+    }
+    if (obj.a && typeof obj.a === 'object' && Array.isArray(obj.a.c) && obj.a.c.length >= 2) {
+      out.accent = parseAccentImportToken('custom ' + obj.a.c[0] + ' ' + obj.a.c[1]);
+    } else if (typeof obj.a === 'string' && obj.a.trim()) {
+      out.accent = parseAccentImportToken(obj.a);
     }
     return out;
   }
@@ -254,6 +331,8 @@
       'profile.order ' + sanitizeProfileOrder(profile.order || []).join(','),
       'profile.collapse ' + (profile.collapseDefault ? '1' : '0'),
     ];
+    var accentToken = readAccentForExport();
+    if (accentToken) lines.push('accent ' + accentToken);
     return lines.join('\n');
   }
 
@@ -261,6 +340,7 @@
     if (!text || typeof text !== 'string') return null;
     var home = { order: HOME_ENDPOINT_IDS.slice(), hidden: {} };
     var profile = { order: PROFILE_SECTION_IDS.slice(), collapseDefault: false };
+    var accent = null;
     var lines = text.split(/\r?\n/);
     var okHeader = false;
     for (var i = 0; i < lines.length; i++) {
@@ -300,17 +380,33 @@
         );
       } else if (key === 'profile.collapse') {
         profile.collapseDefault = val === '1' || val.toLowerCase() === 'true';
+      } else if (key === 'accent') {
+        if (val) accent = parseAccentImportToken(val);
       }
     }
     if (!okHeader) return null;
-    return { home: home, profile: profile };
+    return { home: home, profile: profile, accent: accent };
+  }
+
+  function applyAccentPacked(accent) {
+    if (!accent || !accent.id) return true;
+    if (typeof global.writeAccentPrefs !== 'function') return true;
+    if (!global.writeAccentPrefs(accent)) return false;
+    if (typeof global.applyAccentPrefs === 'function' && typeof global.readAccentPrefs === 'function') {
+      global.applyAccentPrefs(global.readAccentPrefs());
+    }
+    if (typeof global.refreshAccentPickerUi === 'function') {
+      global.refreshAccentPickerUi();
+    }
+    return true;
   }
 
   function applyPacked(data) {
     if (!data || !data.home || !data.profile) return false;
     var homeOk = writeHomeToCookie(data.home);
     var profileOk = writeProfileToCookie(data.profile);
-    return homeOk && profileOk;
+    var accentOk = applyAccentPacked(data.accent);
+    return homeOk && profileOk && accentOk;
   }
 
   function consumeLayoutQueryParam() {

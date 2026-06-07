@@ -9,6 +9,12 @@ function setTheme(theme) {
   if (btn) { btn.textContent = theme === 'dark' ? '\u263C' : '\u263E'; btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'); }
   refreshStatsTrendChart();
   refreshProfileTrendChart();
+  if (typeof applyAccentPrefs === 'function' && typeof readAccentPrefs === 'function') {
+    applyAccentPrefs(readAccentPrefs());
+  }
+  if (typeof refreshAccentPickerUi === 'function') {
+    refreshAccentPickerUi();
+  }
 }
 (function initThemeToggle() {
   var btn = document.getElementById('themeToggle');
@@ -900,11 +906,20 @@ function restoreHomeForms() {
 
   function resetHomeBrowserSettings() {
     clearTf2lsCookie(HOME_LAYOUT_COOKIE);
+    if (typeof TF2LS_ACCENT_PREFS_COOKIE !== 'undefined') {
+      clearTf2lsCookie(TF2LS_ACCENT_PREFS_COOKIE);
+    }
     var defaults = { order: HOME_ENDPOINT_IDS.slice(), hidden: {} };
     applyHomeEndpointOrder(stack, defaults.order);
     applyHomeEndpointVisibility(stack, defaults.hidden);
     rebuildHomeLayoutSortList(ul, defaults);
     applyDefaultNotifyPrefsToHomePanel();
+    if (typeof applyDefaultAccentPrefs === 'function') {
+      applyDefaultAccentPrefs();
+    }
+    if (typeof refreshAccentPickerUi === 'function') {
+      refreshAccentPickerUi();
+    }
     clearLayoutSharePanelFields(homeLayoutDetails);
   }
 
@@ -917,6 +932,173 @@ function restoreHomeForms() {
       resetHomeBrowserSettings();
     });
   }
+})();
+
+/** Cookie-backed accent color (home page Browser settings). */
+function accentHexForTheme(prefs, theme) {
+  if (typeof accentColorForTheme === 'function') {
+    return accentColorForTheme(prefs, theme);
+  }
+  var presets = globalThis.TF2LS_ACCENT_PRESETS || {};
+  var defaultId = globalThis.TF2LS_ACCENT_DEFAULT_ID || 'teal';
+  var preset = presets[defaultId] || presets.teal;
+  if (preset && preset[theme]) return preset[theme].link;
+  return theme === 'dark' ? '#6eb5c0' : '#2e6c80';
+}
+
+function customAccentColorsFromPrefs(prefs) {
+  var customId = globalThis.TF2LS_ACCENT_CUSTOM_ID || 'custom';
+  if (prefs && prefs.id === customId && prefs.custom) {
+    return { light: prefs.custom.light, dark: prefs.custom.dark };
+  }
+  return {
+    light: accentHexForTheme(prefs, 'light'),
+    dark: accentHexForTheme(prefs, 'dark'),
+  };
+}
+
+function ensureCustomAccentMode() {
+  if (typeof readAccentPrefs !== 'function' || typeof writeAccentPrefs !== 'function') return false;
+  var customId = globalThis.TF2LS_ACCENT_CUSTOM_ID || 'custom';
+  var seed = readAccentPrefs();
+  if (seed.id === customId) return true;
+  return writeAccentPrefs({ id: customId, custom: customAccentColorsFromPrefs(seed) });
+}
+
+function refreshAccentPickerUi() {
+  var home = document.getElementById('homePage');
+  if (!home || typeof readAccentPrefs !== 'function') return;
+  var wrap = home.querySelector('.js-accent-preset-picks');
+  var panel = home.querySelector('.js-accent-custom-panel');
+  var picker = home.querySelector('.js-accent-color-picker');
+  var hexInput = home.querySelector('.js-accent-color-hex');
+  var themeLabel = home.querySelector('.js-accent-custom-theme-label');
+  var prefs = readAccentPrefs();
+  var dark = getTheme() === 'dark';
+  var themeKey = dark ? 'dark' : 'light';
+  var presets = globalThis.TF2LS_ACCENT_PRESETS || {};
+  var customId = globalThis.TF2LS_ACCENT_CUSTOM_ID || 'custom';
+  if (wrap) {
+    wrap.querySelectorAll('.browser-settings-accent-option').forEach(function(label) {
+      var input = label.querySelector('input[type="radio"]');
+      if (!input) return;
+      input.checked = prefs.id === customId
+        ? input.value === customId
+        : input.value === prefs.id;
+      var swatch = label.querySelector('.browser-settings-accent-swatch');
+      if (swatch && presets[input.value]) {
+        var link = presets[input.value][themeKey].link;
+        swatch.style.backgroundColor = link;
+      }
+    });
+  }
+  if (panel) {
+    panel.hidden = prefs.id !== customId;
+  }
+  if (themeLabel) {
+    themeLabel.textContent = 'Accent for ' + (dark ? 'dark' : 'light') + ' mode';
+  }
+  var currentHex = accentHexForTheme(prefs, themeKey);
+  if (picker && currentHex) picker.value = currentHex;
+  if (hexInput && currentHex) hexInput.value = currentHex;
+  var customSwatch = home.querySelector('.js-accent-custom-swatch');
+  if (customSwatch && currentHex) customSwatch.style.backgroundColor = currentHex;
+}
+
+function setAccentCustomStatus(message, isError) {
+  var home = document.getElementById('homePage');
+  if (!home) return;
+  var el = home.querySelector('.js-accent-custom-status');
+  if (!el) return;
+  el.textContent = message || '';
+  el.classList.toggle('is-error', !!isError);
+}
+
+function applyAccentCustomInput(rawHex) {
+  if (typeof writeAccentCustomForTheme !== 'function') return;
+  var themeKey = getTheme() === 'dark' ? 'dark' : 'light';
+  var result = writeAccentCustomForTheme(rawHex, themeKey);
+  if (!result.ok) {
+    setAccentCustomStatus(result.reason || 'Could not apply that color.', true);
+    refreshAccentPickerUi();
+    return;
+  }
+  setAccentCustomStatus(
+    result.adjusted ? 'Adjusted slightly for readability on the ' + themeKey + ' theme.' : '',
+    false
+  );
+  refreshAccentPickerUi();
+}
+
+(function initHomeAccentSettings() {
+  var home = document.getElementById('homePage');
+  if (!home) return;
+  var wrap = home.querySelector('.js-accent-preset-picks');
+  if (
+    !wrap
+    || !globalThis.TF2LS_ACCENT_PRESET_IDS
+    || typeof readAccentPrefs !== 'function'
+    || typeof writeAccentPrefs !== 'function'
+    || typeof applyAccentPrefs !== 'function'
+  ) return;
+  var presets = globalThis.TF2LS_ACCENT_PRESETS || {};
+  var ids = globalThis.TF2LS_ACCENT_PRESET_IDS;
+  var customId = globalThis.TF2LS_ACCENT_CUSTOM_ID || 'custom';
+  var dark = getTheme() === 'dark';
+  var themeKey = dark ? 'dark' : 'light';
+  var presetHtml = ids.map(function(id) {
+    var preset = presets[id];
+    if (!preset) return '';
+    var link = preset[themeKey].link;
+    var label = preset.label || id;
+    var defaultNote = id === globalThis.TF2LS_ACCENT_DEFAULT_ID ? ' (default)' : '';
+    return '<label class="browser-settings-accent-option">' +
+      '<input type="radio" name="tf2ls_accent" value="' + escapeAttr(id) + '">' +
+      '<span class="browser-settings-accent-swatch" style="background-color:' + escapeAttr(link) + '"></span>' +
+      '<span>' + escapeHtml(label + defaultNote) + '</span></label>';
+  }).join('');
+  wrap.innerHTML = presetHtml +
+    '<label class="browser-settings-accent-option">' +
+    '<input type="radio" name="tf2ls_accent" value="' + escapeAttr(customId) + '">' +
+    '<span class="browser-settings-accent-swatch js-accent-custom-swatch" style="background-color:' +
+    escapeAttr(accentHexForTheme(readAccentPrefs(), themeKey)) +
+    '"></span><span>Custom</span></label>';
+  wrap.addEventListener('change', function(ev) {
+    var input = ev.target;
+    if (!input || input.name !== 'tf2ls_accent' || input.type !== 'radio') return;
+    if (typeof writeAccentPrefs !== 'function' || typeof applyAccentPrefs !== 'function') return;
+    if (input.value === customId) {
+      var seed = readAccentPrefs();
+      if (!writeAccentPrefs({ id: customId, custom: customAccentColorsFromPrefs(seed) })) return;
+      applyAccentPrefs(readAccentPrefs());
+      setAccentCustomStatus('', false);
+      refreshAccentPickerUi();
+      var picker = home.querySelector('.js-accent-color-picker');
+      if (picker) picker.focus();
+      return;
+    }
+    if (!writeAccentPrefs(input.value)) return;
+    applyAccentPrefs(readAccentPrefs());
+    setAccentCustomStatus('', false);
+    refreshAccentPickerUi();
+  });
+  var picker = home.querySelector('.js-accent-color-picker');
+  if (picker) {
+    picker.addEventListener('input', function() {
+      if (!ensureCustomAccentMode()) return;
+      applyAccentCustomInput(picker.value);
+      var hexInput = home.querySelector('.js-accent-color-hex');
+      if (hexInput) hexInput.value = picker.value;
+    });
+  }
+  var hexInput = home.querySelector('.js-accent-color-hex');
+  if (hexInput) {
+    hexInput.addEventListener('change', function() {
+      if (!ensureCustomAccentMode()) return;
+      applyAccentCustomInput(hexInput.value);
+    });
+  }
+  refreshAccentPickerUi();
 })();
 
 /** Cookie-backed notification sound preference (home page settings panel). */

@@ -773,6 +773,14 @@ function profileHealspreadTableInnerHtml(rows, sortCol, sortDir) {
   return '<thead>' + thead + '</thead><tbody>' + tbody + '</tbody>';
 }
 
+function profileHealspreadSubCardHtml(label, tableClass, startOpen) {
+  var openAttr = startOpen !== false ? ' open' : '';
+  return '<details class="profile-healspread-sub"' + openAttr + '>' +
+    '<summary class="profile-healspread-sub-summary">' + escapeHtml(label) + '</summary>' +
+    '<div class="stats-table-wrap profile-heal-table-wrap">' +
+    '<table class="stats-table ' + escapeAttr(tableClass) + '"></table></div></details>';
+}
+
 function profileHealspreadEmptyTableInnerHtml() {
   var thead = '<tr>';
   PROFILE_HEALSPREAD_COLUMNS.forEach(function(c) {
@@ -1504,8 +1512,10 @@ function profileLayoutSettingsPanelHtml() {
     '<label class="profile-layout-collapse-opt"><input type="checkbox" class="js-profile-layout-collapse-default" /> <span>Collapse all sections below the summary by default when opening a profile</span></label>' +
     '<p class="stats-summary-meta">Drag to reorder sections (applies to profiles on this device):</p>' +
     '<ul class="profile-layout-sort-list js-profile-layout-sort-list" role="list" aria-label="Section order"></ul>' +
+    '<details class="profile-healspread-sub js-layout-share-details">' +
+    '<summary class="profile-healspread-sub-summary">Import/Export settings</summary>' +
     '<div class="layout-share-tools">' +
-    '<p class="stats-summary-meta">Import/export layout (saved in this browser). Text lists home section order/visibility and profile section order/collapse. Share links apply layout when opened.</p>' +
+    '<p class="stats-summary-meta">Import/export layout (saved in this browser). Text lists home section order/visibility, profile section order/collapse, and accent color when not default. Share links apply layout when opened.</p>' +
     '<textarea class="layout-share-text js-layout-share-text" rows="5" spellcheck="false" autocomplete="off" placeholder="tf2ls-layout-v1&#10;home.order ...&#10;... or paste a layout token from a link"></textarea>' +
     '<p class="layout-share-actions">' +
     '<button type="button" class="js-layout-share-import">Apply import</button> ' +
@@ -1514,7 +1524,7 @@ function profileLayoutSettingsPanelHtml() {
     '<button type="button" class="js-layout-share-link-home" title="Copies a link to the home page with your layout embedded. Use this when you only want to share your home/profile layout settings, not the current search or profile URL.">Copy link (home)</button>' +
     '</p>' +
     '<p class="layout-share-status js-layout-share-status stats-summary-meta" aria-live="polite"></p>' +
-    '</div>' +
+    '</div></details>' +
     '<p class="browser-settings-actions">' +
     '<button type="button" class="js-profile-layout-settings-reset">Reset profile layout to defaults</button>' +
     '</p>' +
@@ -1980,11 +1990,11 @@ function renderProfileResult(el, data, elapsedMs) {
   var hb = hs.healed_by || [];
   var healCard = '';
   if (ht.length || hb.length) {
-    healCard = '<div class="stats-summary profile-healspread-wrap"><p class="stats-summary-title">Heal spread</p><p class="stats-summary-meta">Per-log peaks use logs.tf match length when available. HP/min = healing in that log &divide; log duration. Click column headers to sort.</p><div class="profile-healspread-cols">' +
-      '<div class="profile-heal-col"><h3 class="stats-summary-title">Healed to</h3>' +
-      '<div class="stats-table-wrap profile-heal-table-wrap"><table class="stats-table js-profile-healspread-to"></table></div></div>' +
-      '<div class="profile-heal-col"><h3 class="stats-summary-title">Healed by</h3>' +
-      '<div class="stats-table-wrap profile-heal-table-wrap"><table class="stats-table js-profile-healspread-by"></table></div></div>' +
+    healCard = '<div class="stats-summary profile-healspread-wrap"><p class="stats-summary-title">Heal spread</p>' +
+      '<p class="stats-summary-meta">Per-log peaks use logs.tf match length when available. HP/min = healing in that log &divide; log duration. Click column headers to sort.</p>' +
+      '<div class="profile-healspread-stack">' +
+      profileHealspreadSubCardHtml('Healed to', 'js-profile-healspread-to') +
+      profileHealspreadSubCardHtml('Healed by', 'js-profile-healspread-by') +
       '</div></div>';
   }
 

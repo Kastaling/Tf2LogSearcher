@@ -306,7 +306,14 @@
   }
 
   function logDetailPlayerClassCell(p) {
-    var cls = p && p.primary_class;
+    if (!p) return '\u2014';
+    if (typeof logmatchClassIconsHtml === 'function') {
+      var multi = logmatchClassIconsHtml(p);
+      if (multi) {
+        return '<span class="log-detail-class-cell">' + multi + '</span>';
+      }
+    }
+    var cls = p.primary_class;
     if (!cls) return '\u2014';
     var key = String(cls).toLowerCase();
     var label = (typeof LOGMATCH_CLASS_LABEL !== 'undefined' && LOGMATCH_CLASS_LABEL[key])

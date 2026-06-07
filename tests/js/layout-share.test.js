@@ -188,6 +188,79 @@ describe('exportPlainText / importPlainText', () => {
     expect(imported.home.order).toEqual(reversed);
   });
 
+  test('importPlainText parses optional accent line', () => {
+    const accent = require('./setup-accent-prefs').loadAccentPrefs();
+    const { api, global: g } = loadLayoutShare();
+    g.accentFromExportToken = accent.accentFromExportToken;
+    g.sanitizeAccentId = accent.sanitizeAccentId;
+    g.TF2LS_ACCENT_PRESETS = accent.TF2LS_ACCENT_PRESETS;
+    g.TF2LS_ACCENT_DEFAULT_ID = accent.TF2LS_ACCENT_DEFAULT_ID;
+    const text = [
+      'tf2ls-layout-v1',
+      'home.order ' + HOME_IDS.join(','),
+      'home.hidden ',
+      'profile.order ' + PROFILE_IDS.join(','),
+      'profile.collapse 0',
+      'accent purple',
+    ].join('\n');
+    const imported = api.importPlainText(text);
+    expect(imported).not.toBeNull();
+    expect(imported.accent).toEqual({ id: 'purple' });
+  });
+
+  test('importPlainText parses custom accent line', () => {
+    const accent = require('./setup-accent-prefs').loadAccentPrefs();
+    const { api, global: g } = loadLayoutShare();
+    g.accentFromExportToken = accent.accentFromExportToken;
+    g.sanitizeAccentId = accent.sanitizeAccentId;
+    g.TF2LS_ACCENT_PRESETS = accent.TF2LS_ACCENT_PRESETS;
+    g.TF2LS_ACCENT_DEFAULT_ID = accent.TF2LS_ACCENT_DEFAULT_ID;
+    const text = [
+      'tf2ls-layout-v1',
+      'home.order ' + HOME_IDS.join(','),
+      'home.hidden ',
+      'profile.order ' + PROFILE_IDS.join(','),
+      'profile.collapse 0',
+      'accent custom 5b3f8c a78bfa',
+    ].join('\n');
+    const imported = api.importPlainText(text);
+    expect(imported.accent).toEqual({
+      id: 'custom',
+      custom: { light: '#5b3f8c', dark: '#a78bfa' },
+    });
+  });
+
+  test('importPlainText parses custom accent without accentFromExportToken', () => {
+    const { api } = loadLayoutShare();
+    const text = [
+      'tf2ls-layout-v1',
+      'home.order ' + HOME_IDS.join(','),
+      'home.hidden ',
+      'profile.order ' + PROFILE_IDS.join(','),
+      'profile.collapse 0',
+      'accent custom 5b3f8c a78bfa',
+    ].join('\n');
+    const imported = api.importPlainText(text);
+    expect(imported.accent).toEqual({
+      id: 'custom',
+      custom: { light: '#5b3f8c', dark: '#a78bfa' },
+    });
+  });
+
+  test('importPlainText skips invalid custom accent token', () => {
+    const { api } = loadLayoutShare();
+    const text = [
+      'tf2ls-layout-v1',
+      'home.order ' + HOME_IDS.join(','),
+      'home.hidden ',
+      'profile.order ' + PROFILE_IDS.join(','),
+      'profile.collapse 0',
+      'accent custom not-a-color',
+    ].join('\n');
+    const imported = api.importPlainText(text);
+    expect(imported.accent).toBeNull();
+  });
+
   test('importPlainText with hidden sections', () => {
     const { api } = loadLayoutShare();
     const text = [

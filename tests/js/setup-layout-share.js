@@ -72,6 +72,7 @@ function loadLayoutShare({ cookieJar = '', locationHref = 'http://localhost/', l
 
   return {
     api: mockGlobal.tf2lsLayoutShare,
+    global: mockGlobal,
     doc: docMock,
     historyMock: mockGlobal.history,
     setLocationHref: (href) => { mockGlobal.location.href = href; },

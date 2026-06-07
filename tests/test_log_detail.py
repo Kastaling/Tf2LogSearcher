@@ -225,6 +225,26 @@ def test_chat_elapsed_secs_from_json_time() -> None:
     assert any(m.get("elapsed_secs") is not None for m in msgs)
 
 
+def test_players_include_all_class_playtime(logs_dir, monkeypatch, tmp_path) -> None:
+    logtext = make_log(PLAYER_A_3, PLAYER_B_3)
+    logtext["players"][PLAYER_A_3]["class_stats"] = [
+        {"type": "soldier", "total_time": 400, "kills": 5, "deaths": 2, "dmg": 2000},
+        {"type": "pyro", "total_time": 27, "kills": 0, "deaths": 1, "dmg": 50},
+    ]
+    write_log(logs_dir, 5012, logtext)
+    cache_db = tmp_path / "log_detail_cache.db"
+    with (
+        patch("app.log_detail.LOGS_DIR", logs_dir),
+        patch("app.log_detail.LOG_DETAIL_CACHE_DB_PATH", cache_db),
+    ):
+        payload = get_log_detail_payload(5012)
+    players = {p["steamid3"]: p for p in payload["players"]["players"]}
+    cpt = players[PLAYER_A_3]["class_playtime"]
+    assert len(cpt) == 2
+    assert cpt[0]["class"] == "soldier"
+    assert cpt[1]["class"] == "pyro"
+
+
 def test_raw_availability_heatmaps_gated(logs_dir, monkeypatch) -> None:
     write_log(logs_dir, 5011, make_log(PLAYER_A_3, PLAYER_B_3))
     with patch("app.log_detail.LOGS_DIR", logs_dir):
