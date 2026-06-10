@@ -1,14 +1,21 @@
 var THEME_KEY = 'tf2log-theme';
 
 function getTheme() { return document.documentElement.getAttribute('data-theme') || 'light'; }
-function setTheme(theme) {
-  theme = theme === 'dark' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', theme);
-  try { localStorage.setItem(THEME_KEY, theme); } catch (e) {}
+
+function syncThemeToggleButton(theme) {
   var btn = document.getElementById('themeToggle');
-  if (btn) { btn.textContent = theme === 'dark' ? '\u263C' : '\u263E'; btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'); }
-  refreshStatsTrendChart();
-  refreshProfileTrendChart();
+  if (!btn) return;
+  btn.textContent = theme === 'dark' ? '\u263C' : '\u263E';
+  btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+}
+
+function refreshThemeDependentUi() {
+  if (typeof refreshStatsTrendChart === 'function') {
+    refreshStatsTrendChart();
+  }
+  if (typeof refreshProfileTrendChart === 'function') {
+    refreshProfileTrendChart();
+  }
   if (typeof applyAccentPrefs === 'function' && typeof readAccentPrefs === 'function') {
     applyAccentPrefs(readAccentPrefs());
   }
@@ -16,11 +23,30 @@ function setTheme(theme) {
     refreshAccentPickerUi();
   }
 }
+
+function setTheme(theme, options) {
+  options = options || {};
+  theme = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', theme);
+  if (options.persist) {
+    try { localStorage.setItem(THEME_KEY, theme); } catch (e) {}
+  }
+  syncThemeToggleButton(theme);
+  refreshThemeDependentUi();
+}
+
+globalThis.tf2lsOnThemeApplied = function tf2lsOnThemeApplied() {
+  syncThemeToggleButton(getTheme());
+  refreshThemeDependentUi();
+};
+
 (function initThemeToggle() {
   var btn = document.getElementById('themeToggle');
   if (!btn) return;
-  setTheme(getTheme());
-  btn.addEventListener('click', function() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); });
+  setTheme(getTheme(), { persist: false });
+  btn.addEventListener('click', function() {
+    setTheme(getTheme() === 'dark' ? 'light' : 'dark', { persist: true });
+  });
 })();
 
 function formData(form) {

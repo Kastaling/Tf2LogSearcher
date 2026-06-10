@@ -985,6 +985,74 @@ function parseStatsDate(str) {
   if (ampm === 'AM' && hour === 12) hour = 0;
   return new Date(y, m - 1, d, hour, min, sec).getTime();
 }
+
+/** UTC calendar date from profile/stats trend row label (e.g. "02:32:33 AM UTC 05/16/2022"). */
+function trendRowDateToIsoDate(dateStr) {
+  if (!dateStr || typeof dateStr !== 'string') return '';
+  var parts = dateStr.trim().split(/\s+/);
+  if (parts.length < 4) return '';
+  var datePart = parts[parts.length - 1];
+  var bits = datePart.split('/');
+  if (bits.length !== 3) return '';
+  var m = parseInt(bits[0], 10);
+  var d = parseInt(bits[1], 10);
+  var y = parseInt(bits[2], 10);
+  if (!Number.isFinite(m) || !Number.isFinite(d) || !Number.isFinite(y)) return '';
+  if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1970 || y > 2100) return '';
+  return String(y) + '-' + (m < 10 ? '0' : '') + m + '-' + (d < 10 ? '0' : '') + d;
+}
+
+function orderedTrendIsoDatesFromIndices(sortedRows, idxA, idxB) {
+  if (!Array.isArray(sortedRows) || sortedRows.length < 1) return null;
+  var n = sortedRows.length;
+  var a = Math.max(0, Math.min(n - 1, Math.floor(Number(idxA))));
+  var b = Math.max(0, Math.min(n - 1, Math.floor(Number(idxB))));
+  var lo = Math.min(a, b);
+  var hi = Math.max(a, b);
+  var from = trendRowDateToIsoDate(sortedRows[lo] && sortedRows[lo].date);
+  var to = trendRowDateToIsoDate(sortedRows[hi] && sortedRows[hi].date);
+  if (!from || !to) return null;
+  if (from > to) {
+    var tmp = from;
+    from = to;
+    to = tmp;
+  }
+  return { date_from: from, date_to: to };
+}
+
+/** Same-origin Stats Sorter deep link for a trend chart index range. */
+function buildTrendStatsSorterResultsUrl(steamid, sortedRows, idxA, idxB, options) {
+  options = options || {};
+  var dates = orderedTrendIsoDatesFromIndices(sortedRows, idxA, idxB);
+  if (!dates) return null;
+  var sid = steamid != null ? String(steamid).trim() : '';
+  if (!sid) return null;
+  if (sid.length > 2048) sid = sid.slice(0, 2048);
+  var params = new URLSearchParams();
+  params.set('mode', 'stats');
+  params.set('steamid', sid);
+  params.set('date_from', dates.date_from);
+  params.set('date_to', dates.date_to);
+  var gm = options.gamemode != null ? String(options.gamemode).trim() : '';
+  if (typeof sanitizeGamemodeInput === 'function') {
+    params.set('gamemode', sanitizeGamemodeInput(gm || 'hl'));
+  } else {
+    var validGm = { hl: 1, '7s': 1, '6s': 1, ud: 1, '4s': 1 };
+    params.set('gamemode', validGm[gm] ? gm : 'hl');
+  }
+  var mq = options.map_query != null ? String(options.map_query).trim() : '';
+  if (typeof sanitizeMapQueryInput === 'function') {
+    mq = sanitizeMapQueryInput(mq);
+  } else if (mq.length > 100) {
+    mq = mq.slice(0, 100);
+  }
+  if (mq) params.set('map_query', mq);
+  if (options.classes && typeof sanitizeClassesCsv === 'function') {
+    var cl = sanitizeClassesCsv(options.classes);
+    if (cl) params.set('classes', cl);
+  }
+  return '/results?' + params.toString();
+}
 function escapeCsvField(value) {
   if (value == null) return '';
   var s = String(value);

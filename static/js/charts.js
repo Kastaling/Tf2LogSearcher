@@ -1,5 +1,7 @@
 var statsTrendState = { chart: null };
 var profileTrendState = { chart: null };
+var trendRangeSelectPluginInstalled = false;
+var trendRangeSelectPluginId = 'tf2lsTrendRangeSelect';
 var statsTrendHost = null;
 var statsTrendRows = null;
 var statsTrendMetric = 'dpm';
@@ -206,15 +208,264 @@ function destroyTrendState(state) {
   state.chart = null;
 }
 
+function detachTrendRangeSelect(host) {
+  if (host) {
+    syncTrendRangeStatus(host, null, null, null);
+    host.classList.remove('trend-range-selecting');
+    host._trendRangeSorted = null;
+  }
+  if (!host || !host._trendRangeSelectHandlers) return;
+  var h = host._trendRangeSelectHandlers;
+  var wrap = host.querySelector('.stats-trend-canvas-wrap');
+  var canvas = wrap && wrap.querySelector('.js-trend-chart-canvas');
+  if (canvas) canvas.removeEventListener('click', h.onClick);
+  if (wrap) wrap.removeEventListener('mousemove', h.onMove);
+  if (h.onKey) document.removeEventListener('keydown', h.onKey);
+  host._trendRangeSelectHandlers = null;
+}
+
+function ensureTrendRangeStatusEl(host) {
+  if (!host) return null;
+  var el = host.querySelector('.js-trend-range-status');
+  if (el) return el;
+  el = document.createElement('p');
+  el.className = 'stats-trend-range-status js-trend-range-status';
+  el.setAttribute('aria-live', 'polite');
+  el.hidden = true;
+  var note = host.querySelector('.stats-trend-note');
+  if (note) host.insertBefore(el, note);
+  else host.appendChild(el);
+  return el;
+}
+
+function trendRowLabelAt(sorted, idx) {
+  if (!sorted || idx == null || idx < 0 || idx >= sorted.length) return '';
+  var r = sorted[idx];
+  var d = r && r.date != null ? String(r.date).trim() : '';
+  if (d.length > 96) d = d.slice(0, 96);
+  return d;
+}
+
+function syncTrendRangeStatus(host, sorted, anchor, hover) {
+  var el = ensureTrendRangeStatusEl(host);
+  if (!el) return;
+  if (anchor == null) {
+    el.hidden = true;
+    el.textContent = '';
+    el.removeAttribute('aria-label');
+    return;
+  }
+  var end = hover != null ? hover : anchor;
+  var leftLabel = trendRowLabelAt(sorted, anchor);
+  var rightLabel = trendRowLabelAt(sorted, end);
+  if (!leftLabel && !rightLabel) {
+    el.hidden = true;
+    el.textContent = '';
+    el.removeAttribute('aria-label');
+    return;
+  }
+  el.hidden = false;
+  el.textContent = '';
+  var leftSpan = document.createElement('span');
+  leftSpan.className = 'stats-trend-range-status-start';
+  leftSpan.textContent = leftLabel || '\u2014';
+  var midSpan = document.createElement('span');
+  midSpan.className = 'stats-trend-range-status-mid';
+  midSpan.setAttribute('aria-hidden', 'true');
+  midSpan.textContent = '\u2192';
+  var rightSpan = document.createElement('span');
+  rightSpan.className = 'stats-trend-range-status-end';
+  rightSpan.textContent = rightLabel || '\u2014';
+  el.appendChild(leftSpan);
+  el.appendChild(midSpan);
+  el.appendChild(rightSpan);
+  el.setAttribute('aria-label', 'Selected range from ' + leftLabel + ' to ' + rightLabel);
+}
+
+function setTrendChartTooltipEnabled(chart, enabled) {
+  if (!chart || !chart.options || !chart.options.plugins) return;
+  if (!chart.options.plugins.tooltip) chart.options.plugins.tooltip = {};
+  chart.options.plugins.tooltip.enabled = !!enabled;
+}
+
+function clearTrendRangeSelection(host, chart) {
+  if (chart && chart.$tf2lsRangeSelect) {
+    chart.$tf2lsRangeSelect.anchor = null;
+    chart.$tf2lsRangeSelect.hover = null;
+  }
+  if (host) {
+    host.classList.remove('trend-range-selecting');
+    syncTrendRangeStatus(host, null, null, null);
+  }
+  setTrendChartTooltipEnabled(chart, true);
+  if (chart) chart.update('none');
+}
+
+function getTrendIndexFromEvent(chart, evt) {
+  if (!chart || !evt) return -1;
+  var pts = chart.getElementsAtEventForMode(evt, 'index', { intersect: false }, false);
+  if (pts && pts.length) return pts[0].index;
+  var xScale = chart.scales && chart.scales.x;
+  if (!xScale || !chart.canvas) return -1;
+  var rect = chart.canvas.getBoundingClientRect();
+  var x = evt.clientX - rect.left;
+  var n = (chart.data && chart.data.labels) ? chart.data.labels.length : 0;
+  if (n < 1) return -1;
+  var best = 0;
+  var bestD = Infinity;
+  for (var i = 0; i < n; i++) {
+    var px = xScale.getPixelForValue(i);
+    if (!Number.isFinite(px)) continue;
+    var d = Math.abs(px - x);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function ensureTrendRangeSelectPlugin() {
+  if (trendRangeSelectPluginInstalled || !window.Chart || !window.Chart.register) return;
+  window.Chart.register({
+    id: trendRangeSelectPluginId,
+    afterDraw: function(chart) {
+      var sel = chart.$tf2lsRangeSelect;
+      if (!sel || sel.anchor == null) return;
+      var end = sel.hover != null ? sel.hover : sel.anchor;
+      var lo = Math.min(sel.anchor, end);
+      var hi = Math.max(sel.anchor, end);
+      var xScale = chart.scales.x;
+      if (!xScale || !chart.chartArea) return;
+      var x1 = xScale.getPixelForValue(lo);
+      var x2 = xScale.getPixelForValue(hi);
+      if (!Number.isFinite(x1) || !Number.isFinite(x2)) return;
+      var left = Math.min(x1, x2);
+      var width = Math.max(2, Math.abs(x2 - x1));
+      var top = chart.chartArea.top;
+      var height = chart.chartArea.bottom - chart.chartArea.top;
+      var ctx = chart.ctx;
+      var link = colorVar('--link') || '#2e6c80';
+      ctx.save();
+      ctx.fillStyle = withAlpha(link, 0.18);
+      ctx.fillRect(left, top, width, height);
+      ctx.strokeStyle = withAlpha(link, 0.55);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x1, top);
+      ctx.lineTo(x1, chart.chartArea.bottom);
+      if (hi !== lo) {
+        ctx.moveTo(x2, top);
+        ctx.lineTo(x2, chart.chartArea.bottom);
+      }
+      ctx.stroke();
+      var text = colorVar('--text') || '#222';
+      var anchorIdx = sel.anchor;
+      var hoverIdx = sel.hover != null ? sel.hover : sel.anchor;
+      var labels = chart.data && chart.data.labels;
+      var anchorLabel = labels && labels[anchorIdx] != null ? String(labels[anchorIdx]) : '';
+      var hoverLabel = labels && labels[hoverIdx] != null ? String(labels[hoverIdx]) : '';
+      if (anchorLabel.length > 48) anchorLabel = anchorLabel.slice(0, 48) + '\u2026';
+      if (hoverLabel.length > 48) hoverLabel = hoverLabel.slice(0, 48) + '\u2026';
+      var fontSize = 11;
+      ctx.font = fontSize + 'px sans-serif';
+      ctx.fillStyle = text;
+      ctx.textBaseline = 'bottom';
+      var pad = 4;
+      var y = chart.chartArea.bottom - 2;
+      if (anchorLabel) {
+        ctx.textAlign = 'left';
+        var ax = xScale.getPixelForValue(anchorIdx);
+        if (Number.isFinite(ax)) {
+          var axClamped = Math.max(chart.chartArea.left + pad, Math.min(ax, chart.chartArea.right - pad));
+          ctx.fillText(anchorLabel, axClamped, y);
+        }
+      }
+      if (hoverLabel && hoverIdx !== anchorIdx) {
+        ctx.textAlign = 'right';
+        var hx = xScale.getPixelForValue(hoverIdx);
+        if (Number.isFinite(hx)) {
+          var hxClamped = Math.max(chart.chartArea.left + pad, Math.min(hx, chart.chartArea.right - pad));
+          ctx.fillText(hoverLabel, hxClamped, y);
+        }
+      }
+      ctx.restore();
+    }
+  });
+  trendRangeSelectPluginInstalled = true;
+}
+
+function bindTrendRangeSelect(state, host, sorted, drillCtx) {
+  detachTrendRangeSelect(host);
+  if (!host || !drillCtx || !drillCtx.steamid || !sorted || sorted.length < 2) return;
+  var wrap = host.querySelector('.stats-trend-canvas-wrap');
+  var canvas = wrap && wrap.querySelector('.js-trend-chart-canvas');
+  if (!wrap || !canvas) return;
+  host._trendRangeSorted = sorted;
+
+  var onClick = function(evt) {
+    var chart = state.chart;
+    if (!chart) return;
+    var idx = getTrendIndexFromEvent(chart, evt);
+    if (idx < 0) return;
+    if (!chart.$tf2lsRangeSelect) chart.$tf2lsRangeSelect = { anchor: null, hover: null };
+    var sel = chart.$tf2lsRangeSelect;
+    if (sel.anchor == null) {
+      sel.anchor = idx;
+      sel.hover = idx;
+      host.classList.add('trend-range-selecting');
+      setTrendChartTooltipEnabled(chart, false);
+      syncTrendRangeStatus(host, sorted, sel.anchor, sel.hover);
+      chart.update('none');
+      return;
+    }
+    var url = typeof buildTrendStatsSorterResultsUrl === 'function'
+      ? buildTrendStatsSorterResultsUrl(drillCtx.steamid, sorted, sel.anchor, idx, {
+        gamemode: drillCtx.gamemode,
+        map_query: drillCtx.map_query,
+        classes: drillCtx.classes
+      })
+      : null;
+    clearTrendRangeSelection(host, chart);
+    if (url && url.indexOf('/results?') === 0) {
+      window.location.href = url;
+    }
+  };
+
+  var onMove = function(evt) {
+    var chart = state.chart;
+    if (!chart || !chart.$tf2lsRangeSelect || chart.$tf2lsRangeSelect.anchor == null) return;
+    var idx = getTrendIndexFromEvent(chart, evt);
+    if (idx < 0 || chart.$tf2lsRangeSelect.hover === idx) return;
+    chart.$tf2lsRangeSelect.hover = idx;
+    syncTrendRangeStatus(host, sorted, chart.$tf2lsRangeSelect.anchor, idx);
+    chart.update('none');
+  };
+
+  var onKey = function(evt) {
+    if (evt.key !== 'Escape') return;
+    var chart = state.chart;
+    if (!chart || !chart.$tf2lsRangeSelect || chart.$tf2lsRangeSelect.anchor == null) return;
+    clearTrendRangeSelection(host, chart);
+  };
+
+  canvas.addEventListener('click', onClick);
+  wrap.addEventListener('mousemove', onMove);
+  document.addEventListener('keydown', onKey);
+  host._trendRangeSelectHandlers = { onClick: onClick, onMove: onMove, onKey: onKey };
+}
+
 function destroyStatsTrendChart() {
+  if (statsTrendHost) detachTrendRangeSelect(statsTrendHost);
   destroyTrendState(statsTrendState);
 }
 
 function destroyProfileTrendChart() {
+  if (profileTrendHost) detachTrendRangeSelect(profileTrendHost);
   destroyTrendState(profileTrendState);
 }
 
-function renderTrendChartShared(state, host, rows, metric, shouldAbort) {
+function renderTrendChartShared(state, host, rows, metric, shouldAbort, drillCtx) {
   if (!host || !rows || rows.length < 2) return;
   var canvas = host.querySelector('.js-trend-chart-canvas');
   if (!canvas) return;
@@ -223,9 +474,11 @@ function renderTrendChartShared(state, host, rows, metric, shouldAbort) {
   var yBounds = computeTrendYBounds(sorted, metric);
   var datasets = buildTrendDatasets(sorted, metric, yBounds);
   var showLegend = metric === 'kpair';
+  detachTrendRangeSelect(host);
   destroyTrendState(state);
   loadChartJsIfNeeded().then(function() {
     if (shouldAbort()) return;
+    ensureTrendRangeSelectPlugin();
     var border = colorVar('--border') || '#ccc';
     var text = colorVar('--text') || '#222';
     var textMuted = colorVar('--text-muted') || '#666';
@@ -260,6 +513,11 @@ function renderTrendChartShared(state, host, rows, metric, shouldAbort) {
         }
       }
     });
+    if (shouldAbort()) {
+      destroyTrendState(state);
+      return;
+    }
+    bindTrendRangeSelect(state, host, sorted, drillCtx);
   }).catch(function() {});
 }
 
@@ -270,9 +528,10 @@ function renderStatsTrendChart(host, rows, metric) {
 }
 
 function renderProfileTrendChart(host, rows, metric) {
+  var drillCtx = host && host._trendDrillContext ? host._trendDrillContext : null;
   renderTrendChartShared(profileTrendState, host, rows, metric, function() {
     return profileTrendHost !== host;
-  });
+  }, drillCtx);
 }
 
 function bindStatsTrendControls(container) {

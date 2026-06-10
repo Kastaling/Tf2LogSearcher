@@ -13,6 +13,8 @@
   var MIN_LINK_CONTRAST = 3.0;
   var MIN_BUTTON_TEXT_CONTRAST = 4.5;
   var THEME_BG = { light: '#ffffff', dark: '#1a1a1a' };
+  /** Keep in sync with THEME_KEY in static/js/search.js */
+  var THEME_STORAGE_KEY = 'tf2log-theme';
 
   var ACCENT_PRESETS = {
     teal: {
@@ -304,6 +306,53 @@
       && document.documentElement.getAttribute('data-theme') === 'dark';
   }
 
+  function followsSystemTheme() {
+    try {
+      if (typeof localStorage === 'undefined') return true;
+      var stored = localStorage.getItem(THEME_STORAGE_KEY);
+      return stored !== 'dark' && stored !== 'light';
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function systemPrefersDark() {
+    return typeof matchMedia === 'function'
+      && matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+
+  /** Re-sync page theme from OS preference when the user has not pinned light/dark. */
+  function applySystemPreferredTheme() {
+    if (!followsSystemTheme() || typeof document === 'undefined') return false;
+    var dark = systemPrefersDark();
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    if (typeof global.tf2lsOnThemeApplied === 'function') {
+      global.tf2lsOnThemeApplied();
+    } else {
+      applyAccentPrefs(readAccentPrefs());
+      if (typeof global.refreshAccentPickerUi === 'function') {
+        global.refreshAccentPickerUi();
+      }
+    }
+    return true;
+  }
+
+  function initSystemThemeMediaListener() {
+    if (typeof matchMedia !== 'function' || typeof document === 'undefined') return;
+    var mq = matchMedia('(prefers-color-scheme: dark)');
+    if (!mq) return;
+    var onChange = function() {
+      applySystemPreferredTheme();
+    };
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', onChange);
+      return;
+    }
+    if (typeof mq.addListener === 'function') {
+      mq.addListener(onChange);
+    }
+  }
+
   function resolveAccentLink(prefs) {
     var normalized = normalizeAccentPrefs(prefs);
     if (normalized.id === CUSTOM_ACCENT_ID) {
@@ -409,8 +458,13 @@
   global.accentExportToken = accentExportToken;
   global.accentFromExportToken = accentFromExportToken;
   global.normalizeAccentPrefs = normalizeAccentPrefs;
+  global.tf2lsApplySystemPreferredTheme = applySystemPreferredTheme;
+  global.tf2lsFollowsSystemTheme = followsSystemTheme;
 
   if (typeof document !== 'undefined') {
-    applyAccentPrefs(readAccentPrefs());
+    if (!applySystemPreferredTheme()) {
+      applyAccentPrefs(readAccentPrefs());
+    }
+    initSystemThemeMediaListener();
   }
 })(typeof window !== 'undefined' ? window : globalThis);

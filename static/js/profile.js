@@ -866,6 +866,12 @@ function renderFavoriteWords(words, container) {
   if (!Array.isArray(words) || words.length === 0 || !container) {
     return;
   }
+  if (typeof disconnectProfileWordCloudMount === 'function') {
+    var oldCloudHost = container.querySelector('.profile-word-cloud-host');
+    if (oldCloudHost) {
+      disconnectProfileWordCloudMount(oldCloudHost);
+    }
+  }
   container.innerHTML = '';
   container.className = 'stats-summary profile-favorite-words';
 
@@ -1897,7 +1903,7 @@ function renderProfileResult(el, data, elapsedMs) {
             '<button type="button" class="stats-trend-btn js-profile-trend-btn" data-metric="deaths" role="tab" aria-selected="false">Deaths / game</button>' +
           '</div>' +
           '<div class="stats-trend-canvas-wrap"><canvas class="js-trend-chart-canvas" aria-label="Profile per-game trends"></canvas></div>' +
-          '<p class="stats-trend-note">20-game rolling average with per-game points. Y-axis trimmed to the middle ~96% of values so bad logs do not flatten the curve; tooltips show exact stats.</p>' +
+          '<p class="stats-trend-note">20-game rolling average with per-game points. Y-axis trimmed to the middle ~96% of values so bad logs do not flatten the curve; tooltips show exact stats. Click two points on the chart to open the Stats Sorter for that UTC date range (Esc cancels).</p>' +
         '</div>' +
       '</div>';
   }
@@ -2022,6 +2028,14 @@ function renderProfileResult(el, data, elapsedMs) {
   profileTrendMetric = 'dpm';
   profileTrendHost = el.querySelector('.js-profile-trend');
   profileTrendRows = trendRows;
+  if (profileTrendHost) {
+    var fa = data.filters_applied || {};
+    profileTrendHost._trendDrillContext = {
+      steamid: sid64,
+      gamemode: fa.gamemode != null ? String(fa.gamemode).trim() : '',
+      map_query: fa.map_query != null ? String(fa.map_query).trim() : ''
+    };
+  }
   if (profileTrendHost && profileTrendRows && profileTrendRows.length >= 2) {
     bindProfileTrendControls(el);
     var trendPanelInit = el.querySelector('[data-section="trend"] .profile-section-panel');

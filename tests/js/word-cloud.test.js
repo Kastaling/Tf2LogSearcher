@@ -38,6 +38,64 @@ describe('profileWordCloudFontSize', () => {
   });
 });
 
+describe('scheduleProfileWordCloudMount', () => {
+  test('attaches ResizeObserver and disconnect cleans up', () => {
+    const g = loadWordCloud();
+    const observed = [];
+    class MockResizeObserver {
+      constructor(cb) {
+        this._cb = cb;
+      }
+      observe(el) {
+        observed.push(el);
+      }
+      disconnect() {
+        observed.length = 0;
+      }
+    }
+    function makeEl() {
+      return {
+        className: '',
+        style: {},
+        innerHTML: '',
+        children: [],
+        setAttribute() {},
+        getAttribute() {
+          return null;
+        },
+        appendChild(child) {
+          this.children.push(child);
+        },
+        addEventListener() {},
+        querySelectorAll() {
+          return [];
+        },
+      };
+    }
+    g.ResizeObserver = MockResizeObserver;
+    g.requestAnimationFrame = (fn) => {
+      fn();
+      return 1;
+    };
+    g.cancelAnimationFrame = () => {};
+    g.document.createElement = () => makeEl();
+
+    const host = makeEl();
+    host.getBoundingClientRect = () => ({ width: 420 });
+    host.clientWidth = 420;
+    host.offsetWidth = 420;
+    host.closest = () => null;
+
+    g.scheduleProfileWordCloudMount(host, [{ word: 'gg', count: 10 }], {});
+    expect(host._profileWordCloudResizeObserver).toBeDefined();
+    expect(observed).toContain(host);
+
+    g.disconnectProfileWordCloudMount(host);
+    expect(host._profileWordCloudResizeObserver).toBeNull();
+    expect(observed.length).toBe(0);
+  });
+});
+
 describe('layoutProfileWordCloud', () => {
   test('spreads sizes from top rank to lowest in the set', () => {
     const g = loadWordCloud();

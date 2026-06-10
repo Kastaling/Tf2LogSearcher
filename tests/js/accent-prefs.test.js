@@ -54,4 +54,66 @@ describe('accent-prefs', () => {
     expect(prefs.custom.light).toBe(purpleLight);
     expect(prefs.custom.dark).toBe('#112233');
   });
+
+  test('applySystemPreferredTheme updates data-theme when following OS', () => {
+    const g = loadAccentPrefs();
+    g.localStorage = {
+      getItem: () => null,
+      setItem: () => {},
+    };
+    g.matchMedia = () => ({ matches: true, addEventListener: () => {} });
+    g.document.documentElement.setAttribute('data-theme', 'light');
+    g.writeAccentPrefs('purple');
+    const applied = g.tf2lsApplySystemPreferredTheme();
+    expect(applied).toBe(true);
+    expect(g.document.documentElement.getAttribute('data-theme')).toBe('dark');
+  });
+
+  test('module init applies system preferred theme when following OS', () => {
+    const attrs = { 'data-theme': 'light' };
+    const mockGlobal = {
+      document: {
+        documentElement: {
+          getAttribute(name) {
+            return attrs[name] ?? null;
+          },
+          setAttribute(name, value) {
+            attrs[name] = value;
+          },
+          style: { setProperty() {}, removeProperty() {} },
+          dataset: {},
+        },
+        cookie: '',
+      },
+      localStorage: {
+        getItem: () => null,
+        setItem: () => {},
+      },
+      matchMedia: () => ({ matches: true, addEventListener() {} }),
+    };
+    mockGlobal.window = mockGlobal;
+    const fs = require('fs');
+    const path = require('path');
+    const vm = require('vm');
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '../../static/js/accent-prefs.js'),
+      'utf8',
+    );
+    vm.createContext(mockGlobal);
+    vm.runInContext(src, mockGlobal);
+    expect(attrs['data-theme']).toBe('dark');
+  });
+
+  test('applySystemPreferredTheme is skipped when theme is pinned', () => {
+    const g = loadAccentPrefs();
+    g.localStorage = {
+      getItem: (key) => (key === 'tf2log-theme' ? 'light' : null),
+      setItem: () => {},
+    };
+    g.matchMedia = () => ({ matches: true, addEventListener: () => {} });
+    g.document.documentElement.setAttribute('data-theme', 'light');
+    const applied = g.tf2lsApplySystemPreferredTheme();
+    expect(applied).toBe(false);
+    expect(g.document.documentElement.getAttribute('data-theme')).toBe('light');
+  });
 });
