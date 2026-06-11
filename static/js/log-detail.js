@@ -106,6 +106,9 @@
           lazy.innerHTML = renderChatSection(payload.chat);
         } else if (kind === 'killstreaks') {
           lazy.innerHTML = renderKillstreaksSection(payload.killstreaks);
+        } else if (kind === 'events') {
+          lazy.innerHTML = renderEventsSection(payload.events);
+          bindLogDetailEventsToolbar(lazy);
         }
         lazy.setAttribute('data-rendered', '1');
         lazy.removeAttribute('data-lazy');
@@ -207,6 +210,7 @@
       renderTeamsSection(data.teams) +
       renderPlayersSection(data.players) +
       renderRoundsSection(data.rounds) +
+      renderEventsCollapsible(data.events) +
       renderMedicsSection(data.medics) +
       renderClassMatrixSection(data.class_matrix) +
       '<details class="log-detail-collapsible stats-summary"><summary>Chat</summary>' +
@@ -619,6 +623,258 @@
     }).join('');
     var note = chat.truncated ? '<p class="stats-summary-meta">Chat list truncated.</p>' : '';
     return note + '<div class="log-detail-chat">' + lines + '</div>';
+  }
+
+  var LOG_DETAIL_EVENT_KIND_LABEL = {
+    kill: 'Kill',
+    uber: 'Uber',
+    charge_end: 'Charge end',
+    capture: 'Capture',
+    round_start: 'Round start',
+    round_win: 'Round win',
+    spawn: 'Spawn'
+  };
+
+  /** Filter groups: checkbox data-kind -> event kinds it controls. */
+  var LOG_DETAIL_EVENT_FILTERS = [
+    { id: 'kill', label: 'Kills', kinds: ['kill'] },
+    { id: 'uber', label: 'Ubers', kinds: ['uber'] },
+    { id: 'charge_end', label: 'Charge ends', kinds: ['charge_end'] },
+    { id: 'capture', label: 'Captures', kinds: ['capture'] },
+    { id: 'round', label: 'Rounds', kinds: ['round_start', 'round_win'] },
+    { id: 'spawn', label: 'Spawns', kinds: ['spawn'] }
+  ];
+
+  function logDetailEventPlayerCell(p) {
+    if (!p || !p.alias) return '\u2014';
+    return typeof playerNameMenuHtml === 'function'
+      ? playerNameMenuHtml(p, { extraClass: 'log-detail-event-name' })
+      : escapeHtml(p.alias);
+  }
+
+  var LOG_DETAIL_EVENTS_TIME_KEY = 'tf2ls-log-detail-events-time';
+
+  function readLogDetailEventsTimeMode() {
+    try {
+      return localStorage.getItem(LOG_DETAIL_EVENTS_TIME_KEY) === '1';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function writeLogDetailEventsTimeMode(on) {
+    try {
+      localStorage.setItem(LOG_DETAIL_EVENTS_TIME_KEY, on ? '1' : '0');
+    } catch (e) {}
+  }
+
+  function logDetailFormatEventTickSec(totalSec) {
+    if (typeof formatClassTimeMinSec === 'function') {
+      return formatClassTimeMinSec(totalSec);
+    }
+    var n = Math.max(0, Math.floor(Number(totalSec) || 0));
+    var m = Math.floor(n / 60);
+    var s = n % 60;
+    return m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  function logDetailEventTickParts(matchTick, roundTick, useTime) {
+    var parts = [];
+    var hasMatch = matchTick != null && matchTick !== '' && Number.isFinite(Number(matchTick));
+    var hasRound = roundTick != null && roundTick !== '' && Number.isFinite(Number(roundTick));
+    if (hasMatch) {
+      var mt = Math.floor(Number(matchTick));
+      if (useTime) {
+        var matchFmt = logDetailFormatEventTickSec(mt);
+        parts.push(hasRound ? ('match ' + matchFmt) : matchFmt);
+      } else {
+        parts.push('tick ' + String(mt));
+      }
+    }
+    if (hasRound) {
+      var rt = Math.floor(Number(roundTick));
+      if (useTime) {
+        parts.push('round ' + logDetailFormatEventTickSec(rt));
+      } else {
+        parts.push('round tick ' + String(rt));
+      }
+    }
+    return parts.join(' \u00b7 ');
+  }
+
+  function logDetailEventTickHtml(ev, useTime) {
+    if (useTime == null) useTime = readLogDetailEventsTimeMode();
+    var matchTick = ev && ev.tick != null && Number.isFinite(Number(ev.tick))
+      ? String(Math.floor(Number(ev.tick)))
+      : '';
+    var roundTick = ev && ev.round_tick != null && Number.isFinite(Number(ev.round_tick))
+      ? String(Math.floor(Number(ev.round_tick)))
+      : '';
+    if (!matchTick && !roundTick) return '';
+    var label = logDetailEventTickParts(matchTick, roundTick, useTime);
+    var attrs = ' class="log-detail-event-tick stats-summary-meta"';
+    if (matchTick) attrs += ' data-match-tick="' + escapeAttr(matchTick) + '"';
+    if (roundTick) attrs += ' data-round-tick="' + escapeAttr(roundTick) + '"';
+    return '<span' + attrs + '>' + escapeHtml(label) + '</span>';
+  }
+
+  function updateLogDetailEventTicks(root, useTime) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('.log-detail-event-tick').forEach(function(el) {
+      var matchTick = el.getAttribute('data-match-tick') || '';
+      var roundTick = el.getAttribute('data-round-tick') || '';
+      var label = logDetailEventTickParts(matchTick, roundTick, useTime);
+      if (label) el.textContent = label;
+    });
+  }
+
+  function logDetailEventLine(ev) {
+    var kind = ev && ev.kind ? String(ev.kind) : '';
+    var label = LOG_DETAIL_EVENT_KIND_LABEL[kind] || kind || 'Event';
+    var body = '';
+    if (kind === 'kill') {
+      var atk = logDetailEventPlayerCell(ev.attacker);
+      var vic = logDetailEventPlayerCell(ev.victim);
+      body = atk + ' killed ' + vic;
+      if (ev.weapon) {
+        body += ' with <span class="log-detail-event-weapon">' + escapeHtml(String(ev.weapon)) + '</span>';
+      }
+      if (ev.assister && ev.assister.alias) {
+        body += ' <span class="stats-summary-meta">(assist: ' + logDetailEventPlayerCell(ev.assister) + ')</span>';
+      }
+    } else if (kind === 'uber') {
+      body = logDetailEventPlayerCell(ev.medic) + ' deployed uber';
+    } else if (kind === 'charge_end') {
+      body = logDetailEventPlayerCell(ev.medic) + ' charge ended';
+      if (ev.duration_sec != null && Number.isFinite(Number(ev.duration_sec))) {
+        body += ' <span class="stats-summary-meta">(' + escapeHtml(String(ev.duration_sec)) + 's)</span>';
+      }
+    } else if (kind === 'capture') {
+      body = logDetailEventPlayerCell(ev.player) + ' captured';
+      if (ev.cp_name) {
+        body += ' <span class="log-detail-event-cp">' + escapeHtml(String(ev.cp_name)) + '</span>';
+      } else if (ev.cp_index != null) {
+        body += ' CP #' + escapeHtml(String(ev.cp_index));
+      }
+    } else if (kind === 'round_start') {
+      body = 'Round started';
+    } else if (kind === 'round_win') {
+      body = 'Round won';
+      if (ev.winner_team === 'Red' || ev.winner_team === 'Blue') {
+        body += ' by <span class="' + (ev.winner_team === 'Red' ? 'team-red' : 'team-blue') + '">' +
+          escapeHtml(ev.winner_team) + '</span>';
+      }
+    } else if (kind === 'spawn') {
+      body = logDetailEventPlayerCell(ev.player) + ' spawned';
+      if (ev.class_name) {
+        body += ' as <span class="log-detail-event-class">' + escapeHtml(String(ev.class_name)) + '</span>';
+      }
+    } else {
+      body = escapeHtml(label);
+    }
+    var tickHtml = logDetailEventTickHtml(ev);
+    return '<li class="log-detail-raw-event log-detail-raw-event--' + escapeAttr(kind) + '">' +
+      '<span class="log-detail-event-kind">' + escapeHtml(label) + '</span> ' +
+      '<span class="log-detail-event-body">' + body + '</span>' +
+      (tickHtml ? tickHtml : '') +
+      '</li>';
+  }
+
+  function renderEventsToolbar(events) {
+    var counts = {};
+    events.forEach(function(ev) {
+      var k = ev && ev.kind ? String(ev.kind) : '';
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    var boxes = LOG_DETAIL_EVENT_FILTERS.map(function(f) {
+      var n = f.kinds.reduce(function(acc, k) { return acc + (counts[k] || 0); }, 0);
+      if (!n) return '';
+      return '<label class="log-detail-events-filter-item">' +
+        '<input type="checkbox" class="js-log-detail-event-filter" data-kind="' + escapeAttr(f.id) + '" checked>' +
+        ' ' + escapeHtml(f.label) + ' <span class="stats-summary-meta">(' + escapeHtml(String(n)) + ')</span></label>';
+    }).filter(Boolean);
+    var useTime = readLogDetailEventsTimeMode();
+    var checksHtml = boxes.length >= 2
+      ? ('<div class="log-detail-events-filter-checks" role="group" aria-label="Filter event types">' +
+        boxes.join('') + '</div>')
+      : '';
+    return '<div class="log-detail-events-toolbar">' + checksHtml +
+      '<label class="log-detail-events-time-toggle">' +
+      '<span class="log-detail-events-time-label' + (useTime ? '' : ' is-active') + '">Ticks</span>' +
+      '<input type="checkbox" class="js-log-detail-event-time-mode" role="switch"' +
+      ' aria-label="Show event timestamps as minutes and seconds"' +
+      (useTime ? ' checked' : '') + '>' +
+      '<span class="log-detail-events-time-label' + (useTime ? ' is-active' : '') + '">Time</span>' +
+      '</label></div>';
+  }
+
+  function bindLogDetailEventsToolbar(root) {
+    if (!root || !root.querySelector) return;
+    var bar = root.querySelector('.log-detail-events-toolbar');
+    var list = root.querySelector('.log-detail-raw-events');
+    if (!bar || !list) return;
+    var useTime = readLogDetailEventsTimeMode();
+    list.classList.toggle('log-detail-events-time-mode', useTime);
+    updateLogDetailEventTicks(root, useTime);
+    bar.addEventListener('change', function(ev) {
+      var timeSw = ev.target && ev.target.classList
+        && ev.target.classList.contains('js-log-detail-event-time-mode')
+        ? ev.target
+        : null;
+      if (timeSw) {
+        useTime = !!timeSw.checked;
+        writeLogDetailEventsTimeMode(useTime);
+        list.classList.toggle('log-detail-events-time-mode', useTime);
+        updateLogDetailEventTicks(root, useTime);
+        bar.querySelectorAll('.log-detail-events-time-label').forEach(function(lab, i) {
+          lab.classList.toggle('is-active', useTime ? i === 1 : i === 0);
+        });
+        return;
+      }
+      var cb = ev.target && ev.target.closest
+        ? ev.target.closest('.js-log-detail-event-filter')
+        : null;
+      if (!cb) return;
+      var id = cb.getAttribute('data-kind') || '';
+      if (!/^[a-z_]+$/.test(id)) return;
+      list.classList.toggle('log-detail-hide-' + id, !cb.checked);
+    });
+  }
+
+  function renderEventsSection(eventsWrap) {
+    var wrap = eventsWrap || {};
+    if (!wrap.available) {
+      return '<p class="stats-summary-meta">Raw events are not indexed for this log yet. After raw log backfill runs, reload this page to see kills, ubers, captures, and other parsed events.</p>';
+    }
+    var events = Array.isArray(wrap.events) ? wrap.events : [];
+    if (!events.length) {
+      return '<p class="stats-summary-meta">No parsed events stored for this log.</p>';
+    }
+    var filterBar = renderEventsToolbar(events);
+    var lines = events.map(logDetailEventLine).join('');
+    var note = '';
+    if (wrap.truncated) {
+      note = '<p class="stats-summary-meta">Showing first ' + escapeHtml(String(events.length)) +
+        ' of ' + escapeHtml(String(wrap.total_count || events.length)) + ' events.</p>';
+    }
+    return filterBar + note + '<ul class="log-detail-raw-events">' + lines + '</ul>';
+  }
+
+  function renderEventsCollapsible(eventsWrap) {
+    var wrap = eventsWrap || {};
+    var summaryLabel = 'Events';
+    if (wrap.available) {
+      var n = wrap.total_count != null ? Number(wrap.total_count) : (wrap.events ? wrap.events.length : 0);
+      if (Number.isFinite(n) && n > 0) {
+        summaryLabel += ' (' + String(n) + ')';
+      }
+    }
+    var lazyPlaceholder = wrap.available
+      ? '<p class="stats-summary-meta">Expand to load event feed.</p>'
+      : '<p class="stats-summary-meta">Expand for raw event availability.</p>';
+    return '<details class="log-detail-collapsible stats-summary log-detail-events-wrap">' +
+      '<summary>' + escapeHtml(summaryLabel) + '</summary>' +
+      '<div class="log-detail-lazy-body" data-lazy="1" data-lazy-kind="events">' + lazyPlaceholder + '</div></details>';
   }
 
   function renderKillstreaksSection(ksWrap) {

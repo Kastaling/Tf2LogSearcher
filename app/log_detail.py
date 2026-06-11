@@ -34,6 +34,7 @@ from app.log_utils import team_score, winner_team_from_log
 from app.logs_tf import steamid3_to_steamid64
 from app.search.search import LOGMATCH_CLASS_ORDER, _class_playtime_for_logmatch
 from app.stats_db import connect_stats_db
+from app.weapon_names import get_weapon_name
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,8 @@ SECTION_VERSIONS: dict[str, str] = {
     "class_matrix": "class_matrix:v4",
     "chat": "chat:v4",
     "killstreaks": "killstreaks:v3",
+    # New section: chronological raw_events.db feed (kills, ubers, caps, rounds, spawns).
+    "events": "events:v1",
     "raw_availability": "raw_availability:v3",
 }
 
@@ -56,6 +59,7 @@ _CHAT_MAX_MESSAGES = 800
 _KILLSTREAKS_MAX = 200
 _ROUND_EVENTS_MAX = 40
 _CLASS_MATRIX_KILLERS_MAX = 48
+_EVENTS_MAX = 3000
 
 _build_lock = threading.Lock()
 _inflight: dict[int, threading.Event] = {}
@@ -825,6 +829,239 @@ def _build_killstreaks(logtext: dict[str, Any]) -> dict[str, Any]:
     return {"killstreaks": out}
 
 
+def _steamid64_player_map(logtext: dict[str, Any]) -> dict[str, dict[str, str | None]]:
+    """sid64 -> {alias, team} from log JSON players/names."""
+    players = logtext.get("players") if isinstance(logtext.get("players"), dict) else {}
+    names = logtext.get("names") if isinstance(logtext.get("names"), dict) else {}
+    out: dict[str, dict[str, str | None]] = {}
+    for sid3, stats in players.items():
+        if not isinstance(sid3, str):
+            continue
+        sid64 = steamid3_to_steamid64(sid3)
+        if not sid64:
+            continue
+        alias_raw = names.get(sid3) if isinstance(names, dict) else None
+        alias = (str(alias_raw).strip() if alias_raw is not None else "") or sid3
+        team_raw = stats.get("team") if isinstance(stats, dict) else None
+        team = "Red" if team_raw == "Red" else ("Blue" if team_raw == "Blue" else None)
+        out[sid64] = {"alias": alias, "team": team}
+    return out
+
+
+def _event_player_ref(
+    steamid64: str | None,
+    player_map: dict[str, dict[str, str | None]],
+) -> dict[str, str | None] | None:
+    if not steamid64:
+        return None
+    sid64 = str(steamid64).strip()
+    if not sid64:
+        return None
+    info = player_map.get(sid64) or {}
+    alias = info.get("alias") or sid64
+    profile_href = f"/?mode=profile&steamid={sid64}" if sid64.isdigit() else ""
+    return {
+        "steamid64": sid64,
+        "alias": alias,
+        "team": info.get("team"),
+        "profile_href": profile_href,
+    }
+
+
+def _event_weapon_display(raw_weapon: Any) -> str | None:
+    """Internal weapon name -> display name (Stickybomb Launcher, ...); falls back to raw."""
+    w = (str(raw_weapon).strip() if raw_weapon is not None else "")
+    if not w:
+        return None
+    return get_weapon_name(w)
+
+
+def _event_sort_key(row: dict[str, Any]) -> tuple[int, int, int, str]:
+    tick = row.get("tick")
+    round_tick = row.get("round_tick")
+    try:
+        t = int(tick) if tick is not None else 2_147_483_647
+    except (TypeError, ValueError):
+        t = 2_147_483_647
+    kind = str(row.get("kind") or "")
+    if round_tick is None:
+        # round_start/round_win omit round_tick; sentinels keep boundaries ordered at match tick.
+        if kind == "round_start":
+            rt = -1
+        elif kind == "round_win":
+            rt = 2_147_483_647
+        else:
+            rt = 2_147_483_647
+    else:
+        try:
+            rt = int(round_tick)
+        except (TypeError, ValueError):
+            rt = 2_147_483_647
+    if kind == "round_start":
+        priority = 0
+    elif kind == "round_win":
+        priority = 2
+    else:
+        priority = 1
+    return (t, rt, priority, kind)
+
+
+def _build_events(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
+    """Chronological feed from raw_events.db (kills, ubers, caps, rounds, spawns)."""
+    empty: dict[str, Any] = {
+        "available": False,
+        "events": [],
+        "total_count": 0,
+        "truncated": False,
+    }
+    raw_path = Path(RAW_EVENTS_DB_PATH)
+    if not raw_path.is_file():
+        return empty
+    player_map = _steamid64_player_map(logtext)
+    merged: list[dict[str, Any]] = []
+    try:
+        conn = sqlite3.connect(raw_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            raw_row = conn.execute(
+                "SELECT 1 FROM raw_logs WHERE log_id = ?",
+                (log_id,),
+            ).fetchone()
+            if not raw_row:
+                return empty
+
+            for row in conn.execute(
+                """
+                SELECT tick, round_tick, attacker_steamid64, victim_steamid64,
+                       assister_steamid64, weapon
+                FROM kill_events WHERE log_id = ?
+                """,
+                (log_id,),
+            ):
+                merged.append(
+                    {
+                        "kind": "kill",
+                        "tick": row[0],
+                        "round_tick": row[1],
+                        "attacker": _event_player_ref(row[2], player_map),
+                        "victim": _event_player_ref(row[3], player_map),
+                        "assister": _event_player_ref(row[4], player_map),
+                        "weapon": _event_weapon_display(row[5]),
+                    }
+                )
+
+            for row in conn.execute(
+                """
+                SELECT tick, round_tick, medic_steamid64
+                FROM uber_events WHERE log_id = ?
+                """,
+                (log_id,),
+            ):
+                merged.append(
+                    {
+                        "kind": "uber",
+                        "tick": row[0],
+                        "round_tick": row[1],
+                        "medic": _event_player_ref(row[2], player_map),
+                    }
+                )
+
+            for row in conn.execute(
+                """
+                SELECT tick, round_tick, medic_steamid64, duration_sec
+                FROM charge_end_events WHERE log_id = ?
+                """,
+                (log_id,),
+            ):
+                dur = row[3]
+                try:
+                    duration_sec = round(float(dur), 2) if dur is not None else None
+                except (TypeError, ValueError):
+                    duration_sec = None
+                merged.append(
+                    {
+                        "kind": "charge_end",
+                        "tick": row[0],
+                        "round_tick": row[1],
+                        "medic": _event_player_ref(row[2], player_map),
+                        "duration_sec": duration_sec,
+                    }
+                )
+
+            for row in conn.execute(
+                """
+                SELECT tick, round_tick, steamid64, cp_index, cp_name
+                FROM capture_events WHERE log_id = ?
+                """,
+                (log_id,),
+            ):
+                cp_name = (str(row[4]).strip() if row[4] is not None else "") or None
+                merged.append(
+                    {
+                        "kind": "capture",
+                        "tick": row[0],
+                        "round_tick": row[1],
+                        "player": _event_player_ref(row[2], player_map),
+                        "cp_index": int(row[3]) if row[3] is not None else None,
+                        "cp_name": cp_name,
+                    }
+                )
+
+            for row in conn.execute(
+                """
+                SELECT tick, event_type, winner_team
+                FROM round_events WHERE log_id = ?
+                """,
+                (log_id,),
+            ):
+                et = str(row[1] or "").strip().lower()
+                kind = "round_win" if et == "round_win" else "round_start"
+                winner = str(row[2]).strip() if row[2] is not None else None
+                merged.append(
+                    {
+                        "kind": kind,
+                        "tick": row[0],
+                        "round_tick": None,
+                        "winner_team": winner if winner in ("Red", "Blue") else None,
+                    }
+                )
+
+            for row in conn.execute(
+                """
+                SELECT tick, round_tick, steamid64, class_name
+                FROM spawn_events WHERE log_id = ?
+                """,
+                (log_id,),
+            ):
+                class_name = (str(row[3]).strip() if row[3] is not None else "") or None
+                merged.append(
+                    {
+                        "kind": "spawn",
+                        "tick": row[0],
+                        "round_tick": row[1],
+                        "player": _event_player_ref(row[2], player_map),
+                        "class_name": class_name,
+                    }
+                )
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("events section for log %s: %s", log_id, e)
+        return empty
+
+    merged.sort(key=_event_sort_key)
+    total = len(merged)
+    truncated = total > _EVENTS_MAX
+    if truncated:
+        merged = merged[:_EVENTS_MAX]
+    return {
+        "available": True,
+        "events": merged,
+        "total_count": total,
+        "truncated": truncated,
+    }
+
+
 def _build_raw_availability(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
     zip_path = Path(RAW_LOGS_DIR) / f"log_{log_id}.log.zip"
     has_zip = zip_path.is_file()
@@ -883,6 +1120,7 @@ _SECTION_BUILDERS: dict[str, Any] = {
     "class_matrix": lambda _lid, lt: _build_class_matrix(lt),
     "chat": lambda lid, lt: _build_chat(lid, lt),
     "killstreaks": lambda _lid, lt: _build_killstreaks(lt),
+    "events": lambda lid, lt: _build_events(lid, lt),
     "raw_availability": lambda lid, lt: _build_raw_availability(lid, lt),
 }
 
@@ -911,6 +1149,7 @@ def _assemble_payload(log_id: int, sections: dict[str, Any], fingerprint: str) -
         "class_matrix": sections.get("class_matrix") or {},
         "chat": sections.get("chat") or {},
         "killstreaks": sections.get("killstreaks") or {},
+        "events": sections.get("events") or {},
         "raw_availability": sections.get("raw_availability") or {},
     }
 

@@ -2127,6 +2127,121 @@
       max-height: 14rem;
       overflow-y: auto;
     }
+    .log-detail-raw-events {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      max-height: 28rem;
+      overflow-y: auto;
+      font-size: 0.9rem;
+    }
+    .log-detail-raw-event {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.35rem 0.5rem;
+      padding: 0.28rem 0;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+    }
+    .log-detail-raw-event:last-child {
+      border-bottom: none;
+    }
+    .log-detail-event-kind {
+      flex: 0 0 auto;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      min-width: 4.5rem;
+    }
+    .log-detail-event-body {
+      flex: 1 1 12rem;
+      min-width: 0;
+    }
+    .log-detail-event-tick {
+      flex: 0 0 auto;
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    .log-detail-event-weapon,
+    .log-detail-event-cp,
+    .log-detail-event-class {
+      font-weight: 600;
+    }
+    .log-detail-raw-events .player-name-menu-btn.team-red,
+    .log-detail-raw-events .player-name-plain.team-red { color: #c44; }
+    .log-detail-raw-events .player-name-menu-btn.team-blue,
+    .log-detail-raw-events .player-name-plain.team-blue { color: #48c; }
+    [data-theme="dark"] .log-detail-raw-events .player-name-menu-btn.team-red,
+    [data-theme="dark"] .log-detail-raw-events .player-name-plain.team-red { color: #f88; }
+    [data-theme="dark"] .log-detail-raw-events .player-name-menu-btn.team-blue,
+    [data-theme="dark"] .log-detail-raw-events .player-name-plain.team-blue { color: #8cf; }
+    .log-detail-events-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem 1rem;
+      margin: 0 0 0.5rem;
+      padding: 0.4rem 0.55rem;
+      border: 1px solid var(--border);
+      border-radius: var(--standard-border-radius, 5px);
+      font-size: 0.88rem;
+    }
+    .log-detail-events-filter-checks {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem 1rem;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .log-detail-events-time-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      margin-left: auto;
+      flex: 0 0 auto;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    .log-detail-events-time-label {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .log-detail-events-time-label.is-active {
+      color: var(--text);
+      font-weight: 700;
+    }
+    .log-detail-events-time-toggle input[type="checkbox"] {
+      margin: 0;
+      cursor: pointer;
+      width: 2.35rem;
+      height: 1.2rem;
+      accent-color: var(--link);
+    }
+    .log-detail-events-filter-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .log-detail-events-filter-item input[type="checkbox"] {
+      margin: 0;
+      cursor: pointer;
+    }
+    .log-detail-raw-events.log-detail-hide-kill .log-detail-raw-event--kill,
+    .log-detail-raw-events.log-detail-hide-uber .log-detail-raw-event--uber,
+    .log-detail-raw-events.log-detail-hide-charge_end .log-detail-raw-event--charge_end,
+    .log-detail-raw-events.log-detail-hide-capture .log-detail-raw-event--capture,
+    .log-detail-raw-events.log-detail-hide-round .log-detail-raw-event--round_start,
+    .log-detail-raw-events.log-detail-hide-round .log-detail-raw-event--round_win,
+    .log-detail-raw-events.log-detail-hide-spawn .log-detail-raw-event--spawn {
+      display: none;
+    }
     .log-detail-medic-card {
       border: 1px solid var(--border);
       border-radius: var(--standard-border-radius, 5px);
