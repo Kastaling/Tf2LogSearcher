@@ -2215,12 +2215,53 @@
       color: var(--text);
       font-weight: 700;
     }
-    .log-detail-events-time-toggle input[type="checkbox"] {
+    .log-detail-events-time-switch {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      flex: 0 0 auto;
+    }
+    .log-detail-events-time-switch input[type="checkbox"] {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
       margin: 0;
+      opacity: 0;
       cursor: pointer;
+      z-index: 1;
+    }
+    .log-detail-events-time-switch-ui {
+      display: block;
       width: 2.35rem;
       height: 1.2rem;
-      accent-color: var(--link);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--border) 55%, var(--text-muted));
+      position: relative;
+      transition: background 0.15s ease;
+      pointer-events: none;
+    }
+    .log-detail-events-time-switch-ui::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: calc(1.2rem - 4px);
+      height: calc(1.2rem - 4px);
+      border-radius: 50%;
+      background: var(--bg);
+      box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 28%, transparent);
+      transition: transform 0.15s ease;
+    }
+    .log-detail-events-time-switch input:checked + .log-detail-events-time-switch-ui {
+      background: var(--link);
+    }
+    .log-detail-events-time-switch input:checked + .log-detail-events-time-switch-ui::after {
+      transform: translateX(calc(2.35rem - 1.2rem));
+    }
+    .log-detail-events-time-switch input:focus-visible + .log-detail-events-time-switch-ui {
+      outline: 2px solid var(--link);
+      outline-offset: 2px;
     }
     .log-detail-events-filter-item {
       display: inline-flex;
@@ -2242,6 +2283,162 @@
     .log-detail-raw-events.log-detail-hide-spawn .log-detail-raw-event--spawn {
       display: none;
     }
+    .log-detail-uber-tracker {
+      margin: 0 0 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: var(--standard-border-radius, 5px);
+      padding: 0.35rem 0.55rem;
+      font-size: 0.88rem;
+    }
+    .log-detail-uber-tracker > summary {
+      cursor: pointer;
+      font-weight: 600;
+      user-select: none;
+    }
+    .log-detail-uber-tracker-list {
+      list-style: none;
+      margin: 0.45rem 0 0;
+      padding: 0;
+      max-height: 14rem;
+      overflow-y: auto;
+    }
+    .log-detail-uber-exchange {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.35rem 0.65rem;
+      padding: 0.32rem 0;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+    }
+    .log-detail-uber-exchange:last-child {
+      border-bottom: none;
+    }
+    .log-detail-uber-exchange-tick {
+      flex: 0 0 auto;
+      min-width: 4.5rem;
+      white-space: nowrap;
+    }
+    .log-detail-uber-outcome {
+      flex: 0 0 auto;
+      font-weight: 700;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      color: var(--text-muted);
+    }
+    .log-detail-uber-exchange--red-won .log-detail-uber-outcome { color: #c44; }
+    .log-detail-uber-exchange--blue-won .log-detail-uber-outcome { color: #48c; }
+    [data-theme="dark"] .log-detail-uber-exchange--red-won .log-detail-uber-outcome { color: #f88; }
+    [data-theme="dark"] .log-detail-uber-exchange--blue-won .log-detail-uber-outcome { color: #8cf; }
+    .log-detail-uber-exchange-medics {
+      flex: 1 1 12rem;
+      min-width: 0;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.25rem 0.45rem;
+    }
+    .log-detail-uber-medic {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.28rem;
+      flex-wrap: wrap;
+    }
+    .log-detail-uber-medic-icon {
+      flex: 0 0 auto;
+      opacity: 0.92;
+    }
+    .log-detail-uber-medic--winner .log-detail-uber-medic-name {
+      font-weight: 700;
+    }
+    .log-detail-uber-duration.has-tooltip {
+      cursor: help;
+      text-decoration: underline dotted;
+      text-underline-offset: 0.14em;
+    }
+    .log-detail-uber-ka-pop {
+      position: relative;
+      display: inline;
+    }
+    .log-detail-uber-ka-trigger {
+      margin: 0;
+      padding: 0;
+      border: none;
+      background: none;
+      font: inherit;
+      color: inherit;
+      cursor: pointer;
+      text-decoration: underline dotted;
+      text-underline-offset: 0.14em;
+    }
+    .log-detail-uber-ka-trigger:hover,
+    .log-detail-uber-ka-pop.is-stuck .log-detail-uber-ka-trigger {
+      color: var(--text);
+      font-weight: 600;
+    }
+    .log-detail-uber-ka-card {
+      display: none;
+      position: fixed;
+      z-index: 220;
+      min-width: 14rem;
+      max-width: min(22rem, calc(100vw - 1rem));
+      padding: 0.4rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: var(--standard-border-radius, 5px);
+      background: var(--bg);
+      box-shadow: 0 4px 16px color-mix(in srgb, var(--text) 18%, transparent);
+      font-size: 0.82rem;
+      pointer-events: auto;
+    }
+    .log-detail-uber-ka-pop.is-stuck .log-detail-uber-ka-card {
+      display: block;
+    }
+    .log-detail-uber-ka-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .log-detail-uber-ka-table th,
+    .log-detail-uber-ka-table td {
+      padding: 0.22rem 0.35rem;
+      text-align: left;
+      vertical-align: middle;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+    }
+    .log-detail-uber-ka-table tr:last-child td {
+      border-bottom: none;
+    }
+    .log-detail-uber-ka-table th {
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      color: var(--text-muted);
+    }
+    .log-detail-uber-ka-name-td {
+      max-width: 10rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .log-detail-uber-ka-kind--kill { color: #c44; font-weight: 600; }
+    .log-detail-uber-ka-kind--assist { color: var(--text-muted); font-weight: 600; }
+    [data-theme="dark"] .log-detail-uber-ka-kind--kill { color: #f88; }
+    .log-detail-uber-ka-card .player-name-menu-btn.team-red,
+    .log-detail-uber-ka-card .player-name-plain.team-red { color: #c44; }
+    .log-detail-uber-ka-card .player-name-menu-btn.team-blue,
+    .log-detail-uber-ka-card .player-name-plain.team-blue { color: #48c; }
+    [data-theme="dark"] .log-detail-uber-ka-card .player-name-menu-btn.team-red,
+    [data-theme="dark"] .log-detail-uber-ka-card .player-name-plain.team-red { color: #f88; }
+    [data-theme="dark"] .log-detail-uber-ka-card .player-name-menu-btn.team-blue,
+    [data-theme="dark"] .log-detail-uber-ka-card .player-name-plain.team-blue { color: #8cf; }
+    .log-detail-uber-tracker .player-name-menu-btn.team-red,
+    .log-detail-uber-tracker .player-name-plain.team-red { color: #c44; }
+    .log-detail-uber-tracker .player-name-menu-btn.team-blue,
+    .log-detail-uber-tracker .player-name-plain.team-blue { color: #48c; }
+    [data-theme="dark"] .log-detail-uber-tracker .player-name-menu-btn.team-red,
+    [data-theme="dark"] .log-detail-uber-tracker .player-name-plain.team-red { color: #f88; }
+    [data-theme="dark"] .log-detail-uber-tracker .player-name-menu-btn.team-blue,
+    [data-theme="dark"] .log-detail-uber-tracker .player-name-plain.team-blue { color: #8cf; }
     .log-detail-medic-card {
       border: 1px solid var(--border);
       border-radius: var(--standard-border-radius, 5px);
