@@ -119,11 +119,13 @@ def test_compute_storage_stats_raw_enabled_true(tmp_path: Path) -> None:
     raw_db = state / "raw_events.db"
     avatar_db = state / "avatars.db"
     profile_views_db = state / "profile_views.db"
+    log_detail_cache_db = state / "log_detail_cache.db"
     stats_db.write_bytes(b"_" * 10)
     chat_db.write_bytes(b"_" * 4)
     raw_db.write_bytes(b"_" * 6)
     avatar_db.write_bytes(b"x")
     profile_views_db.write_bytes(b"zzz")
+    log_detail_cache_db.write_bytes(b"ld")
 
     with (
         patch.object(routes, "LOGS_DIR", logs),
@@ -133,6 +135,7 @@ def test_compute_storage_stats_raw_enabled_true(tmp_path: Path) -> None:
         patch.object(routes, "RAW_EVENTS_DB_PATH", raw_db),
         patch.object(routes, "AVATAR_DB_PATH", avatar_db),
         patch.object(routes, "PROFILE_VIEWS_DB_PATH", profile_views_db),
+        patch.object(routes, "LOG_DETAIL_CACHE_DB_PATH", log_detail_cache_db),
         patch.object(routes, "DOWNLOAD_RAW_ENABLED", True),
     ):
         out = routes._compute_storage_stats()
@@ -149,8 +152,9 @@ def test_compute_storage_stats_raw_enabled_true(tmp_path: Path) -> None:
     assert dbs["raw_events_db"] == 6
     assert dbs["avatar_db"] == 1
     assert dbs["profile_views_db"] == 3
-    assert out["db_total_bytes"] == 24
-    assert out["total_bytes"] == 5 + 2 + 24
+    assert dbs["log_detail_cache_db"] == 2
+    assert out["db_total_bytes"] == 26
+    assert out["total_bytes"] == 5 + 2 + 26
 
 
 def test_compute_storage_stats_raw_disabled_skips_raw_paths(tmp_path: Path) -> None:
@@ -230,6 +234,7 @@ def test_compute_storage_stats_partial_db_files(tmp_path: Path) -> None:
     assert out["db_files"]["chat_db"] is None
     assert out["db_files"]["raw_events_db"] is None
     assert out["db_files"]["avatar_db"] is None
+    assert out["db_files"]["log_detail_cache_db"] is None
     assert out["db_files"]["profile_views_db"] == 0
     assert out["db_total_bytes"] == 2
     assert out["total_bytes"] == 3

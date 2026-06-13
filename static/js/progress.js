@@ -543,6 +543,7 @@ function _fillStorageStatsTableIntoShell(el, d) {
     { key: 'avatar_db', label: 'avatars.db' },
     { key: 'profile_views_db', label: 'profile_views.db', missingAsZero: true },
     { key: 'profile_cache_db', label: 'profile_cache.db' },
+    { key: 'log_detail_cache_db', label: 'log_detail_cache.db' },
   ];
   const dbFiles = d.db_files || {};
   const dbRows = [];

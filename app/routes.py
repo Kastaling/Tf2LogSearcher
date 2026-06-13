@@ -21,6 +21,7 @@ from app.config import (
     DOWNLOAD_RAW_ENABLED,
     DOWNLOADER_STATE_DIR,
     LOGS_DIR,
+    LOG_DETAIL_CACHE_DB_PATH,
     PROFILE_CACHE_DB_PATH,
     PROFILE_VIEWS_DB_PATH,
     RAW_EVENTS_DB_PATH,
@@ -1639,6 +1640,7 @@ def _compute_storage_stats() -> dict[str, Any]:
     avatar_db = _file_size_bytes(Path(AVATAR_DB_PATH))
     pv_sz = _file_size_bytes(Path(PROFILE_VIEWS_DB_PATH))
     profile_cache_db = _file_size_bytes(Path(PROFILE_CACHE_DB_PATH))
+    log_detail_cache_db = _file_size_bytes(Path(LOG_DETAIL_CACHE_DB_PATH))
     # Always surface in API/UI so the row appears even before first profile view creates the file.
     profile_views_db = 0 if pv_sz is None else pv_sz
 
@@ -1649,6 +1651,7 @@ def _compute_storage_stats() -> dict[str, Any]:
         "avatar_db": avatar_db,
         "profile_views_db": profile_views_db,
         "profile_cache_db": profile_cache_db,
+        "log_detail_cache_db": log_detail_cache_db,
     }
     _db_parts = [v for v in db_files.values() if v is not None]
     db_total: int | None = sum(_db_parts) if _db_parts else None

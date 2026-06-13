@@ -85,6 +85,8 @@
       loadAvatarsInContainer(resultsContent);
       bindLogDetailCollapsibles(resultsContent);
       bindLogDetailSort(resultsContent);
+      bindLogDetailTimeToggle(resultsContent);
+      applyLogDetailTimeMode(resultsContent, readLogDetailEventsTimeMode());
     })
     .catch(function(e) {
       stopLoadingTabTitle();
@@ -371,6 +373,73 @@
       '<div class="stats-table-wrap"><table class="stats-table js-log-detail-players js-log-detail-sortable"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div></div>';
   }
 
+  function logDetailRoundEventTypeLabel(type) {
+    var t = String(type || '').trim();
+    if (!t) return '\u2014';
+    return t.replace(/_/g, ' ');
+  }
+
+  function logDetailRoundEventPlayersHtml(ev) {
+    var t = ev.type || '';
+    if (t === 'medic_death') {
+      var killerHtml = logDetailRoundEventPlayerHtml(ev.killer);
+      var victimHtml = logDetailRoundEventPlayerHtml(ev.victim);
+      if (killerHtml && victimHtml) return killerHtml + ' killed ' + victimHtml;
+      if (victimHtml) return victimHtml;
+      if (killerHtml) return killerHtml;
+      return '\u2014';
+    }
+    var parts = [];
+    if (ev.killer) parts.push(logDetailRoundEventPlayerHtml(ev.killer));
+    if (ev.victim) {
+      if (parts.length) parts.push(' \u2192 ');
+      parts.push(logDetailRoundEventPlayerHtml(ev.victim));
+    }
+    if (ev.player && !ev.killer && !ev.victim) {
+      parts.push(logDetailRoundEventPlayerHtml(ev.player));
+    } else if (ev.player) {
+      parts.push(' \u2014 ' + logDetailRoundEventPlayerHtml(ev.player));
+    }
+    return parts.length ? parts.join('') : '\u2014';
+  }
+
+  function logDetailRoundEventTimeLabel(tickAttr, useTime) {
+    if (!tickAttr || !/^\d+$/.test(tickAttr)) return '\u2014';
+    if (useTime) return logDetailFormatEventTickSec(Number(tickAttr));
+    return 'tick ' + tickAttr;
+  }
+
+  function logDetailRoundEventRowHtml(ev, useTime) {
+    var type = ev && ev.type ? String(ev.type) : '';
+    var timeRaw = ev && ev.time;
+    var tickAttr = '';
+    if (timeRaw != null && Number.isFinite(Number(timeRaw))) {
+      tickAttr = String(Math.floor(Number(timeRaw)));
+    }
+    var timeLabel = tickAttr ? logDetailRoundEventTimeLabel(tickAttr, useTime) : '\u2014';
+    return '<tr class="log-detail-round-event-row' +
+      (type ? (' log-detail-round-event-row--' + escapeAttr(type)) : '') + '">' +
+      '<td class="log-detail-round-event-type">' + escapeHtml(logDetailRoundEventTypeLabel(type)) + '</td>' +
+      '<td class="log-detail-round-event-players">' + logDetailRoundEventPlayersHtml(ev) + '</td>' +
+      '<td class="log-detail-round-event-time-td stats-summary-meta">' +
+      (tickAttr
+        ? ('<span class="log-detail-round-event-time-val" data-match-tick="' + escapeAttr(tickAttr) + '">' +
+          escapeHtml(timeLabel) + '</span>')
+        : '\u2014') +
+      '</td></tr>';
+  }
+
+  function logDetailRoundEventsTableHtml(events, useTime) {
+    if (!events || !events.length) return '';
+    var rows = events.map(function(ev) {
+      return logDetailRoundEventRowHtml(ev, useTime);
+    }).join('');
+    return '<div class="stats-table-wrap log-detail-round-events-wrap">' +
+      '<table class="stats-table log-detail-round-events-table">' +
+      '<thead><tr><th>Event</th><th>Players</th><th>Time</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table></div>';
+  }
+
   function logDetailRoundEventPlayerHtml(p) {
     if (!p) return '';
     if (typeof p === 'string') return escapeHtml(p);
@@ -380,39 +449,6 @@
       : '';
     var namePart = '<span class="log-detail-round-ev-name">' + playerNameCell(p) + '</span>';
     return '<span class="log-detail-player-label-cell">' + iconPart + namePart + '</span>';
-  }
-
-  function logDetailRoundEventLine(ev) {
-    var line = escapeHtml(ev.type || '');
-    var t = ev.type || '';
-    if (t === 'medic_death') {
-      var killerHtml = logDetailRoundEventPlayerHtml(ev.killer);
-      var victimHtml = logDetailRoundEventPlayerHtml(ev.victim);
-      if (killerHtml && victimHtml) {
-        line += ' \u2014 ' + killerHtml + ' killed ' + victimHtml;
-      } else if (victimHtml) {
-        line += ' \u2014 ' + victimHtml;
-      } else if (killerHtml) {
-        line += ' \u2014 ' + killerHtml;
-      }
-    } else {
-      if (ev.killer) line += ' \u2014 ' + logDetailRoundEventPlayerHtml(ev.killer);
-      if (ev.victim) line += ' \u2192 ' + logDetailRoundEventPlayerHtml(ev.victim);
-      if (ev.player) line += ' \u2014 ' + logDetailRoundEventPlayerHtml(ev.player);
-    }
-    if (ev.time != null) {
-      line += logDetailRoundEventTimeHtml(ev.time);
-    }
-    return line;
-  }
-
-  function logDetailRoundEventTimeHtml(timeSec) {
-    var t = Number(timeSec);
-    if (!Number.isFinite(t) || t < 0) return '';
-    var fmt = typeof formatClassTimeMinSec === 'function'
-      ? formatClassTimeMinSec(t)
-      : (Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0'));
-    return ' <span class="stats-summary-meta">@' + escapeHtml(fmt) + '</span>';
   }
 
   function logDetailRoundWinnerClass(winner) {
@@ -426,6 +462,13 @@
     if (!rounds.length) {
       return '<div class="stats-summary"><p class="stats-summary-title">Rounds</p><p class="stats-summary-meta">No round data in this log.</p></div>';
     }
+    var useTime = readLogDetailEventsTimeMode();
+    var hasAnyEvents = rounds.some(function(rnd) {
+      return (rnd.events || []).length > 0;
+    });
+    var toolbar = hasAnyEvents
+      ? ('<div class="log-detail-rounds-toolbar">' + renderLogDetailTimeToggleHtml(useTime) + '</div>')
+      : '';
     var blocks = rounds.map(function(rnd, i) {
       var w = rnd.winner || '\u2014';
       var dur = profileFormatDurationMinSec(rnd.duration_secs);
@@ -435,9 +478,7 @@
       var evHtml = '';
       var events = rnd.events || [];
       if (events.length) {
-        evHtml = '<ul class="log-detail-events">' + events.map(function(ev) {
-          return '<li>' + logDetailRoundEventLine(ev) + '</li>';
-        }).join('') + '</ul>';
+        evHtml = logDetailRoundEventsTableHtml(events, useTime);
         if (rnd.events_truncated) {
           evHtml += '<p class="stats-summary-meta">Events truncated for display.</p>';
         }
@@ -448,7 +489,8 @@
         '<summary class="' + escapeAttr(summaryCls) + '">Round ' + escapeHtml(String(rnd.round_idx != null ? rnd.round_idx + 1 : i + 1)) +
         ': ' + escapeHtml(w) + ' (' + escapeHtml(dur) + ', ' + escapeHtml(String(rk)) + '\u2013' + escapeHtml(String(bk)) + ')</summary>' + evHtml + '</details>';
     }).join('');
-    return '<div class="stats-summary log-detail-rounds"><p class="stats-summary-title">Rounds</p>' + blocks + '</div>';
+    return '<div class="stats-summary log-detail-rounds"><p class="stats-summary-title">Rounds</p>' +
+      toolbar + blocks + '</div>';
   }
 
   function logDetailMedicStatsMod(team) {
@@ -803,13 +845,25 @@
         if (logDetailUberPlayerSid(ev.attacker) === sid) {
           kills += 1;
           if (ev.victim && ev.victim.alias) {
-            contrib.push({ kind: 'kill', tick: tick, player: ev.victim });
+            contrib.push({
+              kind: 'kill',
+              tick: tick,
+              player: ev.victim,
+              actorSid: sid,
+              victimSid: logDetailUberPlayerSid(ev.victim)
+            });
           }
         }
         if (logDetailUberPlayerSid(ev.assister) === sid) {
           assists += 1;
           if (ev.victim && ev.victim.alias) {
-            contrib.push({ kind: 'assist', tick: tick, player: ev.victim });
+            contrib.push({
+              kind: 'assist',
+              tick: tick,
+              player: ev.victim,
+              actorSid: sid,
+              victimSid: logDetailUberPlayerSid(ev.victim)
+            });
           }
         }
         if (logDetailUberPlayerSid(ev.victim) === sid) {
@@ -908,7 +962,15 @@
       var tickAttr = String(Math.floor(Number(c.tick)));
       var kaLabel = c.kind === 'kill' ? 'Kill' : 'Assist';
       var kaCls = c.kind === 'kill' ? 'log-detail-uber-ka-kind--kill' : 'log-detail-uber-ka-kind--assist';
-      return '<tr>' +
+      var actorSid = c.actorSid ? String(c.actorSid) : '';
+      var victimSid = c.victimSid ? String(c.victimSid) : '';
+      return '<tr class="log-detail-uber-ka-row js-log-detail-uber-ka-jump"' +
+        ' data-jump-tick="' + escapeAttr(tickAttr) + '"' +
+        ' data-jump-kind="' + escapeAttr(c.kind || '') + '"' +
+        ' data-jump-sid="' + escapeAttr(actorSid) + '"' +
+        ' data-jump-victim-sid="' + escapeAttr(victimSid) + '"' +
+        ' tabindex="0" role="button"' +
+        ' title="Jump to this event in the feed">' +
         '<td class="log-detail-uber-ka-name-td">' + logDetailUberKaPlayerCell(c.player) + '</td>' +
         '<td class="log-detail-uber-ka-kind-td"><span class="' + kaCls + '">' + escapeHtml(kaLabel) + '</span></td>' +
         '<td class="log-detail-uber-ka-time-td"><span class="log-detail-uber-ka-time" data-match-tick="' +
@@ -992,6 +1054,32 @@
     });
   }
 
+  function repositionOpenLogDetailUberKaCards() {
+    document.querySelectorAll('.log-detail-uber-ka-pop').forEach(function(pop) {
+      var card = pop.querySelector('.log-detail-uber-ka-card');
+      if (!card) return;
+      if (!pop.classList.contains('is-stuck') && card.style.display !== 'block') return;
+      placeLogDetailUberKaCard(pop);
+    });
+  }
+
+  function bindLogDetailUberKaScrollTargets(el) {
+    if (!el || el.nodeType !== 1) return;
+    if (el.getAttribute('data-uber-ka-scroll-bound') === '1') return;
+    el.setAttribute('data-uber-ka-scroll-bound', '1');
+    el.addEventListener('scroll', repositionOpenLogDetailUberKaCards, { passive: true });
+  }
+
+  function bindLogDetailUberKaScrollAncestors(el) {
+    var node = el;
+    while (node && node !== document.documentElement) {
+      bindLogDetailUberKaScrollTargets(node);
+      if (node === document.body) break;
+      node = node.parentElement;
+    }
+    bindLogDetailUberKaScrollTargets(document.documentElement);
+  }
+
   function bindLogDetailUberKaPopovers(root) {
     if (!root || root.getAttribute('data-uber-ka-bound') === '1') return;
     root.setAttribute('data-uber-ka-bound', '1');
@@ -1005,23 +1093,16 @@
       document.addEventListener('keydown', function(ev) {
         if (ev.key === 'Escape') closeStuckLogDetailUberKaPopovers(document);
       });
-      window.addEventListener('resize', function() {
-        document.querySelectorAll('.log-detail-uber-ka-pop.is-stuck, .log-detail-uber-ka-pop:hover')
-          .forEach(function(pop) { placeLogDetailUberKaCard(pop); });
-      }, { passive: true });
+      window.addEventListener('resize', repositionOpenLogDetailUberKaCards, { passive: true });
+      window.addEventListener('scroll', repositionOpenLogDetailUberKaCards, { passive: true });
     }
 
-    function repositionOpenUberKaCards() {
-      root.querySelectorAll('.log-detail-uber-ka-pop').forEach(function(pop) {
-        var card = pop.querySelector('.log-detail-uber-ka-card');
-        if (!card) return;
-        if (pop.classList.contains('is-stuck') || card.style.display === 'block') {
-          placeLogDetailUberKaCard(pop);
-        }
-      });
-    }
-
-    root.addEventListener('scroll', repositionOpenUberKaCards, true);
+    bindLogDetailUberKaScrollAncestors(root);
+    root.querySelectorAll('.log-detail-uber-tracker-list, .log-detail-raw-events').forEach(
+      bindLogDetailUberKaScrollTargets
+    );
+    var resultsContent = document.getElementById('resultsContent');
+    if (resultsContent) bindLogDetailUberKaScrollTargets(resultsContent);
 
     root.querySelectorAll('.log-detail-uber-ka-pop').forEach(function(pop) {
       pop.addEventListener('mouseenter', function() {
@@ -1033,6 +1114,16 @@
     });
 
     root.addEventListener('click', function(ev) {
+      var jumpRow = ev.target && ev.target.closest
+        ? ev.target.closest('.js-log-detail-uber-ka-jump')
+        : null;
+      if (jumpRow) {
+        if (ev.target && ev.target.closest && ev.target.closest('.player-name-menu-btn')) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        performLogDetailUberKaJump(root, jumpRow);
+        return;
+      }
       var trigger = ev.target && ev.target.closest
         ? ev.target.closest('.log-detail-uber-ka-trigger')
         : null;
@@ -1056,6 +1147,90 @@
         hideLogDetailUberKaCard(pop);
       }
     });
+
+    root.addEventListener('keydown', function(ev) {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      var jumpRow = ev.target && ev.target.closest
+        ? ev.target.closest('.js-log-detail-uber-ka-jump')
+        : null;
+      if (!jumpRow) return;
+      ev.preventDefault();
+      performLogDetailUberKaJump(root, jumpRow);
+    });
+  }
+
+  function findLogDetailEventLi(root, tick, kind, actorSid, victimSid) {
+    var list = root && root.querySelector ? root.querySelector('.log-detail-raw-events') : null;
+    if (!list) return null;
+    var tickStr = String(tick);
+    if (!/^\d+$/.test(tickStr)) return null;
+    var candidates = list.querySelectorAll('.log-detail-raw-event--kill');
+    for (var i = 0; i < candidates.length; i++) {
+      var li = candidates[i];
+      var key = li.getAttribute('data-event-key') || '';
+      var parts = key.split(':');
+      if (parts[0] !== 'kill' || parts[1] !== tickStr) continue;
+      var liAtk = parts[2] || '';
+      var liVic = parts[3] || '';
+      var liAss = parts[4] || '';
+      if (kind === 'kill' && actorSid && liAtk === actorSid) {
+        if (!victimSid || liVic === victimSid) return li;
+      }
+      if (kind === 'assist' && actorSid && liAss === actorSid) {
+        if (!victimSid || liVic === victimSid) return li;
+      }
+    }
+    return null;
+  }
+
+  function jumpToLogDetailEvent(root, li) {
+    if (!li || !root) return;
+    var list = li.closest('.log-detail-raw-events');
+    if (list && list.classList.contains('log-detail-hide-kill')) {
+      list.classList.remove('log-detail-hide-kill');
+      var cb = root.querySelector('.js-log-detail-event-filter[data-kind="kill"]');
+      if (cb) cb.checked = true;
+    }
+    li.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    li.classList.add('log-detail-event-jump-highlight');
+    window.setTimeout(function() {
+      li.classList.remove('log-detail-event-jump-highlight');
+    }, 1600);
+  }
+
+  function logDetailEventsSearchRoot(fromRoot) {
+    var details = fromRoot && fromRoot.closest
+      ? fromRoot.closest('details.log-detail-events-wrap')
+      : null;
+    var lazy = details ? details.querySelector('.log-detail-lazy-body') : null;
+    if (lazy && lazy.getAttribute('data-rendered') === '1') {
+      return lazy;
+    }
+    return fromRoot;
+  }
+
+  function performLogDetailUberKaJump(root, jumpRow) {
+    if (!root || !jumpRow) return;
+    var tick = jumpRow.getAttribute('data-jump-tick') || '';
+    var kind = jumpRow.getAttribute('data-jump-kind') || '';
+    var sid = jumpRow.getAttribute('data-jump-sid') || '';
+    var vicSid = jumpRow.getAttribute('data-jump-victim-sid') || '';
+    if (!/^\d+$/.test(tick)) return;
+    var details = root.closest ? root.closest('details.log-detail-events-wrap') : null;
+    if (details && !details.open) {
+      details.open = true;
+    }
+    var lazy = details ? details.querySelector('.log-detail-lazy-body') : null;
+    function attempt() {
+      var searchRoot = logDetailEventsSearchRoot(root);
+      var li = findLogDetailEventLi(searchRoot, tick, kind, sid, vicSid);
+      jumpToLogDetailEvent(searchRoot, li);
+    }
+    if (lazy && lazy.getAttribute('data-rendered') !== '1') {
+      window.setTimeout(attempt, 50);
+    } else {
+      attempt();
+    }
   }
 
   function closeStuckLogDetailUberKaPopovers(root) {
@@ -1172,9 +1347,11 @@
 
   function readLogDetailEventsTimeMode() {
     try {
-      return localStorage.getItem(LOG_DETAIL_EVENTS_TIME_KEY) === '1';
+      var v = localStorage.getItem(LOG_DETAIL_EVENTS_TIME_KEY);
+      if (v === null) return true;
+      return v === '1';
     } catch (e) {
-      return false;
+      return true;
     }
   }
 
@@ -1182,6 +1359,63 @@
     try {
       localStorage.setItem(LOG_DETAIL_EVENTS_TIME_KEY, on ? '1' : '0');
     } catch (e) {}
+  }
+
+  function renderLogDetailTimeToggleHtml(useTime) {
+    if (useTime == null) useTime = readLogDetailEventsTimeMode();
+    return '<label class="log-detail-events-time-toggle">' +
+      '<span class="log-detail-events-time-label' + (useTime ? '' : ' is-active') + '">Ticks</span>' +
+      '<span class="log-detail-events-time-switch">' +
+      '<input type="checkbox" class="js-log-detail-event-time-mode" role="switch"' +
+      ' aria-label="Show event timestamps as minutes and seconds"' +
+      (useTime ? ' checked' : '') + '>' +
+      '<span class="log-detail-events-time-switch-ui" aria-hidden="true"></span></span>' +
+      '<span class="log-detail-events-time-label' + (useTime ? ' is-active' : '') + '">Time</span>' +
+      '</label>';
+  }
+
+  function updateLogDetailRoundEventTimes(root, useTime) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('.log-detail-round-event-time-val').forEach(function(el) {
+      var tick = el.getAttribute('data-match-tick') || '';
+      if (!tick || !/^\d+$/.test(tick)) return;
+      var label = logDetailRoundEventTimeLabel(tick, useTime);
+      if (label) el.textContent = label;
+    });
+  }
+
+  function applyLogDetailTimeMode(scope, useTime) {
+    if (!scope) return;
+    scope.querySelectorAll('.log-detail-raw-events').forEach(function(list) {
+      list.classList.toggle('log-detail-events-time-mode', useTime);
+    });
+    updateLogDetailEventTicks(scope, useTime);
+    updateLogDetailUberTrackerTicks(scope, useTime);
+    updateLogDetailUberDurationTips(scope, useTime);
+    updateLogDetailUberKaPopTimes(scope, useTime);
+    updateLogDetailRoundEventTimes(scope, useTime);
+    scope.querySelectorAll('.log-detail-events-time-toggle').forEach(function(toggle) {
+      var sw = toggle.querySelector('.js-log-detail-event-time-mode');
+      if (sw) sw.checked = useTime;
+      toggle.querySelectorAll('.log-detail-events-time-label').forEach(function(lab, i) {
+        lab.classList.toggle('is-active', useTime ? i === 1 : i === 0);
+      });
+    });
+  }
+
+  function bindLogDetailTimeToggle(root) {
+    if (!root || root.getAttribute('data-time-toggle-bound') === '1') return;
+    root.setAttribute('data-time-toggle-bound', '1');
+    root.addEventListener('change', function(ev) {
+      var timeSw = ev.target && ev.target.classList
+        && ev.target.classList.contains('js-log-detail-event-time-mode')
+        ? ev.target
+        : null;
+      if (!timeSw) return;
+      var useTime = !!timeSw.checked;
+      writeLogDetailEventsTimeMode(useTime);
+      applyLogDetailTimeMode(root, useTime);
+    });
   }
 
   function logDetailFormatEventTickSec(totalSec) {
@@ -1244,6 +1478,18 @@
     });
   }
 
+  function logDetailEventKey(ev) {
+    var kind = ev && ev.kind ? String(ev.kind) : '';
+    var tick = ev && ev.tick != null ? String(Math.floor(Number(ev.tick))) : '';
+    var a = (ev.attacker && ev.attacker.steamid64) ? String(ev.attacker.steamid64) : '';
+    var v = (ev.victim && ev.victim.steamid64) ? String(ev.victim.steamid64) : '';
+    var ass = (ev.assister && ev.assister.steamid64) ? String(ev.assister.steamid64) : '';
+    var p = (ev.player && ev.player.steamid64) ? String(ev.player.steamid64) : '';
+    var fifth = kind === 'kill' ? ass : p;
+    if (!kind || !tick) return '';
+    return [kind, tick, a, v, fifth].join(':');
+  }
+
   function logDetailEventLine(ev) {
     var kind = ev && ev.kind ? String(ev.kind) : '';
     var label = LOG_DETAIL_EVENT_KIND_LABEL[kind] || kind || 'Event';
@@ -1289,7 +1535,9 @@
       body = escapeHtml(label);
     }
     var tickHtml = logDetailEventTickHtml(ev);
-    return '<li class="log-detail-raw-event log-detail-raw-event--' + escapeAttr(kind) + '">' +
+    var eventKey = logDetailEventKey(ev);
+    return '<li class="log-detail-raw-event log-detail-raw-event--' + escapeAttr(kind) + '"' +
+      (eventKey ? (' data-event-key="' + escapeAttr(eventKey) + '"') : '') + '>' +
       '<span class="log-detail-event-kind">' + escapeHtml(label) + '</span> ' +
       '<span class="log-detail-event-body">' + body + '</span>' +
       (tickHtml ? tickHtml : '') +
@@ -1317,15 +1565,7 @@
         boxes.join('') + '</div>')
       : '';
     return '<div class="log-detail-events-toolbar">' + checksHtml +
-      '<label class="log-detail-events-time-toggle">' +
-      '<span class="log-detail-events-time-label' + (useTime ? '' : ' is-active') + '">Ticks</span>' +
-      '<span class="log-detail-events-time-switch">' +
-      '<input type="checkbox" class="js-log-detail-event-time-mode" role="switch"' +
-      ' aria-label="Show event timestamps as minutes and seconds"' +
-      (useTime ? ' checked' : '') + '>' +
-      '<span class="log-detail-events-time-switch-ui" aria-hidden="true"></span></span>' +
-      '<span class="log-detail-events-time-label' + (useTime ? ' is-active' : '') + '">Time</span>' +
-      '</label></div>';
+      renderLogDetailTimeToggleHtml(useTime) + '</div>';
   }
 
   function bindLogDetailEventsToolbar(root) {
@@ -1333,12 +1573,7 @@
     var bar = root.querySelector('.log-detail-events-toolbar');
     var list = root.querySelector('.log-detail-raw-events');
     if (!bar || !list) return;
-    var useTime = readLogDetailEventsTimeMode();
-    list.classList.toggle('log-detail-events-time-mode', useTime);
-    updateLogDetailEventTicks(root, useTime);
-    updateLogDetailUberTrackerTicks(root, useTime);
-    updateLogDetailUberDurationTips(root, useTime);
-    updateLogDetailUberKaPopTimes(root, useTime);
+    applyLogDetailTimeMode(root, readLogDetailEventsTimeMode());
     bindLogDetailUberKaPopovers(root);
     bar.querySelectorAll('.js-log-detail-event-filter').forEach(function(cb) {
       var id = cb.getAttribute('data-kind') || '';
@@ -1346,21 +1581,8 @@
       list.classList.toggle('log-detail-hide-' + id, !cb.checked);
     });
     bar.addEventListener('change', function(ev) {
-      var timeSw = ev.target && ev.target.classList
-        && ev.target.classList.contains('js-log-detail-event-time-mode')
-        ? ev.target
-        : null;
-      if (timeSw) {
-        useTime = !!timeSw.checked;
-        writeLogDetailEventsTimeMode(useTime);
-        list.classList.toggle('log-detail-events-time-mode', useTime);
-        updateLogDetailEventTicks(root, useTime);
-        updateLogDetailUberTrackerTicks(root, useTime);
-        updateLogDetailUberDurationTips(root, useTime);
-        updateLogDetailUberKaPopTimes(root, useTime);
-        bar.querySelectorAll('.log-detail-events-time-label').forEach(function(lab, i) {
-          lab.classList.toggle('is-active', useTime ? i === 1 : i === 0);
-        });
+      if (ev.target && ev.target.classList
+        && ev.target.classList.contains('js-log-detail-event-time-mode')) {
         return;
       }
       var cb = ev.target && ev.target.closest

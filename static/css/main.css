@@ -2120,6 +2120,55 @@
     [data-theme="dark"] .log-detail-round summary.log-detail-round-summary.team-blue { color: #8cf; }
     .log-detail-round-ev-icon { display: inline-flex; flex-shrink: 0; vertical-align: middle; }
     .log-detail-round-ev-name { display: inline; }
+    .log-detail-rounds-toolbar {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      margin: 0 0 0.5rem;
+      padding: 0.35rem 0.55rem;
+      border: 1px solid var(--border);
+      border-radius: var(--standard-border-radius, 5px);
+    }
+    .log-detail-round-events-wrap {
+      margin: 0.5rem 0 0;
+      max-height: 14rem;
+      overflow-y: auto;
+    }
+    .log-detail-round-events-table {
+      width: 100%;
+      font-size: 0.88rem;
+    }
+    .log-detail-round-events-table th {
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      color: var(--text-muted);
+    }
+    .log-detail-round-events-table td {
+      vertical-align: middle;
+      padding: 0.28rem 0.4rem;
+    }
+    .log-detail-round-event-type {
+      white-space: nowrap;
+      color: var(--text-muted);
+      font-weight: 600;
+      width: 1%;
+    }
+    .log-detail-round-event-players {
+      min-width: 8rem;
+    }
+    .log-detail-round-events-table .log-detail-player-label-cell {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+    }
+    .log-detail-round-event-time-td {
+      white-space: nowrap;
+      text-align: right;
+      width: 1%;
+    }
     .log-detail-events li .log-detail-player-label-cell { display: inline-flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
     .log-detail-events {
       font-size: 0.9rem;
@@ -2431,6 +2480,21 @@
     [data-theme="dark"] .log-detail-uber-ka-card .player-name-plain.team-red { color: #f88; }
     [data-theme="dark"] .log-detail-uber-ka-card .player-name-menu-btn.team-blue,
     [data-theme="dark"] .log-detail-uber-ka-card .player-name-plain.team-blue { color: #8cf; }
+    .log-detail-uber-ka-row.js-log-detail-uber-ka-jump {
+      cursor: pointer;
+    }
+    .log-detail-uber-ka-row.js-log-detail-uber-ka-jump:hover,
+    .log-detail-uber-ka-row.js-log-detail-uber-ka-jump:focus {
+      background: var(--table-hover);
+      outline: none;
+    }
+    .log-detail-event-jump-highlight {
+      animation: logDetailEventJumpFlash 1.6s ease-out;
+    }
+    @keyframes logDetailEventJumpFlash {
+      0% { background: color-mix(in srgb, var(--link) 35%, transparent); }
+      100% { background: transparent; }
+    }
     .log-detail-uber-tracker .player-name-menu-btn.team-red,
     .log-detail-uber-tracker .player-name-plain.team-red { color: #c44; }
     .log-detail-uber-tracker .player-name-menu-btn.team-blue,
