@@ -31,7 +31,7 @@ from app.log_detail_cache_db import (
 )
 from app.log_links import external_log_url, is_internal_log_links, log_url_for_id
 from app.log_utils import team_score, winner_team_from_log
-from app.logs_tf import steamid3_to_steamid64
+from app.logs_tf import steamid3_to_steamid64, steamid64_to_steamid3
 from app.search.search import LOGMATCH_CLASS_ORDER, _class_playtime_for_logmatch
 from app.stats_db import connect_stats_db
 from app.weapon_names import get_weapon_name
@@ -41,11 +41,14 @@ logger = logging.getLogger(__name__)
 # Bump a section key (e.g. teams:v1 -> teams:v2) when its builder output shape or logic changes.
 # source_fingerprint invalidates rows when local JSON/DB inputs change; version bumps invalidate
 # after code-only fixes (stale cached JSON, new fields like summary log_url/link_mode).
+# rounds v3→v6 (skipped v4/v5 on main): v4 enrich pointcap rows from raw capture_events
+# (player/players/cp_name); v5 align captures via deduped Round_Start ticks; v6 convert
+# logs.tf match-offset event times for rounds after round 0 before round_tick lookup.
 SECTION_VERSIONS: dict[str, str] = {
     "summary": "summary:v2",
     "teams": "teams:v2",
     "players": "players:v2",
-    "rounds": "rounds:v3",
+    "rounds": "rounds:v6",
     "medics": "medics:v3",
     "class_matrix": "class_matrix:v4",
     "chat": "chat:v4",
@@ -418,6 +421,182 @@ def _enrich_round_event(
     return row
 
 
+def _dedupe_consecutive_round_starts(round_starts: list[int]) -> list[int]:
+    """Collapse duplicate Round_Start ticks (warmup/restart) to align with logs.tf rounds."""
+    out: list[int] = []
+    for tick in round_starts:
+        if not out or out[-1] != tick:
+            out.append(tick)
+    return out
+
+
+_ROUND_CAP_TICK_TOLERANCE = 2
+
+
+def _round_capture_lookup(
+    log_id: int,
+) -> tuple[dict[int, dict[int, list[dict[str, Any]]]], list[int]] | None:
+    """Map logs.tf round index -> round_tick -> captures; also return deduped Round_Start ticks."""
+    raw_path = Path(RAW_EVENTS_DB_PATH)
+    if not raw_path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(raw_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            if not conn.execute(
+                "SELECT 1 FROM raw_logs WHERE log_id = ?",
+                (log_id,),
+            ).fetchone():
+                return None
+            round_starts = [
+                int(r[0])
+                for r in conn.execute(
+                    """
+                    SELECT tick FROM round_events
+                    WHERE log_id = ? AND event_type = 'round_start'
+                    ORDER BY tick ASC
+                    """,
+                    (log_id,),
+                )
+            ]
+            if not round_starts:
+                return None
+            deduped_starts = _dedupe_consecutive_round_starts(round_starts)
+            by_start_tick: dict[int, dict[int, list[dict[str, Any]]]] = {}
+            for row in conn.execute(
+                """
+                SELECT tick, round_tick, steamid64, cp_index, cp_name
+                FROM capture_events WHERE log_id = ?
+                ORDER BY tick ASC
+                """,
+                (log_id,),
+            ):
+                abs_tick = int(row[0])
+                round_tick = int(row[1]) if row[1] is not None else 0
+                start_tick = abs_tick - round_tick
+                cp_name = (str(row[4]).strip() if row[4] is not None else "") or None
+                cap = {
+                    "steamid64": str(row[2]) if row[2] is not None else None,
+                    "cp_index": int(row[3]) if row[3] is not None else None,
+                    "cp_name": cp_name,
+                }
+                by_start_tick.setdefault(start_tick, {}).setdefault(round_tick, []).append(cap)
+            lookup: dict[int, dict[int, list[dict[str, Any]]]] = {}
+            for round_idx, start_tick in enumerate(deduped_starts):
+                round_caps = by_start_tick.get(start_tick)
+                if round_caps:
+                    lookup[round_idx] = round_caps
+            if not lookup:
+                return None
+            return lookup, deduped_starts
+        finally:
+            conn.close()
+    except (sqlite3.Error, TypeError, ValueError) as e:
+        logger.debug("round capture lookup for log %s: %s", log_id, e)
+        return None
+
+
+def _json_round_event_round_ticks(
+    json_time: Any,
+    round_idx: int,
+    deduped_starts: list[int],
+) -> list[int]:
+    """
+    logs.tf round event times are match-offset: round_tick + (round_start - first_round_start).
+    Round 0 matches raw round_tick directly; later rounds need the base subtracted.
+    Also try the raw value as round-relative for tolerance across log versions.
+    """
+    candidates: list[int] = []
+    try:
+        t = int(round(float(json_time)))
+    except (TypeError, ValueError):
+        return candidates
+    if deduped_starts and 0 <= round_idx < len(deduped_starts):
+        base = deduped_starts[round_idx] - deduped_starts[0]
+        offset_tick = t - base
+        if offset_tick not in candidates:
+            candidates.append(offset_tick)
+    if t not in candidates:
+        candidates.append(t)
+    return candidates
+
+
+def _safe_steamid64_to_steamid3(steamid64: str | int | None) -> str | None:
+    """Convert SteamID64 to SteamID3; return None on invalid/corrupt raw DB values."""
+    if steamid64 is None:
+        return None
+    try:
+        return steamid64_to_steamid3(steamid64)
+    except (TypeError, ValueError):
+        return None
+
+
+def _caps_at_round_tick(
+    round_caps: dict[int, list[dict[str, Any]]],
+    round_tick: int,
+    *,
+    tolerance: int = _ROUND_CAP_TICK_TOLERANCE,
+) -> list[dict[str, Any]] | None:
+    for delta in range(0, tolerance + 1):
+        keys = [round_tick] if delta == 0 else [round_tick - delta, round_tick + delta]
+        for key in keys:
+            caps = round_caps.get(key)
+            if caps:
+                return caps
+    return None
+
+
+def _enrich_round_pointcaps_from_raw(
+    events: list[dict[str, Any]],
+    round_idx: int,
+    cap_lookup: dict[int, dict[int, list[dict[str, Any]]]] | None,
+    deduped_starts: list[int],
+    players: dict[str, Any],
+    names: dict[str, Any],
+) -> None:
+    """Attach cappers and cp_name to JSON pointcap rows (logs.tf omits player steamids)."""
+    if not cap_lookup or not events:
+        return
+    round_caps = cap_lookup.get(round_idx)
+    if not round_caps:
+        return
+    for row in events:
+        if row.get("type") != "pointcap":
+            continue
+        if row.get("player") or row.get("players"):
+            continue
+        time_raw = row.get("time")
+        if time_raw is None:
+            continue
+        caps = None
+        for rt in _json_round_event_round_ticks(time_raw, round_idx, deduped_starts):
+            caps = _caps_at_round_tick(round_caps, rt)
+            if caps:
+                break
+        if not caps:
+            continue
+        players_out: list[dict[str, Any]] = []
+        seen_sid: set[str] = set()
+        for cap in caps:
+            sid64 = cap.get("steamid64")
+            if not sid64 or sid64 in seen_sid:
+                continue
+            seen_sid.add(sid64)
+            sid3 = _safe_steamid64_to_steamid3(sid64)
+            if not sid3:
+                continue
+            p = _round_event_player(sid3, players, names)
+            if p:
+                players_out.append(p)
+        if players_out:
+            row["players"] = players_out
+            row["player"] = players_out[0]
+        cp_name = caps[0].get("cp_name")
+        if cp_name:
+            row["cp_name"] = cp_name
+
+
 def _round_scores_from_json(
     rnd: dict[str, Any],
     db: dict[str, Any] | None = None,
@@ -500,6 +679,9 @@ def _build_rounds(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
     rounds_out: list[dict[str, Any]] = []
     if not isinstance(raw_rounds, list):
         raw_rounds = []
+    cap_ctx = _round_capture_lookup(log_id)
+    cap_lookup = cap_ctx[0] if cap_ctx else None
+    deduped_starts = cap_ctx[1] if cap_ctx else []
     for i, rnd in enumerate(raw_rounds):
         if not isinstance(rnd, dict):
             continue
@@ -521,6 +703,10 @@ def _build_rounds(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
             row = _enrich_round_event(ev, players, names)
             if row:
                 events.append(row)
+        if cap_lookup:
+            _enrich_round_pointcaps_from_raw(
+                events, i, cap_lookup, deduped_starts, players, names
+            )
         rounds_out.append(
             {
                 "round_idx": i,

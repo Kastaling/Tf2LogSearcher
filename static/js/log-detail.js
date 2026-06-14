@@ -236,7 +236,7 @@
     var r = Number(redVal) || 0;
     var b = Number(blueVal) || 0;
     if (r === b) {
-      return { sym: '=', cmpCls: 'log-detail-cmp-tie' };
+      return { sym: '=', redWin: false, blueWin: false, tie: true };
     }
     var sym = r > b ? '&gt;' : '&lt;';
     var redBetter;
@@ -247,21 +247,28 @@
     }
     return {
       sym: sym,
-      cmpCls: redBetter ? 'log-detail-cmp-red-wins' : 'log-detail-cmp-blue-wins'
+      redWin: redBetter,
+      blueWin: !redBetter,
+      tie: false
     };
   }
 
   function teamSummaryStatRow(label, redVal, blueVal, higherBetter) {
     var cmp = teamSummaryCompare(redVal, blueVal, higherBetter);
+    var redCellCls = 'log-detail-team-stat-red' +
+      (cmp.redWin ? ' log-detail-team-stat--winner' : '');
+    var blueCellCls = 'log-detail-team-stat-blue' +
+      (cmp.blueWin ? ' log-detail-team-stat--winner' : '');
     return '<li class="log-detail-team-stat-row">' +
-      '<div class="log-detail-team-stat-red">' +
+      '<div class="' + redCellCls + '">' +
       '<span class="log-detail-stat-val">' + escapeHtml(String(Number(redVal) || 0)) + '</span>' +
       '</div>' +
       '<div class="log-detail-team-stat-mid">' +
       '<span class="log-detail-stat-label">' + escapeHtml(label) + '</span>' +
-      '<span class="log-detail-team-stat-cmp log-detail-cmp ' + cmp.cmpCls + '" aria-hidden="true">' + cmp.sym + '</span>' +
+      '<span class="log-detail-team-stat-cmp log-detail-cmp' +
+      (cmp.tie ? ' log-detail-cmp-tie' : '') + '" aria-hidden="true">' + cmp.sym + '</span>' +
       '</div>' +
-      '<div class="log-detail-team-stat-blue">' +
+      '<div class="' + blueCellCls + '">' +
       '<span class="log-detail-stat-val">' + escapeHtml(String(Number(blueVal) || 0)) + '</span>' +
       '</div></li>';
   }
@@ -388,6 +395,25 @@
       if (victimHtml) return victimHtml;
       if (killerHtml) return killerHtml;
       return '\u2014';
+    }
+    if (t === 'pointcap') {
+      var plist = [];
+      if (ev.players && ev.players.length) {
+        ev.players.forEach(function(p) { plist.push(p); });
+      } else if (ev.player) {
+        plist.push(ev.player);
+      }
+      if (!plist.length) return '\u2014';
+      var namesHtml = plist.map(function(p) {
+        return logDetailRoundEventPlayerHtml(p);
+      }).join(', ');
+      var capText = namesHtml + ' captured';
+      if (ev.cp_name) {
+        capText += ' <span class="log-detail-event-cp">' + escapeHtml(String(ev.cp_name)) + '</span>';
+      } else if (ev.point != null && ev.point !== '') {
+        capText += ' CP #' + escapeHtml(String(ev.point));
+      }
+      return capText;
     }
     var parts = [];
     if (ev.killer) parts.push(logDetailRoundEventPlayerHtml(ev.killer));

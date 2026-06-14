@@ -16,7 +16,9 @@ from app.log_detail import (
     _build_rounds,
     _chat_elapsed_seconds_map,
     _event_sort_key,
+    _json_round_event_round_ticks,
     _round_scores_from_json,
+    _safe_steamid64_to_steamid3,
     compute_source_fingerprint,
     get_log_detail_payload,
     load_log_json,
@@ -393,3 +395,204 @@ def test_build_rounds_legacy_kills_block(logs_dir, monkeypatch) -> None:
     ]
     out = _build_rounds(1, logtext)
     assert out["rounds"][0]["score"] == {"Red": 5, "Blue": 3}
+
+
+def test_json_round_event_round_ticks_match_offset() -> None:
+    """logs.tf uses match-offset times: round_tick + (round_start - first_round_start)."""
+    starts = [325, 724, 1179, 1597]
+    assert _json_round_event_round_ticks(61, 0, starts) == [61]
+    assert _json_round_event_round_ticks(458, 1, starts) == [59, 458]
+    assert _json_round_event_round_ticks(921, 2, starts) == [67, 921]
+
+
+@pytest.mark.parametrize("bad", ["", "not-a-steamid", "7656119800000000x"])
+def test_safe_steamid64_to_steamid3_invalid(bad: str) -> None:
+    assert _safe_steamid64_to_steamid3(bad) is None
+
+
+def test_build_rounds_pointcap_skips_corrupt_steamid64(logs_dir, tmp_path) -> None:
+    """Invalid capture steamid64 must not abort rounds enrichment for other cappers."""
+    log_id = 5025
+    logtext = make_log(PLAYER_A_3, PLAYER_B_3)
+    logtext["names"] = {PLAYER_A_3: "CapperA"}
+    logtext["rounds"] = [
+        {
+            "duration": 90,
+            "winner": "Red",
+            "team": {"Red": {"score": 1}, "Blue": {"score": 0}},
+            "events": [{"type": "pointcap", "time": 61, "team": "Red"}],
+        },
+    ]
+    write_log(logs_dir, log_id, logtext)
+
+    a_ent = f"CapperA<1><{PLAYER_A_3}><Red>"
+    raw_log = "\n".join(
+        [
+            'L 01/01/2024 - 12:00:00: World triggered "Round_Start"',
+            'L 01/01/2024 - 12:01:01: Team "RED" triggered "pointcaptured" (cp "0") '
+            f'(cpname "#koth_cascade_cap") (player1 "{a_ent}") (position1 "10 20 30")',
+        ]
+    )
+    parsed = parse_raw_log(log_id, raw_log)
+    parsed["capture_events"].append(
+        {
+            "tick": 61,
+            "round_tick": 61,
+            "steamid64": "corrupt-not-numeric",
+            "cp_index": 0,
+            "cp_name": "#koth_cascade_cap",
+            "pos_x": None,
+            "pos_y": None,
+            "pos_z": None,
+        }
+    )
+    raw_db = tmp_path / "raw_events.db"
+    raw_conn = connect_raw_db(raw_db)
+    init_raw_db(raw_conn)
+    with raw_conn:
+        replace_raw_events_for_log(raw_conn, log_id, parsed)
+    raw_conn.close()
+
+    with patch("app.log_detail.LOGS_DIR", logs_dir), patch(
+        "app.log_detail.RAW_EVENTS_DB_PATH", raw_db
+    ):
+        out = _build_rounds(log_id, logtext)
+
+    cap = next(ev for ev in out["rounds"][0]["events"] if ev.get("type") == "pointcap")
+    assert cap["player"]["alias"] == "CapperA"
+
+
+def test_build_rounds_pointcap_enriched_from_raw_captures(
+    logs_dir, tmp_path, monkeypatch
+) -> None:
+    """logs.tf pointcap rows omit cappers; raw capture_events supply players and cp_name."""
+    log_id = 5024
+    logtext = make_log(PLAYER_A_3, PLAYER_B_3)
+    logtext["names"] = {PLAYER_A_3: "CapperA", PLAYER_B_3: "CapperB"}
+    logtext["rounds"] = [
+        {
+            "duration": 384,
+            "winner": "Red",
+            "team": {"Red": {"score": 1}, "Blue": {"score": 0}},
+            "events": [
+                {"type": "pointcap", "time": 61, "team": "Red"},
+                {"type": "pointcap", "time": 84, "team": "Blue"},
+            ],
+        },
+    ]
+    write_log(logs_dir, log_id, logtext)
+
+    raw_db = tmp_path / "raw_events.db"
+    raw_conn = connect_raw_db(raw_db)
+    init_raw_db(raw_conn)
+    a_ent = f"CapperA<1><{PLAYER_A_3}><Red>"
+    b_ent = f"CapperB<1><{PLAYER_B_3}><Blue>"
+    raw_log = "\n".join(
+        [
+            'L 01/01/2024 - 12:00:00: World triggered "Round_Start"',
+            'L 01/01/2024 - 12:01:01: Team "RED" triggered "pointcaptured" (cp "0") '
+            f'(cpname "#koth_cascade_cap") (player1 "{a_ent}") (position1 "10 20 30")',
+            'L 01/01/2024 - 12:01:24: Team "BLUE" triggered "pointcaptured" (cp "0") '
+            f'(cpname "#koth_cascade_cap") (player1 "{b_ent}") (position1 "40 50 60") '
+            f'(player2 "{a_ent}") (position2 "70 80 90")',
+        ]
+    )
+    parsed = parse_raw_log(log_id, raw_log)
+    with raw_conn:
+        replace_raw_events_for_log(raw_conn, log_id, parsed)
+    raw_conn.close()
+
+    with patch("app.log_detail.LOGS_DIR", logs_dir), patch(
+        "app.log_detail.RAW_EVENTS_DB_PATH", raw_db
+    ):
+        out = _build_rounds(log_id, logtext)
+
+    events = out["rounds"][0]["events"]
+    assert len(events) == 2
+    cap1 = events[0]
+    assert cap1["type"] == "pointcap"
+    assert cap1["player"]["alias"] == "CapperA"
+    assert cap1["cp_name"] == "#koth_cascade_cap"
+    cap2 = events[1]
+    assert cap2["type"] == "pointcap"
+    assert len(cap2["players"]) == 2
+    assert {p["alias"] for p in cap2["players"]} == {"CapperA", "CapperB"}
+    assert cap2["cp_name"] == "#koth_cascade_cap"
+    assert SECTION_VERSIONS["rounds"] == "rounds:v6"
+
+
+def test_build_rounds_pointcap_enriched_koth_multi_round(logs_dir, tmp_path) -> None:
+    """logs.tf round event times are match-offset after round 0 (regression: log 4070640)."""
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    json_path = examples / "4070640.json"
+    zip_path = examples / "log_4070640.log.zip"
+    if not json_path.is_file() or not zip_path.is_file():
+        pytest.skip("example log missing")
+    log_id = 4070640
+    logtext = json.loads(json_path.read_text(encoding="utf-8"))
+    write_log(logs_dir, log_id, logtext)
+
+    import zipfile
+
+    with zipfile.ZipFile(zip_path) as zf:
+        raw = zf.read(zf.namelist()[0]).decode("utf-8", errors="replace")
+    raw_db = tmp_path / "raw_events.db"
+    raw_conn = connect_raw_db(raw_db)
+    init_raw_db(raw_conn)
+    with raw_conn:
+        replace_raw_events_for_log(raw_conn, log_id, parse_raw_log(log_id, raw))
+    raw_conn.close()
+
+    with patch("app.log_detail.LOGS_DIR", logs_dir), patch(
+        "app.log_detail.RAW_EVENTS_DB_PATH", raw_db
+    ):
+        out = _build_rounds(log_id, logtext)
+
+    rounds = out["rounds"]
+    assert len(rounds) >= 4
+    for ri in range(4):
+        caps = [ev for ev in rounds[ri]["events"] if ev.get("type") == "pointcap"]
+        assert caps, f"round {ri} expected pointcap rows"
+        missing = [ev for ev in caps if not ev.get("player") and not ev.get("players")]
+        assert not missing, f"round {ri} pointcaps missing players: {missing}"
+        assert all(ev.get("cp_name") for ev in caps), f"round {ri} missing cp_name"
+
+
+def test_build_rounds_pointcap_enriched_real_example_log(
+    logs_dir, tmp_path, monkeypatch
+) -> None:
+    """Align captures via deduped Round_Start ticks (raw logs often emit duplicate starts)."""
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    json_path = examples / "3126474.json"
+    zip_path = examples / "log_3126474.log.zip"
+    if not json_path.is_file() or not zip_path.is_file():
+        pytest.skip("example log missing")
+    log_id = 3126474
+    logtext = json.loads(json_path.read_text(encoding="utf-8"))
+    write_log(logs_dir, log_id, logtext)
+
+    import zipfile
+
+    from app.raw_log_parser import parse_raw_log
+
+    with zipfile.ZipFile(zip_path) as zf:
+        raw = zf.read(zf.namelist()[0]).decode("utf-8", errors="replace")
+    raw_db = tmp_path / "raw_events.db"
+    raw_conn = connect_raw_db(raw_db)
+    init_raw_db(raw_conn)
+    with raw_conn:
+        replace_raw_events_for_log(raw_conn, log_id, parse_raw_log(log_id, raw))
+    raw_conn.close()
+
+    with patch("app.log_detail.LOGS_DIR", logs_dir), patch(
+        "app.log_detail.RAW_EVENTS_DB_PATH", raw_db
+    ):
+        out = _build_rounds(log_id, logtext)
+
+    cap = next(
+        ev
+        for ev in out["rounds"][0]["events"]
+        if ev.get("type") == "pointcap" and ev.get("time") == 46
+    )
+    assert cap.get("player", {}).get("alias")
+    assert cap.get("cp_name")
