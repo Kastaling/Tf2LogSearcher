@@ -533,10 +533,17 @@
 
   function logDetailMedicMetaLine(m) {
     var mod = logDetailMedicStatsMod(m.team);
+    var advLost = m.biggest_advantage_lost;
+    var advPart = '';
+    if (advLost != null && advLost !== '') {
+      advPart = ' &middot; <span class="log-detail-stat-label">Biggest Advantage Lost:</span> ' +
+        '<span class="log-detail-stat-val">' + escapeHtml(String(advLost)) + 's</span>';
+    }
     return '<p class="log-detail-medic-stats ' + mod + '">' +
       '<span class="log-detail-stat-label">Healing done:</span> <span class="log-detail-stat-val">' + escapeHtml(String(m.healing_done || 0)) + '</span>' +
       ' &middot; <span class="log-detail-stat-label">Ubers:</span> <span class="log-detail-stat-val">' + escapeHtml(String(m.ubers || 0)) + '</span>' +
-      ' &middot; <span class="log-detail-stat-label">Drops:</span> <span class="log-detail-stat-val">' + escapeHtml(String(m.drops || 0)) + '</span></p>';
+      ' &middot; <span class="log-detail-stat-label">Drops:</span> <span class="log-detail-stat-val">' + escapeHtml(String(m.drops || 0)) + '</span>' +
+      advPart + '</p>';
   }
 
   function logDetailMedicHealPct(healing, totalHeal) {
@@ -697,18 +704,37 @@
     kill: 'Kill',
     uber: 'Uber',
     charge_end: 'Charge end',
+    charge_ready: 'Charge ready',
+    lost_advantage: 'Advantage lost',
+    medic_death: 'Medic death',
+    empty_uber: 'Empty uber',
     capture: 'Capture',
+    capture_blocked: 'Capture blocked',
     round_start: 'Round start',
     round_win: 'Round win',
-    spawn: 'Spawn'
+    spawn: 'Spawn',
+    pass_score: 'Pass score',
+    pass_score_assist: 'Pass assist',
+    pass_get: 'Pass pickup',
+    pass_free: 'Pass throw',
+    pass_pass_caught: 'Pass caught',
+    pass_ball_stolen: 'Ball stolen',
+    pass_splash_defense: 'Splash defense'
   };
+
+  var LOG_DETAIL_PASSTIME_KINDS = [
+    'pass_score', 'pass_score_assist', 'pass_get', 'pass_free',
+    'pass_pass_caught', 'pass_ball_stolen', 'pass_splash_defense'
+  ];
 
   /** Filter groups: checkbox data-kind -> event kinds it controls. */
   var LOG_DETAIL_EVENT_FILTERS = [
     { id: 'kill', label: 'Kills', kinds: ['kill'] },
-    { id: 'uber', label: 'Ubers', kinds: ['uber'] },
+    { id: 'uber', label: 'Ubers', kinds: ['uber', 'charge_ready', 'lost_advantage', 'empty_uber'] },
+    { id: 'medic_death', label: 'Medic deaths', kinds: ['medic_death'] },
     { id: 'charge_end', label: 'Charge ends', kinds: ['charge_end'] },
-    { id: 'capture', label: 'Captures', kinds: ['capture'] },
+    { id: 'capture', label: 'Captures', kinds: ['capture', 'capture_blocked'] },
+    { id: 'passtime', label: 'Passtime', kinds: LOG_DETAIL_PASSTIME_KINDS },
     { id: 'round', label: 'Rounds', kinds: ['round_start', 'round_win'] },
     { id: 'spawn', label: 'Spawns', kinds: ['spawn'], defaultOn: false }
   ];
@@ -774,9 +800,125 @@
     return /^\d{17}$/.test(sid) ? sid : '';
   }
 
+  function logDetailPrimaryMedicSidByTeam(events) {
+    var counts = { Red: {}, Blue: {} };
+    (events || []).forEach(function(ev) {
+      if (!ev || ev.kind !== 'uber') return;
+      var med = ev.medic;
+      if (!med || (med.team !== 'Red' && med.team !== 'Blue')) return;
+      var sid = logDetailUberPlayerSid(med);
+      if (!sid) return;
+      counts[med.team][sid] = (counts[med.team][sid] || 0) + 1;
+    });
+    var out = { Red: '', Blue: '' };
+    ['Red', 'Blue'].forEach(function(team) {
+      var bestSid = '';
+      var bestN = 0;
+      Object.keys(counts[team]).forEach(function(sid) {
+        if (counts[team][sid] > bestN) {
+          bestN = counts[team][sid];
+          bestSid = sid;
+        }
+      });
+      out[team] = bestSid;
+    });
+    return out;
+  }
+
+  function logDetailUberChargeReadyTimeline(events) {
+    var bySid = {};
+    (events || []).forEach(function(ev) {
+      if (!ev || ev.kind !== 'charge_ready') return;
+      var sid = logDetailUberPlayerSid(ev.medic);
+      var tick = logDetailEventTickNum(ev, 'tick');
+      if (!sid || tick == null) return;
+      if (!bySid[sid]) bySid[sid] = [];
+      bySid[sid].push(tick);
+    });
+    Object.keys(bySid).forEach(function(sid) {
+      bySid[sid].sort(function(a, b) { return a - b; });
+    });
+    return bySid;
+  }
+
+  function logDetailUberReadyBeforeTick(sid, tick, readyTimeline) {
+    var list = readyTimeline[sid] || [];
+    for (var i = list.length - 1; i >= 0; i--) {
+      if (list[i] <= tick) return list[i];
+    }
+    return null;
+  }
+
+  function logDetailUberFirstReadyAfter(sid, afterTick, readyTimeline) {
+    var list = readyTimeline[sid] || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] > afterTick) return list[i];
+    }
+    return null;
+  }
+
+  function logDetailUberEnemySid(medic, primaryByTeam) {
+    if (!medic || !primaryByTeam) return '';
+    if (medic.team === 'Red') return primaryByTeam.Blue || '';
+    if (medic.team === 'Blue') return primaryByTeam.Red || '';
+    return '';
+  }
+
+  /** Seconds of uber advantage when popping (chargeready timing). Null if none or medic died. */
+  function logDetailUberAdvantageAtDeploy(medic, deployTick, readyTimeline, enemySid, died) {
+    if (died) return null;
+    var sid = logDetailUberPlayerSid(medic);
+    if (!sid || !enemySid) return null;
+    var myReady = logDetailUberReadyBeforeTick(sid, deployTick, readyTimeline);
+    if (myReady == null) return null;
+    var enemyReadyAtPop = logDetailUberReadyBeforeTick(enemySid, deployTick, readyTimeline);
+    if (enemyReadyAtPop != null && enemyReadyAtPop <= myReady) return null;
+    var enemyCatchUp = logDetailUberFirstReadyAfter(enemySid, myReady, readyTimeline);
+    if (enemyCatchUp == null) return null;
+    var adv = enemyCatchUp - myReady;
+    if (!Number.isFinite(adv) || adv <= 0) return null;
+    return Math.round(adv);
+  }
+
+  function logDetailUberLostAdvantagesNear(events, centerTick, spanSec) {
+    var out = [];
+    var center = Math.floor(Number(centerTick));
+    if (!Number.isFinite(center)) return out;
+    var span = Math.max(1, Math.floor(Number(spanSec) || LOG_DETAIL_UBER_EXCHANGE_SPAN_SEC));
+    (events || []).forEach(function(ev) {
+      if (!ev || ev.kind !== 'lost_advantage') return;
+      var tick = logDetailEventTickNum(ev, 'tick');
+      if (tick == null || tick < center - span || tick > center + span) return;
+      var sec = ev.advantage_sec;
+      var adv = null;
+      if (sec != null && Number.isFinite(Number(sec))) adv = Math.round(Number(sec));
+      out.push({
+        tick: tick,
+        medic: ev.medic,
+        advantageSec: adv
+      });
+    });
+    out.sort(function(a, b) { return a.tick - b.tick; });
+    return out;
+  }
+
+  function logDetailUberAdvantageMetaHtml(advantageSec, advantageLostSec) {
+    var parts = [];
+    if (advantageSec != null && advantageSec > 0) {
+      parts.push('<span class="log-detail-uber-adv">+' + escapeHtml(String(advantageSec)) + 's adv</span>');
+    }
+    if (advantageLostSec != null && advantageLostSec > 0) {
+      parts.push('<span class="log-detail-uber-adv-lost">lost ' +
+        escapeHtml(String(advantageLostSec)) + 's adv</span>');
+    }
+    return parts.join(' \u00b7 ');
+  }
+
   /** Pair uber deploys with charge ends; cluster fights; score post-uber impact. */
   function buildLogDetailUberExchanges(events) {
     var list = Array.isArray(events) ? events : [];
+    var readyTimeline = logDetailUberChargeReadyTimeline(list);
+    var primaryByTeam = logDetailPrimaryMedicSidByTeam(list);
     var deployQueues = {};
     var ubers = [];
 
@@ -921,6 +1063,35 @@
         return { uber: u, impact: impactForUber(u) };
       });
       impacts.sort(function(a, b) { return b.impact.score - a.impact.score; });
+      var deployTick = cluster[0].deployTick;
+      var lostNear = logDetailUberLostAdvantagesNear(list, deployTick, LOG_DETAIL_UBER_EXCHANGE_SPAN_SEC);
+      var lostBySid = {};
+      lostNear.forEach(function(row) {
+        var sid = logDetailUberPlayerSid(row.medic);
+        if (!sid || row.advantageSec == null) return;
+        if (!lostBySid[sid] || row.advantageSec > lostBySid[sid]) {
+          lostBySid[sid] = row.advantageSec;
+        }
+      });
+      impacts = impacts.map(function(row) {
+        var medic = row.uber.medic;
+        var sid = logDetailUberPlayerSid(medic);
+        var enemySid = logDetailUberEnemySid(medic, primaryByTeam);
+        var advantageSec = logDetailUberAdvantageAtDeploy(
+          medic,
+          row.uber.deployTick,
+          readyTimeline,
+          enemySid,
+          row.impact.died
+        );
+        var advantageLostSec = lostBySid[sid] != null ? lostBySid[sid] : null;
+        return {
+          uber: row.uber,
+          impact: row.impact,
+          advantageSec: advantageSec,
+          advantageLostSec: advantageLostSec
+        };
+      });
       var top = impacts[0];
       var second = impacts.length > 1 ? impacts[1] : null;
       var outcome = 'solo';
@@ -1023,10 +1194,12 @@
       '</span>';
   }
 
-  function logDetailUberImpactMetaHtml(uber, impact, useTime) {
+  function logDetailUberImpactMetaHtml(uber, impact, useTime, advantageSec, advantageLostSec) {
     var parts = [];
     var dur = logDetailUberDurationHtml(uber, impact, useTime);
     if (dur) parts.push(dur);
+    var adv = logDetailUberAdvantageMetaHtml(advantageSec, advantageLostSec);
+    if (adv) parts.push(adv);
     var ka = logDetailUberKaTriggerHtml(impact, useTime);
     if (ka) parts.push(ka);
     if (impact.died) {
@@ -1279,12 +1452,14 @@
     });
   }
 
-  function logDetailUberMedicCell(medic, uber, impact, isWinner, useTime) {
+  function logDetailUberMedicCell(medic, uber, impact, isWinner, useTime, advantageSec, advantageLostSec) {
     var teamMod = medic && medic.team === 'Red'
       ? 'log-detail-uber-medic--red'
       : (medic && medic.team === 'Blue' ? 'log-detail-uber-medic--blue' : '');
     var winMod = isWinner ? ' log-detail-uber-medic--winner' : '';
-    var meta = logDetailUberImpactMetaHtml(uber, impact, useTime);
+    var meta = logDetailUberImpactMetaHtml(
+      uber, impact, useTime, advantageSec, advantageLostSec
+    );
     return '<span class="log-detail-uber-medic ' + teamMod + winMod + '">' +
       logDetailMedicIconHtml() +
       '<span class="log-detail-uber-medic-name">' + logDetailEventPlayerCell(medic) + '</span>' +
@@ -1351,7 +1526,15 @@
       var medicCells = ex.medics.map(function(row) {
         var sid = logDetailUberPlayerSid(row.uber.medic);
         var isWinner = ex.outcome === 'win' && sid === ex.winnerSid;
-        return logDetailUberMedicCell(row.uber.medic, row.uber, row.impact, isWinner, useTime);
+        return logDetailUberMedicCell(
+          row.uber.medic,
+          row.uber,
+          row.impact,
+          isWinner,
+          useTime,
+          row.advantageSec,
+          row.advantageLostSec
+        );
       });
       var sep = ex.medics.length > 1 ? ' <span class="log-detail-uber-vs stats-summary-meta">vs</span> ' : '';
       var tickAttr = String(Math.floor(Number(ex.deployTick)));
@@ -1537,6 +1720,58 @@
       if (ev.duration_sec != null && Number.isFinite(Number(ev.duration_sec))) {
         body += ' <span class="stats-summary-meta">(' + escapeHtml(String(ev.duration_sec)) + 's)</span>';
       }
+    } else if (kind === 'charge_ready') {
+      body = logDetailEventPlayerCell(ev.medic) + ' reached 100% uber';
+    } else if (kind === 'lost_advantage') {
+      body = logDetailEventPlayerCell(ev.medic) + ' lost uber advantage';
+      if (ev.advantage_sec != null && Number.isFinite(Number(ev.advantage_sec))) {
+        body += ' <span class="stats-summary-meta">(' + escapeHtml(String(Math.round(Number(ev.advantage_sec)))) + 's)</span>';
+      }
+    } else if (kind === 'medic_death') {
+      var killer = logDetailEventPlayerCell(ev.killer);
+      var medic = logDetailEventPlayerCell(ev.medic);
+      body = killer + ' killed medic ' + medic;
+      if (ev.dropped) {
+        body += ' <span class="log-detail-uber-adv-lost">drop</span>';
+      }
+      if (ev.uber_pct != null && Number.isFinite(Number(ev.uber_pct))) {
+        body += ' <span class="stats-summary-meta">(' + escapeHtml(String(ev.uber_pct)) + '% uber)</span>';
+      }
+      if (ev.healing != null && Number.isFinite(Number(ev.healing))) {
+        body += ' <span class="stats-summary-meta">healed ' + escapeHtml(String(ev.healing)) + '</span>';
+      }
+    } else if (kind === 'empty_uber') {
+      body = logDetailEventPlayerCell(ev.medic) + ' started uber build';
+    } else if (kind === 'capture_blocked') {
+      body = logDetailEventPlayerCell(ev.player) + ' blocked capture';
+      if (ev.cp_name) {
+        body += ' at <span class="log-detail-event-cp">' + escapeHtml(String(ev.cp_name)) + '</span>';
+      } else if (ev.cp_index != null) {
+        body += ' at CP #' + escapeHtml(String(ev.cp_index));
+      }
+    } else if (kind === 'pass_score') {
+      body = logDetailEventPlayerCell(ev.player) + ' scored';
+      if (ev.points != null) body += ' <span class="stats-summary-meta">+' + escapeHtml(String(ev.points)) + '</span>';
+      if (ev.speed != null) body += ' <span class="stats-summary-meta">(' + escapeHtml(String(ev.speed)) + ' u/s)</span>';
+    } else if (kind === 'pass_score_assist') {
+      body = logDetailEventPlayerCell(ev.player) + ' scored (assist)';
+    } else if (kind === 'pass_get') {
+      body = logDetailEventPlayerCell(ev.player) + ' picked up the ball';
+      if (ev.first_contact) body += ' <span class="stats-summary-meta">(first touch)</span>';
+    } else if (kind === 'pass_free') {
+      body = logDetailEventPlayerCell(ev.player) + ' threw the ball';
+    } else if (kind === 'pass_pass_caught') {
+      body = logDetailEventPlayerCell(ev.player) + ' caught pass from ' +
+        logDetailEventPlayerCell(ev.other_player);
+      if (ev.interception) body += ' <span class="stats-summary-meta">(pick)</span>';
+      if (ev.save) body += ' <span class="stats-summary-meta">(save)</span>';
+      if (ev.handoff) body += ' <span class="stats-summary-meta">(handoff)</span>';
+    } else if (kind === 'pass_ball_stolen') {
+      body = logDetailEventPlayerCell(ev.player) + ' stole ball from ' +
+        logDetailEventPlayerCell(ev.other_player);
+      if (ev.steal_defense) body += ' <span class="stats-summary-meta">(defense)</span>';
+    } else if (kind === 'pass_splash_defense') {
+      body = logDetailEventPlayerCell(ev.player) + ' splash defense';
     } else if (kind === 'capture') {
       body = logDetailEventPlayerCell(ev.player) + ' captured';
       if (ev.cp_name) {

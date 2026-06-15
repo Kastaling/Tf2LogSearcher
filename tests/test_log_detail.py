@@ -12,6 +12,7 @@ from app.log_detail import (
     SECTION_VERSIONS,
     _build_chat,
     _build_events,
+    _build_medics,
     _build_raw_availability,
     _build_rounds,
     _chat_elapsed_seconds_map,
@@ -596,3 +597,106 @@ def test_build_rounds_pointcap_enriched_real_example_log(
     )
     assert cap.get("player", {}).get("alias")
     assert cap.get("cp_name")
+
+
+def test_build_medics_includes_biggest_advantage_lost(logs_dir) -> None:
+    logtext = make_log(PLAYER_A_3, PLAYER_B_3)
+    logtext["names"] = {PLAYER_A_3: "MedicA", PLAYER_B_3: "MedicB"}
+    logtext["players"][PLAYER_A_3]["class_stats"] = [
+        {"type": "medic", "kills": 0, "deaths": 0, "assists": 0, "dmg": 0, "total_time": 600}
+    ]
+    logtext["players"][PLAYER_A_3]["ubers"] = 4
+    logtext["players"][PLAYER_A_3]["medicstats"] = {
+        "advantages_lost": 2,
+        "biggest_advantage_lost": 29,
+    }
+    logtext["healspread"] = {PLAYER_A_3: {PLAYER_B_3: 5000}}
+    out = _build_medics(logtext)
+    medic = next(m for m in out["medics"] if m["steamid3"] == PLAYER_A_3)
+    assert medic["biggest_advantage_lost"] == 29
+    assert medic["advantages_lost"] == 2
+    assert SECTION_VERSIONS["medics"] == "medics:v4"
+
+
+def test_build_events_charge_ready_and_lost_advantage(tmp_path, logs_dir) -> None:
+    log_id = 5030
+    write_log(logs_dir, log_id, make_log(PLAYER_A_3, PLAYER_B_3))
+    raw_db = tmp_path / "raw_events.db"
+    raw_conn = connect_raw_db(raw_db)
+    init_raw_db(raw_conn)
+    a_ent = f"MedicA<1><{PLAYER_A_3}><Red>"
+    raw_log = "\n".join(
+        [
+            'L 01/01/2024 - 12:00:00: World triggered "Round_Start"',
+            f'L 01/01/2024 - 12:00:10: "{a_ent}" triggered "chargeready"',
+            f'L 01/01/2024 - 12:00:20: "{a_ent}" triggered "lost_uber_advantage" (time "15")',
+        ]
+    )
+    parsed = parse_raw_log(log_id, raw_log)
+    with raw_conn:
+        replace_raw_events_for_log(raw_conn, log_id, parsed)
+    raw_conn.close()
+
+    with patch("app.log_detail.LOGS_DIR", logs_dir), patch(
+        "app.log_detail.RAW_EVENTS_DB_PATH", raw_db
+    ):
+        logtext = load_log_json(log_id)
+        assert logtext is not None
+        out = _build_events(log_id, logtext)
+
+    kinds = [ev["kind"] for ev in out["events"]]
+    assert "charge_ready" in kinds
+    assert "lost_advantage" in kinds
+    lost = next(ev for ev in out["events"] if ev["kind"] == "lost_advantage")
+    assert lost["advantage_sec"] == 15.0
+    assert lost["medic"]["team"] == "Red"
+    assert SECTION_VERSIONS["events"] == "events:v3"
+
+
+def test_build_events_medic_death_capture_blocked_passtime(tmp_path, logs_dir) -> None:
+    log_id = 5031
+    write_log(logs_dir, log_id, make_log(PLAYER_A_3, PLAYER_B_3))
+    raw_db = tmp_path / "raw_events.db"
+    raw_conn = connect_raw_db(raw_db)
+    init_raw_db(raw_conn)
+    killer = f"Killer<1><{PLAYER_B_3}><Blue>"
+    medic = f"MedicA<2><{PLAYER_A_3}><Red>"
+    defender = f"Def<3><{PLAYER_B_3}><Blue>"
+    scorer = f"Scorer<2><{PLAYER_A_3}><Red>"
+    raw_log = "\n".join(
+        [
+            'L 01/01/2024 - 12:00:00: World triggered "Round_Start"',
+            f'L 01/01/2024 - 12:00:10: "{killer}" triggered "medic_death" against "{medic}" '
+            '(healing "500") (ubercharge "1")',
+            f'L 01/01/2024 - 12:00:10: "{medic}" triggered "medic_death_ex" (uberpct "93")',
+            f'L 01/01/2024 - 12:00:10: "{killer}" killed "{medic}" with "scattergun" '
+            '(victim_position "10 20 30")',
+            f'L 01/01/2024 - 12:00:15: "{medic}" triggered "empty_uber"',
+            f'L 01/01/2024 - 12:00:20: "{defender}" triggered "captureblocked" '
+            '(cp "0") (cpname "Mid") (position "1 2 3")',
+            f'L 01/01/2024 - 12:00:25: "{scorer}" triggered "pass_score" (points "1") (speed "900")',
+        ]
+    )
+    parsed = parse_raw_log(log_id, raw_log)
+    with raw_conn:
+        replace_raw_events_for_log(raw_conn, log_id, parsed)
+    raw_conn.close()
+
+    with patch("app.log_detail.LOGS_DIR", logs_dir), patch(
+        "app.log_detail.RAW_EVENTS_DB_PATH", raw_db
+    ):
+        logtext = load_log_json(log_id)
+        assert logtext is not None
+        out = _build_events(log_id, logtext)
+
+    kinds = [ev["kind"] for ev in out["events"]]
+    assert "medic_death" in kinds
+    assert "empty_uber" in kinds
+    assert "capture_blocked" in kinds
+    assert "pass_score" in kinds
+    md = next(ev for ev in out["events"] if ev["kind"] == "medic_death")
+    assert md["dropped"] is True
+    assert md["uber_pct"] == 93
+    assert md["pos_x"] == 10
+    blocked = next(ev for ev in out["events"] if ev["kind"] == "capture_blocked")
+    assert blocked["cp_name"] == "Mid"

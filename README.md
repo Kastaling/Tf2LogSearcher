@@ -158,11 +158,24 @@ you append them to the wrapper (see the **Backfill Stats DB** section above).
 
 ### Backfill Raw Events DB
 
-Re-parse existing `log_*.log.zip` files into `raw_events.db`:
+Re-parse existing `log_*.log.zip` files into `raw_events.db` (for example after parser changes
+that add `chargeready`, `lost_uber_advantage`, or other new event types):
 
 ```bash
 docker compose run --rm downloader python -m app.raw_backfill --batch-size 200
 ```
+
+For a long library, use the tmux wrapper (stops the downloader, runs backfill, restarts it):
+
+```bash
+./scripts/reingest_raw_events_tmux.sh
+./scripts/reingest_raw_events_tmux.sh --batch-size 500
+./scripts/reingest_raw_events_tmux.sh --skip-files 2409500   # resume from Progress line
+./scripts/reingest_raw_events_tmux.sh --min-log-id 3000000 --max-log-id 4000000
+```
+
+`app.raw_backfill` options `--skip-files`, `--min-log-id`, and `--max-log-id` are forwarded
+when you append them to the wrapper.
 
 ### Fetch Missing Raw Zips
 

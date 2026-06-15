@@ -2339,8 +2339,20 @@
     }
     .log-detail-raw-events.log-detail-hide-kill .log-detail-raw-event--kill,
     .log-detail-raw-events.log-detail-hide-uber .log-detail-raw-event--uber,
+    .log-detail-raw-events.log-detail-hide-uber .log-detail-raw-event--charge_ready,
+    .log-detail-raw-events.log-detail-hide-uber .log-detail-raw-event--lost_advantage,
+    .log-detail-raw-events.log-detail-hide-uber .log-detail-raw-event--empty_uber,
     .log-detail-raw-events.log-detail-hide-charge_end .log-detail-raw-event--charge_end,
+    .log-detail-raw-events.log-detail-hide-medic_death .log-detail-raw-event--medic_death,
     .log-detail-raw-events.log-detail-hide-capture .log-detail-raw-event--capture,
+    .log-detail-raw-events.log-detail-hide-capture .log-detail-raw-event--capture_blocked,
+    .log-detail-raw-events.log-detail-hide-passtime .log-detail-raw-event--pass_score,
+    .log-detail-raw-events.log-detail-hide-passtime .log-detail-raw-event--pass_score_assist,
+    .log-detail-raw-events.log-detail-hide-passtime .log-detail-raw-event--pass_get,
+    .log-detail-raw-events.log-detail-hide-passtime .log-detail-raw-event--pass_free,
+    .log-detail-raw-events.log-detail-hide-passtime .log-detail-raw-event--pass_pass_caught,
+    .log-detail-raw-events.log-detail-hide-passtime .log-detail-raw-event--pass_ball_stolen,
+    .log-detail-raw-events.log-detail-hide-passtime .log-detail-raw-event--pass_splash_defense,
     .log-detail-raw-events.log-detail-hide-round .log-detail-raw-event--round_start,
     .log-detail-raw-events.log-detail-hide-round .log-detail-raw-event--round_win,
     .log-detail-raw-events.log-detail-hide-spawn .log-detail-raw-event--spawn {
@@ -2419,6 +2431,16 @@
       text-decoration: underline dotted;
       text-underline-offset: 0.14em;
     }
+    .log-detail-uber-adv {
+      color: #3dbb6d;
+      font-weight: 600;
+    }
+    .log-detail-uber-adv-lost {
+      color: #c97a2e;
+      font-weight: 600;
+    }
+    [data-theme="dark"] .log-detail-uber-adv { color: #5bd485; }
+    [data-theme="dark"] .log-detail-uber-adv-lost { color: #e0a050; }
     .log-detail-uber-ka-pop {
       position: relative;
       display: inline;

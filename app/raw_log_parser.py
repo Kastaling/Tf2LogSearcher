@@ -77,7 +77,43 @@ _RE_CHARGE_END = re.compile(
     _LOG_PREFIX + r'"(.+)" triggered "chargeended"'
 )
 
+_RE_CHARGE_READY = re.compile(
+    _LOG_PREFIX + r'"(.+)" triggered "chargeready"'
+)
+
+_RE_LOST_ADVANTAGE = re.compile(
+    _LOG_PREFIX + r'"(.+)" triggered "lost_uber_advantage"'
+)
+
+_RE_MEDIC_DEATH = re.compile(
+    _LOG_PREFIX + r'"(.+)" triggered "medic_death" against "(.+)"'
+)
+
+_RE_MEDIC_DEATH_EX = re.compile(
+    _LOG_PREFIX + r'"(.+)" triggered "medic_death_ex"'
+)
+
+_RE_EMPTY_UBER = re.compile(
+    _LOG_PREFIX + r'"(.+)" triggered "empty_uber"'
+)
+
+_RE_CAPTURE_BLOCKED = re.compile(
+    _LOG_PREFIX + r'"(.+)" triggered "captureblocked"'
+)
+
+_RE_PASS_AGAINST = re.compile(
+    _LOG_PREFIX + r'"(.+)" triggered "(pass_[^"]+)" against "(.+)"'
+)
+
+_RE_PASS_SOLO = re.compile(
+    _LOG_PREFIX + r'"(.+)" triggered "(pass_[^"]+)"'
+)
+
 _RE_DURATION = re.compile(r'\(duration "([^"]*)"\)')
+_RE_ADV_TIME = re.compile(r'\(time "([^"]*)"\)')
+_RE_HEALING = re.compile(r'\(healing "([^"]*)"\)')
+_RE_UBERCHARGE = re.compile(r'\(ubercharge "([^"]*)"\)')
+_RE_UBERPCT = re.compile(r'\(uberpct "([^"]*)"\)')
 
 _RE_CAPTURE = re.compile(
     _LOG_PREFIX + r'"(.+)" triggered "pointcaptured"'
@@ -153,6 +189,39 @@ def _xyz_from_match_groups(
     return None, None, None
 
 
+def _xyz_from_named_field(line: str, field: str) -> tuple[int | None, int | None, int | None]:
+    esc = re.escape(field)
+    m = re.search(rf'\({esc} "([^"]*)"\)', line)
+    if not m:
+        return None, None, None
+    xyz = parse_xyz(m.group(1))
+    if not xyz:
+        return None, None, None
+    return xyz[0], xyz[1], xyz[2]
+
+
+def _quoted_int(line: str, field: str) -> int | None:
+    esc = re.escape(field)
+    m = re.search(rf'\({esc} "([^"]*)"\)', line)
+    if not m:
+        return None
+    try:
+        return int(m.group(1).strip())
+    except ValueError:
+        return None
+
+
+def _quoted_float(line: str, field: str) -> float | None:
+    esc = re.escape(field)
+    m = re.search(rf'\({esc} "([^"]*)"\)', line)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).strip())
+    except ValueError:
+        return None
+
+
 def _parse_ts(line: str) -> datetime | None:
     m = _RE_LINE_TS.match(line)
     if not m:
@@ -170,6 +239,66 @@ class _KillRef:
         self.tick = tick
         self.victim_sid = victim_sid
         self.row = row
+
+
+class _MedicDeathRef:
+    __slots__ = ("tick", "medic_sid", "row")
+
+    def __init__(self, tick: int, medic_sid: str | None, row: dict[str, Any]) -> None:
+        self.tick = tick
+        self.medic_sid = medic_sid
+        self.row = row
+
+
+def _parse_passtime_event(
+    line: str,
+    *,
+    abs_tick: int,
+    round_tick: int,
+    actor_ent: str,
+    event_type: str,
+    other_ent: str | None = None,
+) -> dict[str, Any]:
+    """Build one passtime_events row from a matched log line."""
+    row: dict[str, Any] = {
+        "tick": abs_tick,
+        "round_tick": round_tick,
+        "event_type": event_type,
+        "steamid64": _steam_from_entity(actor_ent),
+        "other_steamid64": _steam_from_entity(other_ent) if other_ent else None,
+    }
+    px, py, pz = _xyz_from_match_groups(line, _RE_POS_GENERIC)
+    row["pos_x"], row["pos_y"], row["pos_z"] = px, py, pz
+
+    if event_type == "pass_score":
+        row["points"] = _quoted_int(line, "points")
+        row["panacea"] = _quoted_int(line, "panacea")
+        row["win_strat"] = _quoted_int(line, "win strat")
+        row["deathbomb"] = _quoted_int(line, "deathbomb")
+        row["dist"] = _quoted_int(line, "dist")
+        row["speed"] = _quoted_int(line, "speed")
+    elif event_type == "pass_get":
+        row["first_contact"] = _quoted_int(line, "firstcontact")
+    elif event_type == "pass_pass_caught":
+        row["interception"] = _quoted_int(line, "interception")
+        row["save"] = _quoted_int(line, "save")
+        row["handoff"] = _quoted_int(line, "handoff")
+        row["dist"] = _quoted_float(line, "dist")
+        row["duration_sec"] = _quoted_float(line, "duration")
+        tx, ty, tz = _xyz_from_named_field(line, "thrower_position")
+        cx, cy, cz = _xyz_from_named_field(line, "catcher_position")
+        row["thrower_pos_x"], row["thrower_pos_y"], row["thrower_pos_z"] = tx, ty, tz
+        row["catcher_pos_x"], row["catcher_pos_y"], row["catcher_pos_z"] = cx, cy, cz
+    elif event_type == "pass_ball_stolen":
+        row["steal_defense"] = _quoted_int(line, "steal defense")
+        tx, ty, tz = _xyz_from_named_field(line, "thief_position")
+        vx, vy, vz = _xyz_from_named_field(line, "victim_position")
+        row["thief_pos_x"], row["thief_pos_y"], row["thief_pos_z"] = tx, ty, tz
+        row["victim_pos_x"], row["victim_pos_y"], row["victim_pos_z"] = vx, vy, vz
+    elif event_type == "pass_splash_defense":
+        bx, by, bz = _xyz_from_named_field(line, "ball position")
+        row["ball_pos_x"], row["ball_pos_y"], row["ball_pos_z"] = bx, by, bz
+    return row
 
 
 def parse_chat_say_elapsed_secs(content: str) -> list[float]:
@@ -191,12 +320,20 @@ def parse_raw_log(log_id: int, content: str) -> dict[str, list[dict[str, Any]]]:
     """
     Parse raw TF2 server log content.
     Returns dict with keys matching the DB tables:
-      kill_events, uber_events, charge_end_events, capture_events, round_events, spawn_events
+      kill_events, uber_events, charge_end_events, charge_ready_events,
+      lost_advantage_events, medic_death_events, empty_uber_events,
+      capture_blocked_events, passtime_events, capture_events, round_events, spawn_events
     """
     del log_id  # reserved for future per-log metadata
     kill_events: list[dict[str, Any]] = []
     uber_events: list[dict[str, Any]] = []
     charge_end_events: list[dict[str, Any]] = []
+    charge_ready_events: list[dict[str, Any]] = []
+    lost_advantage_events: list[dict[str, Any]] = []
+    medic_death_events: list[dict[str, Any]] = []
+    empty_uber_events: list[dict[str, Any]] = []
+    capture_blocked_events: list[dict[str, Any]] = []
+    passtime_events: list[dict[str, Any]] = []
     capture_events: list[dict[str, Any]] = []
     round_events: list[dict[str, Any]] = []
     spawn_events: list[dict[str, Any]] = []
@@ -204,6 +341,7 @@ def parse_raw_log(log_id: int, content: str) -> dict[str, list[dict[str, Any]]]:
     first_ts: datetime | None = None
     last_round_start_abs_tick: int | None = None
     recent_kills: deque[_KillRef] = deque(maxlen=20)
+    recent_medic_deaths: deque[_MedicDeathRef] = deque(maxlen=20)
 
     lines = content.splitlines()
     for line in lines:
@@ -338,6 +476,16 @@ def parse_raw_log(log_id: int, content: str) -> dict[str, list[dict[str, Any]]]:
                 kill_events.append(row)
                 if victim_sid:
                     recent_kills.append(_KillRef(abs_tick, victim_sid, row))
+                    for mdr in reversed(recent_medic_deaths):
+                        if mdr.medic_sid != victim_sid:
+                            continue
+                        if abs(abs_tick - mdr.tick) > 2:
+                            continue
+                        md_row = mdr.row
+                        md_row["pos_x"] = vx
+                        md_row["pos_y"] = vy
+                        md_row["pos_z"] = vz
+                        break
                 continue
 
             # --- Kill assists (correlate to recent kill) ---
@@ -401,6 +549,172 @@ def parse_raw_log(log_id: int, content: str) -> dict[str, list[dict[str, Any]]]:
                 )
                 continue
 
+            # --- Medic reached 100% charge ---
+            crm = _RE_CHARGE_READY.match(line)
+            if crm:
+                med_ent = crm.group(1)
+                med_sid = _steam_from_entity(med_ent)
+                charge_ready_events.append(
+                    {
+                        "tick": abs_tick,
+                        "round_tick": round_tick,
+                        "medic_steamid64": med_sid,
+                    }
+                )
+                continue
+
+            # --- Medic lost uber advantage (MedicStats plugin) ---
+            lam = _RE_LOST_ADVANTAGE.match(line)
+            if lam:
+                med_ent = lam.group(1)
+                med_sid = _steam_from_entity(med_ent)
+                adv_sec: float | None = None
+                atm = _RE_ADV_TIME.search(line)
+                if atm:
+                    try:
+                        adv_sec = float(atm.group(1).strip())
+                    except ValueError:
+                        adv_sec = None
+                lost_advantage_events.append(
+                    {
+                        "tick": abs_tick,
+                        "round_tick": round_tick,
+                        "medic_steamid64": med_sid,
+                        "advantage_sec": adv_sec,
+                    }
+                )
+                continue
+
+            # --- Medic death (drop / kill credit) ---
+            mdm = _RE_MEDIC_DEATH.match(line)
+            if mdm:
+                killer_ent, med_ent = mdm.group(1), mdm.group(2)
+                killer_sid = _steam_from_entity(killer_ent)
+                med_sid = _steam_from_entity(med_ent)
+                healing: int | None = None
+                hm = _RE_HEALING.search(line)
+                if hm:
+                    try:
+                        healing = int(hm.group(1).strip())
+                    except ValueError:
+                        healing = None
+                had_uber = 0
+                ucm = _RE_UBERCHARGE.search(line)
+                if ucm:
+                    try:
+                        had_uber = 1 if int(ucm.group(1).strip()) else 0
+                    except ValueError:
+                        had_uber = 0
+                md_row = {
+                    "tick": abs_tick,
+                    "round_tick": round_tick,
+                    "killer_steamid64": killer_sid,
+                    "medic_steamid64": med_sid,
+                    "healing": healing,
+                    "had_uber": had_uber,
+                    "uber_pct": None,
+                    "pos_x": None,
+                    "pos_y": None,
+                    "pos_z": None,
+                }
+                medic_death_events.append(md_row)
+                if med_sid:
+                    recent_medic_deaths.append(_MedicDeathRef(abs_tick, med_sid, md_row))
+                continue
+
+            # --- Medic death extended (near-uber pct) ---
+            mdem = _RE_MEDIC_DEATH_EX.match(line)
+            if mdem:
+                med_ent = mdem.group(1)
+                med_sid = _steam_from_entity(med_ent)
+                uber_pct: int | None = None
+                upm = _RE_UBERPCT.search(line)
+                if upm:
+                    try:
+                        uber_pct = int(upm.group(1).strip())
+                    except ValueError:
+                        uber_pct = None
+                if med_sid:
+                    for mdr in reversed(recent_medic_deaths):
+                        if mdr.medic_sid != med_sid:
+                            continue
+                        if abs(abs_tick - mdr.tick) > 2:
+                            continue
+                        mdr.row["uber_pct"] = uber_pct
+                        break
+                continue
+
+            # --- Empty uber (build cycle start) ---
+            eum = _RE_EMPTY_UBER.match(line)
+            if eum:
+                med_ent = eum.group(1)
+                med_sid = _steam_from_entity(med_ent)
+                empty_uber_events.append(
+                    {
+                        "tick": abs_tick,
+                        "round_tick": round_tick,
+                        "medic_steamid64": med_sid,
+                    }
+                )
+                continue
+
+            # --- Capture blocked ---
+            cbm = _RE_CAPTURE_BLOCKED.match(line)
+            if cbm:
+                pl_ent = cbm.group(1)
+                sid = _steam_from_entity(pl_ent)
+                cpn = _RE_CP_NUM.search(line)
+                cname = _RE_CP_NAME.search(line)
+                cp_index: int | None = None
+                if cpn:
+                    try:
+                        cp_index = int(cpn.group(1).strip())
+                    except ValueError:
+                        cp_index = None
+                cp_name = cname.group(1) if cname else None
+                px, py, pz = _xyz_from_match_groups(line, _RE_POS_GENERIC)
+                capture_blocked_events.append(
+                    {
+                        "tick": abs_tick,
+                        "round_tick": round_tick,
+                        "steamid64": sid,
+                        "cp_index": cp_index,
+                        "cp_name": cp_name,
+                        "pos_x": px,
+                        "pos_y": py,
+                        "pos_z": pz,
+                    }
+                )
+                continue
+
+            # --- Passtime events ---
+            pam = _RE_PASS_AGAINST.match(line)
+            if pam:
+                passtime_events.append(
+                    _parse_passtime_event(
+                        line,
+                        abs_tick=abs_tick,
+                        round_tick=round_tick,
+                        actor_ent=pam.group(1),
+                        event_type=pam.group(2),
+                        other_ent=pam.group(3),
+                    )
+                )
+                continue
+
+            psm = _RE_PASS_SOLO.match(line)
+            if psm:
+                passtime_events.append(
+                    _parse_passtime_event(
+                        line,
+                        abs_tick=abs_tick,
+                        round_tick=round_tick,
+                        actor_ent=psm.group(1),
+                        event_type=psm.group(2),
+                    )
+                )
+                continue
+
             # --- Point captured (legacy: player-triggered) ---
             cm = _RE_CAPTURE.match(line)
             if cm:
@@ -450,6 +764,12 @@ def parse_raw_log(log_id: int, content: str) -> dict[str, list[dict[str, Any]]]:
         "kill_events": kill_events,
         "uber_events": uber_events,
         "charge_end_events": charge_end_events,
+        "charge_ready_events": charge_ready_events,
+        "lost_advantage_events": lost_advantage_events,
+        "medic_death_events": medic_death_events,
+        "empty_uber_events": empty_uber_events,
+        "capture_blocked_events": capture_blocked_events,
+        "passtime_events": passtime_events,
         "capture_events": capture_events,
         "round_events": round_events,
         "spawn_events": spawn_events,

@@ -49,12 +49,12 @@ SECTION_VERSIONS: dict[str, str] = {
     "teams": "teams:v2",
     "players": "players:v2",
     "rounds": "rounds:v6",
-    "medics": "medics:v3",
+    "medics": "medics:v4",
     "class_matrix": "class_matrix:v4",
     "chat": "chat:v4",
     "killstreaks": "killstreaks:v3",
-    # New section: chronological raw_events.db feed (kills, ubers, caps, rounds, spawns).
-    "events": "events:v1",
+    # events v3: medic_death, empty_uber, capture_blocked, passtime feed rows.
+    "events": "events:v3",
     "raw_availability": "raw_availability:v3",
 }
 
@@ -162,7 +162,9 @@ def compute_source_fingerprint(log_id: int) -> str | None:
                 conn.execute("PRAGMA busy_timeout=10000")
                 row = conn.execute(
                     """
-                    SELECT imported_at, kill_count, uber_count, capture_count, charge_end_count
+                    SELECT imported_at, kill_count, uber_count, capture_count, charge_end_count,
+                           charge_ready_count, lost_advantage_count, medic_death_count,
+                           empty_uber_count, capture_blocked_count, passtime_count
                     FROM raw_logs WHERE log_id = ?
                     """,
                     (log_id,),
@@ -170,7 +172,13 @@ def compute_source_fingerprint(log_id: int) -> str | None:
                 if row:
                     parts.append(
                         f"raw:{int(row[0] or 0)}:{int(row[1] or 0)}:"
-                        f"{int(row[2] or 0)}:{int(row[3] or 0)}:{int(row[4] or 0)}"
+                        f"{int(row[2] or 0)}:{int(row[3] or 0)}:{int(row[4] or 0)}:"
+                        f"{int(row[5] or 0) if len(row) > 5 else 0}:"
+                        f"{int(row[6] or 0) if len(row) > 6 else 0}:"
+                        f"{int(row[7] or 0) if len(row) > 7 else 0}:"
+                        f"{int(row[8] or 0) if len(row) > 8 else 0}:"
+                        f"{int(row[9] or 0) if len(row) > 9 else 0}:"
+                        f"{int(row[10] or 0) if len(row) > 10 else 0}"
                     )
                 else:
                     parts.append("raw:missing")
@@ -753,6 +761,16 @@ def _build_medics(logtext: dict[str, Any]) -> dict[str, Any]:
         if not is_medic and heal_done <= 0:
             continue
         row = _player_row(sid3, stats, names)
+        medicstats = stats.get("medicstats")
+        if isinstance(medicstats, dict):
+            try:
+                row["biggest_advantage_lost"] = int(medicstats.get("biggest_advantage_lost") or 0)
+            except (TypeError, ValueError):
+                row["biggest_advantage_lost"] = 0
+            try:
+                row["advantages_lost"] = int(medicstats.get("advantages_lost") or 0)
+            except (TypeError, ValueError):
+                row["advantages_lost"] = 0
         patients: list[dict[str, Any]] = []
         block = healspread.get(sid3)
         if isinstance(block, dict):
@@ -1173,6 +1191,192 @@ def _build_events(log_id: int, logtext: dict[str, Any]) -> dict[str, Any]:
                         "duration_sec": duration_sec,
                     }
                 )
+
+            try:
+                for row in conn.execute(
+                    """
+                    SELECT tick, round_tick, medic_steamid64
+                    FROM charge_ready_events WHERE log_id = ?
+                    """,
+                    (log_id,),
+                ):
+                    merged.append(
+                        {
+                            "kind": "charge_ready",
+                            "tick": row[0],
+                            "round_tick": row[1],
+                            "medic": _event_player_ref(row[2], player_map),
+                        }
+                    )
+
+                for row in conn.execute(
+                    """
+                    SELECT tick, round_tick, medic_steamid64, advantage_sec
+                    FROM lost_advantage_events WHERE log_id = ?
+                    """,
+                    (log_id,),
+                ):
+                    adv = row[3]
+                    try:
+                        advantage_sec = round(float(adv), 1) if adv is not None else None
+                    except (TypeError, ValueError):
+                        advantage_sec = None
+                    merged.append(
+                        {
+                            "kind": "lost_advantage",
+                            "tick": row[0],
+                            "round_tick": row[1],
+                            "medic": _event_player_ref(row[2], player_map),
+                            "advantage_sec": advantage_sec,
+                        }
+                    )
+            except sqlite3.OperationalError:
+                pass
+
+            try:
+                for row in conn.execute(
+                    """
+                    SELECT tick, round_tick, killer_steamid64, medic_steamid64,
+                           healing, had_uber, uber_pct, pos_x, pos_y, pos_z
+                    FROM medic_death_events WHERE log_id = ?
+                    """,
+                    (log_id,),
+                ):
+                    merged.append(
+                        {
+                            "kind": "medic_death",
+                            "tick": row[0],
+                            "round_tick": row[1],
+                            "killer": _event_player_ref(row[2], player_map),
+                            "medic": _event_player_ref(row[3], player_map),
+                            "healing": int(row[4]) if row[4] is not None else None,
+                            "dropped": bool(int(row[5] or 0)),
+                            "uber_pct": int(row[6]) if row[6] is not None else None,
+                            "pos_x": int(row[7]) if row[7] is not None else None,
+                            "pos_y": int(row[8]) if row[8] is not None else None,
+                            "pos_z": int(row[9]) if row[9] is not None else None,
+                        }
+                    )
+
+                for row in conn.execute(
+                    """
+                    SELECT tick, round_tick, medic_steamid64
+                    FROM empty_uber_events WHERE log_id = ?
+                    """,
+                    (log_id,),
+                ):
+                    merged.append(
+                        {
+                            "kind": "empty_uber",
+                            "tick": row[0],
+                            "round_tick": row[1],
+                            "medic": _event_player_ref(row[2], player_map),
+                        }
+                    )
+
+                for row in conn.execute(
+                    """
+                    SELECT tick, round_tick, steamid64, cp_index, cp_name,
+                           pos_x, pos_y, pos_z
+                    FROM capture_blocked_events WHERE log_id = ?
+                    """,
+                    (log_id,),
+                ):
+                    cp_name = (str(row[4]).strip() if row[4] is not None else "") or None
+                    merged.append(
+                        {
+                            "kind": "capture_blocked",
+                            "tick": row[0],
+                            "round_tick": row[1],
+                            "player": _event_player_ref(row[2], player_map),
+                            "cp_index": int(row[3]) if row[3] is not None else None,
+                            "cp_name": cp_name,
+                            "pos_x": int(row[5]) if row[5] is not None else None,
+                            "pos_y": int(row[6]) if row[6] is not None else None,
+                            "pos_z": int(row[7]) if row[7] is not None else None,
+                        }
+                    )
+
+                for row in conn.execute(
+                    """
+                    SELECT tick, round_tick, event_type, steamid64, other_steamid64,
+                           points, first_contact, interception, save, handoff,
+                           dist, duration_sec, speed, panacea, win_strat, deathbomb,
+                           steal_defense, pos_x, pos_y, pos_z,
+                           thrower_pos_x, thrower_pos_y, thrower_pos_z,
+                           catcher_pos_x, catcher_pos_y, catcher_pos_z,
+                           thief_pos_x, thief_pos_y, thief_pos_z,
+                           victim_pos_x, victim_pos_y, victim_pos_z,
+                           ball_pos_x, ball_pos_y, ball_pos_z
+                    FROM passtime_events WHERE log_id = ?
+                    """,
+                    (log_id,),
+                ):
+                    ev_type = str(row[2] or "").strip()
+                    if not ev_type:
+                        continue
+                    pt: dict[str, Any] = {
+                        "kind": ev_type,
+                        "tick": row[0],
+                        "round_tick": row[1],
+                        "player": _event_player_ref(row[3], player_map),
+                        "other_player": _event_player_ref(row[4], player_map),
+                    }
+                    if row[5] is not None:
+                        pt["points"] = int(row[5])
+                    if row[6] is not None:
+                        pt["first_contact"] = bool(int(row[6]))
+                    if row[7] is not None:
+                        pt["interception"] = bool(int(row[7]))
+                    if row[8] is not None:
+                        pt["save"] = bool(int(row[8]))
+                    if row[9] is not None:
+                        pt["handoff"] = bool(int(row[9]))
+                    if row[10] is not None:
+                        try:
+                            pt["dist"] = round(float(row[10]), 2)
+                        except (TypeError, ValueError):
+                            pass
+                    if row[11] is not None:
+                        try:
+                            pt["duration_sec"] = round(float(row[11]), 2)
+                        except (TypeError, ValueError):
+                            pass
+                    if row[12] is not None:
+                        pt["speed"] = int(row[12])
+                    if row[13] is not None:
+                        pt["panacea"] = bool(int(row[13]))
+                    if row[14] is not None:
+                        pt["win_strat"] = bool(int(row[14]))
+                    if row[15] is not None:
+                        pt["deathbomb"] = bool(int(row[15]))
+                    if row[16] is not None:
+                        pt["steal_defense"] = bool(int(row[16]))
+                    for key, idx in (
+                        ("pos_x", 17),
+                        ("pos_y", 18),
+                        ("pos_z", 19),
+                        ("thrower_pos_x", 20),
+                        ("thrower_pos_y", 21),
+                        ("thrower_pos_z", 22),
+                        ("catcher_pos_x", 23),
+                        ("catcher_pos_y", 24),
+                        ("catcher_pos_z", 25),
+                        ("thief_pos_x", 26),
+                        ("thief_pos_y", 27),
+                        ("thief_pos_z", 28),
+                        ("victim_pos_x", 29),
+                        ("victim_pos_y", 30),
+                        ("victim_pos_z", 31),
+                        ("ball_pos_x", 32),
+                        ("ball_pos_y", 33),
+                        ("ball_pos_z", 34),
+                    ):
+                        if row[idx] is not None:
+                            pt[key] = int(row[idx])
+                    merged.append(pt)
+            except sqlite3.OperationalError:
+                pass
 
             for row in conn.execute(
                 """

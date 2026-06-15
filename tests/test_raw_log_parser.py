@@ -76,6 +76,12 @@ def test_parse_raw_log_empty() -> None:
         "kill_events",
         "uber_events",
         "charge_end_events",
+        "charge_ready_events",
+        "lost_advantage_events",
+        "medic_death_events",
+        "empty_uber_events",
+        "capture_blocked_events",
+        "passtime_events",
         "capture_events",
         "round_events",
         "spawn_events",
@@ -201,6 +207,116 @@ def test_parse_raw_log_charge_end_duration() -> None:
     assert len(ce) == 1
     assert ce[0]["medic_steamid64"] == _sid(88)
     assert ce[0]["duration_sec"] == 8.5
+
+
+def test_parse_raw_log_charge_ready() -> None:
+    med = _ent("Medic", 88, "Blue")
+    log = _line(0, 0, f'"{med}" triggered "chargeready"')
+    out = parse_raw_log(1, log)
+    cr = out["charge_ready_events"]
+    assert len(cr) == 1
+    assert cr[0]["medic_steamid64"] == _sid(88)
+    assert cr[0]["tick"] == 0
+
+
+def test_parse_raw_log_lost_advantage() -> None:
+    med = _ent("Medic", 88, "Blue")
+    log = _line(10, 5, f'"{med}" triggered "lost_uber_advantage" (time "21")')
+    out = parse_raw_log(1, log)
+    la = out["lost_advantage_events"]
+    assert len(la) == 1
+    assert la[0]["medic_steamid64"] == _sid(88)
+    assert la[0]["advantage_sec"] == 21.0
+
+
+def test_parse_raw_log_medic_death_with_ex_and_positions() -> None:
+    killer = _ent("Killer", 10, "Blue")
+    medic = _ent("Medic", 20, "Red")
+    log = "\n".join(
+        [
+            _line(
+                0,
+                0,
+                f'"{killer}" triggered "medic_death" against "{medic}" (healing "1522") (ubercharge "1")',
+            ),
+            _line(0, 0, f'"{medic}" triggered "medic_death_ex" (uberpct "100")'),
+            _line(
+                0,
+                0,
+                f'"{killer}" killed "{medic}" with "iron_bomber" (victim_position "-695 -99 191")',
+            ),
+        ]
+    )
+    out = parse_raw_log(1, log)
+    md = out["medic_death_events"]
+    assert len(md) == 1
+    assert md[0]["killer_steamid64"] == _sid(10)
+    assert md[0]["medic_steamid64"] == _sid(20)
+    assert md[0]["healing"] == 1522
+    assert md[0]["had_uber"] == 1
+    assert md[0]["uber_pct"] == 100
+    assert md[0]["pos_x"] == -695
+    assert md[0]["pos_y"] == -99
+    assert md[0]["pos_z"] == 191
+
+
+def test_parse_raw_log_empty_uber() -> None:
+    med = _ent("Medic", 88, "Blue")
+    log = _line(0, 0, f'"{med}" triggered "empty_uber"')
+    out = parse_raw_log(1, log)
+    eu = out["empty_uber_events"]
+    assert len(eu) == 1
+    assert eu[0]["medic_steamid64"] == _sid(88)
+
+
+def test_parse_raw_log_capture_blocked() -> None:
+    pl = _ent("Def", 50, "Red")
+    log = _line(
+        0,
+        0,
+        f'"{pl}" triggered "captureblocked" (cp "0") (cpname "the Tower") (position "-168 147 272")',
+    )
+    out = parse_raw_log(1, log)
+    cb = out["capture_blocked_events"]
+    assert len(cb) == 1
+    assert cb[0]["steamid64"] == _sid(50)
+    assert cb[0]["cp_index"] == 0
+    assert cb[0]["cp_name"] == "the Tower"
+    assert cb[0]["pos_x"] == -168
+
+
+def test_parse_raw_log_passtime_score_and_caught() -> None:
+    scorer = _ent("Scorer", 1, "Red")
+    passer = _ent("Passer", 2, "Blue")
+    log = "\n".join(
+        [
+            _line(
+                0,
+                0,
+                f'"{scorer}" triggered "pass_score" (points "1") (dist "285") (speed "933") '
+                '(position "-14 -1378 -1775")',
+            ),
+            _line(
+                0,
+                5,
+                f'"{scorer}" triggered "pass_pass_caught" against "{passer}" (interception "1") '
+                '(save "0") (handoff "0") (dist "27.247") (duration "0.630") '
+                '(thrower_position "533 789 -1538") (catcher_position "483 787 -1757")',
+            ),
+        ]
+    )
+    out = parse_raw_log(1, log)
+    pt = out["passtime_events"]
+    assert len(pt) == 2
+    score = next(e for e in pt if e["event_type"] == "pass_score")
+    assert score["steamid64"] == _sid(1)
+    assert score["points"] == 1
+    assert score["speed"] == 933
+    caught = next(e for e in pt if e["event_type"] == "pass_pass_caught")
+    assert caught["other_steamid64"] == _sid(2)
+    assert caught["interception"] == 1
+    assert caught["thrower_pos_x"] == 533
+    assert caught["catcher_pos_z"] == -1757
 
 
 # --- captures ---
