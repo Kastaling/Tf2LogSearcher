@@ -67,6 +67,10 @@ def test_parse_xyz_bad(s: str) -> None:
     assert parse_xyz(s) is None
 
 
+def test_parse_xyz_rejects_sqlite_overflow() -> None:
+    assert parse_xyz("9223372036854775808 0 0") is None
+
+
 # --- parse_raw_log: empty ---
 
 

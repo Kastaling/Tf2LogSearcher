@@ -6,6 +6,57 @@ import time
 from pathlib import Path
 from typing import Any
 
+# SQLite INTEGER is signed 64-bit.
+_SQLITE_INT_MAX = (1 << 63) - 1
+_SQLITE_INT_MIN = -(1 << 63)
+
+
+def clamp_sqlite_int(value: int | None) -> int | None:
+    """Return value if it fits SQLite INTEGER; else None (drop out-of-range coords)."""
+    if value is None:
+        return None
+    if value > _SQLITE_INT_MAX or value < _SQLITE_INT_MIN:
+        return None
+    return value
+
+
+def is_sqlite_corrupt_error(exc: BaseException) -> bool:
+    """True when SQLite reports database corruption (connection stays unusable until reopen)."""
+    if not isinstance(exc, sqlite3.Error):
+        return False
+    msg = str(exc).lower()
+    return "malformed" in msg or "not a database" in msg or (
+        "corrupt" in msg and "unicode" not in msg
+    )
+
+
+def checkpoint_raw_db(db_path: str | Path, *, truncate: bool = True) -> None:
+    """Flush WAL; TRUNCATE helps long write sessions and after reconnect."""
+    conn = connect_raw_db(db_path)
+    try:
+        mode = "TRUNCATE" if truncate else "PASSIVE"
+        conn.execute(f"PRAGMA wal_checkpoint({mode})")
+    finally:
+        conn.close()
+
+
+def quick_raw_db_ok(db_path: str | Path) -> bool:
+    """Fast sanity check (not a full integrity_check on huge DBs)."""
+    path = Path(db_path)
+    if not path.is_file() or path.stat().st_size < 100:
+        return False
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("SELECT 1 FROM raw_logs LIMIT 1")
+            return True
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+
+
 def connect_raw_db(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)

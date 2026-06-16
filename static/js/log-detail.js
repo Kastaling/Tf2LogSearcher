@@ -864,9 +864,9 @@
     return '';
   }
 
-  /** Seconds of uber advantage when popping (chargeready timing). Null if none or medic died. */
-  function logDetailUberAdvantageAtDeploy(medic, deployTick, readyTimeline, enemySid, died) {
-    if (died) return null;
+  /** Seconds of uber advantage when popping (chargeready timing). Null if medic died during uber. */
+  function logDetailUberAdvantageAtDeploy(medic, deployTick, readyTimeline, enemySid, diedDuringUber) {
+    if (diedDuringUber) return null;
     var sid = logDetailUberPlayerSid(medic);
     if (!sid || !enemySid) return null;
     var myReady = logDetailUberReadyBeforeTick(sid, deployTick, readyTimeline);
@@ -1046,10 +1046,12 @@
       });
       var duration = uber.duration != null ? uber.duration : 0;
       var score = duration * 2 + kills * 6 + assists * 3 - (died ? 12 : 0);
+      var diedDuringUber = died && deathTick != null && deathTick <= endTick;
       return {
         kills: kills,
         assists: assists,
         died: died,
+        diedDuringUber: diedDuringUber,
         deathTick: deathTick,
         duration: uber.duration,
         endTick: endTick,
@@ -1082,7 +1084,7 @@
           row.uber.deployTick,
           readyTimeline,
           enemySid,
-          row.impact.died
+          row.impact.diedDuringUber
         );
         var advantageLostSec = lostBySid[sid] != null ? lostBySid[sid] : null;
         return {

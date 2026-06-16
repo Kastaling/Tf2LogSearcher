@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from app.steamid_constants import STEAMID64_OFFSET
+from app.raw_db import clamp_sqlite_int
 
 _STEAMID3_RE = re.compile(r"^\[U:1:(\d+)\]$")
 
@@ -161,9 +162,15 @@ def parse_xyz(pos_str: str) -> tuple[int, int, int] | None:
     if len(parts) != 3:
         return None
     try:
-        return int(parts[0]), int(parts[1]), int(parts[2])
+        x, y, z = int(parts[0]), int(parts[1]), int(parts[2])
     except ValueError:
         return None
+    x = clamp_sqlite_int(x)
+    y = clamp_sqlite_int(y)
+    z = clamp_sqlite_int(z)
+    if x is None or y is None or z is None:
+        return None
+    return x, y, z
 
 
 def _steam_from_entity(entity: str) -> str | None:
@@ -206,7 +213,7 @@ def _quoted_int(line: str, field: str) -> int | None:
     if not m:
         return None
     try:
-        return int(m.group(1).strip())
+        return clamp_sqlite_int(int(m.group(1).strip()))
     except ValueError:
         return None
 

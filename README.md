@@ -165,7 +165,7 @@ that add `chargeready`, `lost_uber_advantage`, or other new event types):
 docker compose run --rm downloader python -m app.raw_backfill --batch-size 200
 ```
 
-For a long library, use the tmux wrapper (stops the downloader, runs backfill, restarts it):
+For a long library, use the tmux wrapper (stops the downloader and web, runs backfill, restarts them):
 
 ```bash
 ./scripts/reingest_raw_events_tmux.sh
@@ -173,6 +173,16 @@ For a long library, use the tmux wrapper (stops the downloader, runs backfill, r
 ./scripts/reingest_raw_events_tmux.sh --skip-files 2409500   # resume from Progress line
 ./scripts/reingest_raw_events_tmux.sh --min-log-id 3000000 --max-log-id 4000000
 ```
+
+Failed log ids are appended to `maintenance_logs/raw_backfill_failed_ids.log`. Retry only those:
+
+```bash
+docker compose run --rm downloader python -m app.raw_backfill --retry-failed maintenance_logs/raw_backfill_failed_ids.log
+```
+
+If backfill logs `database disk image is malformed`, stop web/downloader and rerun the wrapper
+(corruption on one connection used to cascade as false failures for unrelated logs). Persistent
+corruption may require SQLite `.recover` into a new file.
 
 `app.raw_backfill` options `--skip-files`, `--min-log-id`, and `--max-log-id` are forwarded
 when you append them to the wrapper.

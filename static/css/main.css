@@ -976,6 +976,10 @@
       display: block;
       margin-bottom: 0.75rem;
     }
+    .lb-stat-field-label {
+      display: block;
+      cursor: pointer;
+    }
     .lb-stat-select-wrap {
       display: flex;
       align-items: center;
@@ -995,33 +999,134 @@
       flex: 1 1 auto;
       min-width: 0;
       max-width: 100%;
+      cursor: pointer;
+      box-sizing: border-box;
+      background-color: var(--input-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 0.3rem 1.75rem 0.3rem 0.45rem;
+      min-height: 2rem;
+    }
+    .lb-stat-select-inner:focus {
+      outline: 2px solid var(--link);
+      outline-offset: 1px;
+    }
+    .lb-stat-select-inner:focus:not(:focus-visible) {
+      outline: none;
+    }
+    .lb-stat-select-inner:focus-visible {
+      outline: 2px solid var(--link);
+      outline-offset: 1px;
+    }
+    .lb-stat-select-inner::after {
+      content: '';
+      position: absolute;
+      right: 0.55rem;
+      top: 50%;
+      width: 0;
+      height: 0;
+      margin-top: -2px;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 5px solid var(--text-muted);
+      pointer-events: none;
     }
     .lb-stat-display {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      padding: 0 1.75rem 0 0.45rem;
+      display: block;
       pointer-events: none;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      z-index: 1;
     }
     .lb-stat-select-inner.is-open .lb-stat-display {
       display: none;
     }
-    .lb-stat-select-inner:not(.is-open) .lb-stat-select {
-      color: transparent;
+    .lb-stat-select-native {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      padding: 0 !important;
+      margin: -1px !important;
+      overflow: hidden !important;
+      clip: rect(0, 0, 0, 0) !important;
+      white-space: nowrap !important;
+      border: 0 !important;
+      pointer-events: none !important;
     }
-    .lb-stat-select {
+    .lb-stat-select:not(.lb-stat-select-native) {
       display: block;
       width: 100%;
       min-width: min(100%, 20rem);
       max-width: 100%;
     }
-    .lb-stat-select-inner.is-open .lb-stat-select {
+    .lb-stat-listbox {
+      position: absolute;
+      top: calc(100% + 2px);
+      left: 0;
+      right: 0;
+      z-index: 40;
+      max-height: min(24rem, 60vh);
+      overflow: auto;
+      margin: 0;
+      padding: 0.25rem 0;
+      list-style: none;
+      background: var(--panel-bg, var(--bg));
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      box-shadow: 0 4px 16px color-mix(in srgb, #000 22%, transparent);
+    }
+    .lb-stat-listbox[hidden] {
+      display: none !important;
+    }
+    .lb-stat-listbox-group,
+    .lb-stat-listbox-heading {
+      padding: 0.35rem 0.65rem 0.15rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      pointer-events: none;
+    }
+    .lb-stat-listbox-heading.lb-stat-indent-1 {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.88rem;
+      font-weight: 500;
       color: var(--text);
+      padding-top: 0.2rem;
+    }
+    .lb-stat-listbox-option {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.28rem 0.65rem;
+      cursor: pointer;
+      color: var(--text);
+    }
+    .lb-stat-listbox-option.lb-stat-indent-2 {
+      padding-left: 2.15rem;
+    }
+    .lb-stat-listbox-heading.lb-stat-indent-1 {
+      padding-left: 1.25rem;
+    }
+    .lb-stat-listbox-option.lb-stat-indent-2 .logmatch-class-icon {
+      width: 16px;
+      height: 16px;
+    }
+    .lb-stat-listbox .logmatch-class-icon {
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+      display: block;
+    }
+    .lb-stat-listbox-option:hover,
+    .lb-stat-listbox-option:focus {
+      background: color-mix(in srgb, var(--link) 12%, transparent);
+      outline: none;
+    }
+    .lb-stat-listbox-option.is-selected {
+      background: color-mix(in srgb, var(--link) 18%, transparent);
+      font-weight: 500;
     }
     .lb-stat-select option:not(:disabled) {
       font-size: 0.95em;

@@ -162,15 +162,16 @@
   <h2>Stats Leaderboards</h2>
   <p>Global rankings from the indexed stats database. Filters apply to which logs count toward each player&rsquo;s aggregates. Higher minimum log counts reduce noise from low-sample accounts.</p>
   <form id="frmLeaderboard">
-    <label class="lb-stat-field">Rank by:
+    <div class="lb-stat-field">
+      <span class="lb-stat-field-label" id="lb-stat-field-label">Rank by:</span>
       <span class="lb-stat-select-wrap">
         <span class="js-lb-stat-icon-preview lb-stat-icon-preview" hidden aria-hidden="true"></span>
-        <span class="lb-stat-select-inner">
+        <span class="lb-stat-select-inner js-lb-stat-select-inner" aria-labelledby="lb-stat-field-label">
           <span class="js-lb-stat-display lb-stat-display" aria-hidden="true"></span>
-          <select name="lb_stat" class="js-lb-stat-select lb-stat-select" aria-label="Leaderboard statistic"></select>
+          <select name="lb_stat" class="js-lb-stat-select lb-stat-select" tabindex="-1" aria-hidden="true" aria-label="Leaderboard statistic"></select>
         </span>
       </span>
-    </label>
+    </div>
     <input type="hidden" name="lb_type" value="dpm">
     <input type="hidden" name="stat_scope" value="per_log">
     <div class="js-lb-weapon-wrap lb-weapon-wrap" hidden>

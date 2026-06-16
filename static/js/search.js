@@ -535,7 +535,10 @@ function flashDeepLinkFilledFields(state) {
   if (state.mode === 'leaderboard') {
     var flb = document.getElementById('frmLeaderboard');
     if (!flb) return;
-    if (flb.elements.lb_stat) pulseDeepLinkEl(flb.elements.lb_stat);
+    if (flb.elements.lb_stat) {
+      var lbInner = flb.querySelector('.lb-stat-select-inner');
+      pulseDeepLinkEl(lbInner || flb.elements.lb_stat);
+    }
     if (ne(state.gamemode) && flb.gamemode) pulseDeepLinkEl(flb.gamemode);
     if (ne(state.class_filter) && flb.elements.class_filter) pulseDeepLinkEl(flb.elements.class_filter);
     if (ne(state.map_query) && flb.elements.map_query) pulseDeepLinkEl(flb.elements.map_query);
@@ -645,6 +648,7 @@ function restoreHomeForms() {
 (function initLeaderboardStatSelect() {
   var form = document.getElementById('frmLeaderboard');
   if (!form || !form.elements.lb_stat) return;
+  initLeaderboardStatSelectUi(form);
   populateLeaderboardStatSelect(form.elements.lb_stat);
   setLeaderboardStatSelectValue(
     form.elements.lb_stat,
@@ -658,7 +662,6 @@ function restoreHomeForms() {
   if (form.elements.lb_weapon) {
     form.elements.lb_weapon.addEventListener('change', function() {});
   }
-  initLeaderboardStatSelectUi(form);
   syncLeaderboardWeaponSelect(form);
 })();
 

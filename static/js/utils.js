@@ -130,18 +130,6 @@ function leaderboardStatIndentPrefix(level) {
   return out;
 }
 
-function leaderboardStatIconStyle(indentLevel, iconClass) {
-  if (!iconClass || !LOGMATCH_CLASS_ICON[iconClass]) return null;
-  var pad = 0.35 + indentLevel * 1.25;
-  return {
-    backgroundImage: 'url(' + LOGMATCH_CLASS_ICON[iconClass] + ')',
-    backgroundRepeat: 'no-repeat',
-    backgroundPosition: pad + 'rem center',
-    backgroundSize: '18px 18px',
-    paddingLeft: (pad + 1.3) + 'rem',
-  };
-}
-
 var LEADERBOARD_SCOPE_LABELS = { total: 1, per_log: 1, highest: 1, lowest: 1 };
 
 /** Full path shown on the closed dropdown only (not in the open option list). */
@@ -330,21 +318,127 @@ function initLeaderboardStatSelectUi(form) {
   if (!form || !form.elements.lb_stat) return;
   if (form.dataset.lbStatSelectUiInit === '1') {
     syncLeaderboardStatClosedDisplay(form);
+    syncLeaderboardStatListboxSelection(form);
     return;
   }
   form.dataset.lbStatSelectUiInit = '1';
   var sel = form.elements.lb_stat;
   var inner = form.querySelector('.lb-stat-select-inner');
-  if (inner) {
-    sel.addEventListener('focus', function() {
-      inner.classList.add('is-open');
-    });
-    sel.addEventListener('blur', function() {
-      inner.classList.remove('is-open');
-      syncLeaderboardStatClosedDisplay(form);
+  if (!inner) {
+    syncLeaderboardStatClosedDisplay(form);
+    return;
+  }
+
+  var listbox = document.createElement('ul');
+  listbox.className = 'lb-stat-listbox';
+  listbox.id = 'lb-stat-listbox-' + Math.random().toString(36).slice(2, 10);
+  listbox.setAttribute('role', 'listbox');
+  listbox.hidden = true;
+  inner.insertBefore(listbox, sel.nextSibling);
+
+  sel.classList.add('lb-stat-select-native');
+  sel.tabIndex = -1;
+  sel.setAttribute('aria-hidden', 'true');
+  sel.addEventListener('mousedown', function(ev) {
+    ev.preventDefault();
+  });
+  sel.addEventListener('keydown', function(ev) {
+    ev.preventDefault();
+  });
+
+  inner.setAttribute('role', 'combobox');
+  inner.setAttribute('aria-haspopup', 'listbox');
+  inner.setAttribute('aria-controls', listbox.id);
+  inner.setAttribute('aria-expanded', 'false');
+  if (!inner.hasAttribute('tabindex')) inner.tabIndex = 0;
+
+  populateLeaderboardStatListbox(listbox);
+
+  function onListboxPick(row) {
+    if (!row || !row.dataset.value) return;
+    selectLeaderboardStatListboxValue(form, row.dataset.value);
+  }
+
+  var fieldLabel = form.querySelector('#lb-stat-field-label');
+  if (fieldLabel) {
+    fieldLabel.addEventListener('click', function() {
+      inner.focus();
+      if (!inner.classList.contains('is-open')) openLeaderboardStatListbox(form);
     });
   }
+
+  inner.addEventListener('click', function(ev) {
+    if (ev.target.closest('.lb-stat-listbox')) return;
+    ev.stopPropagation();
+    toggleLeaderboardStatListbox(form);
+  });
+
+  listbox.addEventListener('mousedown', function(ev) {
+    var row = ev.target.closest('.lb-stat-listbox-option');
+    if (!row || !row.dataset.value) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    onListboxPick(row);
+  });
+
+  listbox.addEventListener('keydown', function(ev) {
+    var options = leaderboardStatListboxSelectableOptions(listbox);
+    if (!options.length) return;
+    var idx = options.indexOf(document.activeElement);
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      focusLeaderboardStatListboxOption(options, idx < 0 ? 0 : idx + 1);
+    } else if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      focusLeaderboardStatListboxOption(options, idx < 0 ? options.length - 1 : idx - 1);
+    } else if (ev.key === 'Enter' || ev.key === ' ') {
+      var row = document.activeElement;
+      if (row && row.classList.contains('lb-stat-listbox-option') && row.dataset.value) {
+        ev.preventDefault();
+        selectLeaderboardStatListboxValue(form, row.dataset.value);
+      }
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeLeaderboardStatListbox(form);
+      inner.focus();
+    }
+  });
+
+  inner.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'ArrowDown') {
+      if (!inner.classList.contains('is-open')) {
+        ev.preventDefault();
+        openLeaderboardStatListbox(form);
+        var options = leaderboardStatListboxSelectableOptions(listbox);
+        var selectedIdx = -1;
+        for (var si = 0; si < options.length; si++) {
+          if (options[si].classList.contains('is-selected')) {
+            selectedIdx = si;
+            break;
+          }
+        }
+        focusLeaderboardStatListboxOption(options, selectedIdx >= 0 ? selectedIdx : 0);
+      }
+    } else if (ev.key === 'Escape') {
+      closeLeaderboardStatListbox(form);
+    }
+  });
+
+  document.addEventListener('click', function(ev) {
+    if (!inner.classList.contains('is-open')) return;
+    if (ev.target.closest('.lb-stat-select-wrap')) return;
+    closeLeaderboardStatListbox(form);
+  });
+
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Escape' && inner.classList.contains('is-open')) {
+      closeLeaderboardStatListbox(form);
+      inner.focus();
+    }
+  });
+
   syncLeaderboardStatClosedDisplay(form);
+  syncLeaderboardStatListboxSelection(form);
 }
 
 /** Leaderboard stat picker: optgroup categories, disabled sub-headings, indented leaf options. */
@@ -419,19 +513,12 @@ function parseLeaderboardStatOptionValue(raw) {
   };
 }
 
-function populateLeaderboardStatSelect(select) {
-  if (!select) return;
-  select.innerHTML = '';
+function forEachLeaderboardStatMenuEntry(callback) {
   LEADERBOARD_STAT_MENU.forEach(function(cat) {
-    var og = document.createElement('optgroup');
-    og.label = cat.label;
     var sectionHeading = '';
     var subHeading = '';
     cat.entries.forEach(function(ent) {
-      var opt = document.createElement('option');
       var indentLvl = ent.indent != null ? Number(ent.indent) : 0;
-      var prefix = leaderboardStatIndentPrefix(indentLvl);
-      var iconStyle = leaderboardStatIconStyle(indentLvl, ent.iconClass);
       if (ent.kind === 'heading') {
         if (indentLvl <= 0) {
           sectionHeading = ent.label;
@@ -439,37 +526,169 @@ function populateLeaderboardStatSelect(select) {
         } else if (indentLvl === 1) {
           subHeading = ent.label;
         }
-        opt.disabled = true;
-        opt.textContent = prefix + ent.label;
-        opt.className = 'lb-stat-heading' + (indentLvl ? ' lb-stat-indent-' + indentLvl : '');
-        if (iconStyle) {
-          opt.style.backgroundImage = iconStyle.backgroundImage;
-          opt.style.backgroundRepeat = iconStyle.backgroundRepeat;
-          opt.style.backgroundPosition = iconStyle.backgroundPosition;
-          opt.style.backgroundSize = iconStyle.backgroundSize;
-          opt.style.paddingLeft = iconStyle.paddingLeft;
-        }
-      } else {
-        var fullLabel = leaderboardStatSelectionLabel(
-          cat.label, sectionHeading, subHeading, ent
-        );
-        opt.value = leaderboardStatOptionValue(ent.lb, ent.scope);
-        opt.textContent = prefix + ent.label;
-        opt.setAttribute('data-full-label', fullLabel);
-        opt.title = fullLabel;
-        if (indentLvl) opt.className = 'lb-stat-indent lb-stat-indent-' + indentLvl;
-        if (iconStyle) {
-          opt.style.backgroundImage = iconStyle.backgroundImage;
-          opt.style.backgroundRepeat = iconStyle.backgroundRepeat;
-          opt.style.backgroundPosition = iconStyle.backgroundPosition;
-          opt.style.backgroundSize = iconStyle.backgroundSize;
-          opt.style.paddingLeft = iconStyle.paddingLeft;
-        }
       }
-      og.appendChild(opt);
+      callback({
+        catLabel: cat.label,
+        ent: ent,
+        indentLvl: indentLvl,
+        sectionHeading: sectionHeading,
+        subHeading: subHeading,
+      });
     });
-    select.appendChild(og);
   });
+}
+
+function leaderboardStatListboxRowClasses(kind, indentLvl) {
+  var cls = kind === 'heading' ? 'lb-stat-listbox-heading' : 'lb-stat-listbox-option';
+  if (indentLvl) cls += ' lb-stat-indent-' + indentLvl;
+  return cls;
+}
+
+function leaderboardStatListboxRowInnerHtml(ent) {
+  var iconHtml = ent.iconClass ? leaderboardClassIconImg(ent.iconClass) : '';
+  return iconHtml + '<span class="lb-stat-listbox-label">' + escapeHtml(ent.label) + '</span>';
+}
+
+function populateLeaderboardStatSelect(select) {
+  if (!select) return;
+  select.innerHTML = '';
+  var groups = Object.create(null);
+  forEachLeaderboardStatMenuEntry(function(ctx) {
+    var ent = ctx.ent;
+    var indentLvl = ctx.indentLvl;
+    var opt = document.createElement('option');
+    var prefix = leaderboardStatIndentPrefix(indentLvl);
+    if (ent.kind === 'heading') {
+      opt.disabled = true;
+      opt.textContent = prefix + ent.label;
+      opt.className = 'lb-stat-heading' + (indentLvl ? ' lb-stat-indent-' + indentLvl : '');
+    } else {
+      var fullLabel = leaderboardStatSelectionLabel(
+        ctx.catLabel, ctx.sectionHeading, ctx.subHeading, ent
+      );
+      opt.value = leaderboardStatOptionValue(ent.lb, ent.scope);
+      opt.textContent = prefix + ent.label;
+      opt.setAttribute('data-full-label', fullLabel);
+      opt.title = fullLabel;
+      if (indentLvl) opt.className = 'lb-stat-indent lb-stat-indent-' + indentLvl;
+    }
+    if (!groups[ctx.catLabel]) {
+      groups[ctx.catLabel] = document.createElement('optgroup');
+      groups[ctx.catLabel].label = ctx.catLabel;
+      select.appendChild(groups[ctx.catLabel]);
+    }
+    groups[ctx.catLabel].appendChild(opt);
+  });
+  var listbox = select.parentElement && select.parentElement.querySelector('.lb-stat-listbox');
+  if (listbox) populateLeaderboardStatListbox(listbox);
+}
+
+function populateLeaderboardStatListbox(listbox) {
+  if (!listbox) return;
+  listbox.innerHTML = '';
+  var catLabel = '';
+  forEachLeaderboardStatMenuEntry(function(ctx) {
+    if (ctx.catLabel !== catLabel) {
+      catLabel = ctx.catLabel;
+      var group = document.createElement('li');
+      group.className = 'lb-stat-listbox-group';
+      group.setAttribute('role', 'presentation');
+      group.textContent = catLabel;
+      listbox.appendChild(group);
+    }
+    var ent = ctx.ent;
+    var indentLvl = ctx.indentLvl;
+    var row = document.createElement('li');
+    row.className = leaderboardStatListboxRowClasses(ent.kind, indentLvl);
+    if (ent.kind === 'heading') {
+      row.setAttribute('role', 'presentation');
+      row.innerHTML = leaderboardStatListboxRowInnerHtml(ent);
+    } else {
+      var fullLabel = leaderboardStatSelectionLabel(
+        ctx.catLabel, ctx.sectionHeading, ctx.subHeading, ent
+      );
+      var value = leaderboardStatOptionValue(ent.lb, ent.scope);
+      row.setAttribute('role', 'option');
+      row.dataset.value = value;
+      row.setAttribute('aria-selected', 'false');
+      row.tabIndex = -1;
+      row.title = fullLabel;
+      row.innerHTML = leaderboardStatListboxRowInnerHtml(ent);
+    }
+    listbox.appendChild(row);
+  });
+}
+
+function syncLeaderboardStatListboxSelection(form) {
+  if (!form || !form.elements.lb_stat) return;
+  var sel = form.elements.lb_stat;
+  var listbox = form.querySelector('.lb-stat-listbox');
+  if (!listbox) return;
+  var val = sel.value;
+  listbox.querySelectorAll('.lb-stat-listbox-option').forEach(function(row) {
+    var selected = row.dataset.value === val;
+    row.setAttribute('aria-selected', selected ? 'true' : 'false');
+    row.classList.toggle('is-selected', selected);
+  });
+}
+
+function closeLeaderboardStatListbox(form) {
+  if (!form) return;
+  var inner = form.querySelector('.lb-stat-select-inner');
+  var listbox = form.querySelector('.lb-stat-listbox');
+  if (inner) {
+    inner.classList.remove('is-open');
+    inner.setAttribute('aria-expanded', 'false');
+  }
+  if (listbox) {
+    listbox.hidden = true;
+    listbox.classList.remove('is-open');
+  }
+}
+
+function openLeaderboardStatListbox(form) {
+  if (!form) return;
+  var inner = form.querySelector('.lb-stat-select-inner');
+  var listbox = form.querySelector('.lb-stat-listbox');
+  if (!inner || !listbox) return;
+  inner.classList.add('is-open');
+  inner.setAttribute('aria-expanded', 'true');
+  listbox.hidden = false;
+  listbox.classList.add('is-open');
+  syncLeaderboardStatListboxSelection(form);
+  var selected = listbox.querySelector('.lb-stat-listbox-option.is-selected');
+  if (selected && selected.scrollIntoView) selected.scrollIntoView({ block: 'nearest' });
+}
+
+function toggleLeaderboardStatListbox(form) {
+  if (!form) return;
+  var inner = form.querySelector('.lb-stat-select-inner');
+  if (inner && inner.classList.contains('is-open')) closeLeaderboardStatListbox(form);
+  else openLeaderboardStatListbox(form);
+}
+
+function selectLeaderboardStatListboxValue(form, value) {
+  if (!form || !form.elements.lb_stat) return;
+  var sel = form.elements.lb_stat;
+  sel.value = value;
+  if (sel.value === value) {
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  closeLeaderboardStatListbox(form);
+  syncLeaderboardStatClosedDisplay(form);
+  syncLeaderboardStatListboxSelection(form);
+  var inner = form.querySelector('.lb-stat-select-inner');
+  if (inner) inner.focus();
+}
+
+function leaderboardStatListboxSelectableOptions(listbox) {
+  return listbox ? Array.prototype.slice.call(listbox.querySelectorAll('.lb-stat-listbox-option')) : [];
+}
+
+function focusLeaderboardStatListboxOption(options, index) {
+  if (!options.length) return;
+  var i = Math.max(0, Math.min(options.length - 1, index));
+  options[i].focus();
 }
 
 function setLeaderboardStatSelectValue(select, lbType, statScope) {
@@ -481,7 +700,10 @@ function setLeaderboardStatSelectValue(select, lbType, statScope) {
     select.value = leaderboardStatOptionValue('dpm', 'total');
   }
   var form = select.closest && select.closest('form');
-  if (form) syncLeaderboardStatClosedDisplay(form);
+  if (form) {
+    syncLeaderboardStatClosedDisplay(form);
+    syncLeaderboardStatListboxSelection(form);
+  }
 }
 
 function applyLeaderboardStatSelectToForm(form) {
@@ -503,6 +725,7 @@ function applyLeaderboardStatSelectToForm(form) {
   syncLeaderboardWeaponSelect(form, form.elements.lb_weapon && form.elements.lb_weapon.value);
   syncLeaderboardStatIconPreview(form);
   syncLeaderboardStatClosedDisplay(form);
+  syncLeaderboardStatListboxSelection(form);
   return parsed;
 }
 

@@ -26,7 +26,7 @@
 #   TF2LS_MAINT_LOG_FILE            Exact log file path to append to (set automatically for tmux child)
 #
 # Prerequisites: docker-compose.example.yml copied to docker-compose.yml (or equivalent).
-# Stops the downloader to keep a single SQLite writer on raw_events.db.
+# Stops the downloader and web to keep a single SQLite writer and no concurrent readers.
 
 set -euo pipefail
 
@@ -120,6 +120,35 @@ resolve_compose() {
   exit 1
 }
 
+# Return 0 if args include --failed-ids-file with a path; sets _FAILED_IDS_FROM_ARGS.
+_FAILED_IDS_FROM_ARGS=""
+_backfill_args_has_failed_ids_file() {
+  _FAILED_IDS_FROM_ARGS=""
+  local -a args=("$@")
+  local i=0
+  while [[ $i -lt ${#args[@]} ]]; do
+    local arg="${args[$i]}"
+    if [[ "${arg}" == --failed-ids-file ]]; then
+      if [[ $((i + 1)) -ge ${#args[@]} ]] || [[ -z "${args[$((i + 1))]}" ]] || [[ "${args[$((i + 1))]}" == -* ]]; then
+        echo "error: --failed-ids-file requires a path argument" >&2
+        exit 1
+      fi
+      _FAILED_IDS_FROM_ARGS="${args[$((i + 1))]}"
+      return 0
+    fi
+    if [[ "${arg}" == --failed-ids-file=* ]]; then
+      _FAILED_IDS_FROM_ARGS="${arg#--failed-ids-file=}"
+      if [[ -z "${_FAILED_IDS_FROM_ARGS}" ]]; then
+        echo "error: --failed-ids-file requires a non-empty path" >&2
+        exit 1
+      fi
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
 if [[ "${use_tmux}" -eq 1 ]] && [[ -z "${TMUX:-}" ]]; then
   if command -v tmux >/dev/null 2>&1 && [[ -t 0 ]] && [[ -t 1 ]]; then
     sess="${TF2LS_TMUX_SESSION:-tf2ls-reingest-raw-$(date +%Y%m%d-%H%M%S)}"
@@ -146,16 +175,18 @@ resolve_compose
 compose_display="${COMPOSE_CMD[*]}"
 started_at_epoch="$(date +%s)"
 
-echo "[1/3] Stopping downloader (avoids concurrent writes to raw_events.db)..."
+echo "[1/4] Stopping downloader and web (single writer + no concurrent readers on raw_events.db)..."
 set +e
-"${COMPOSE_CMD[@]}" stop downloader
+"${COMPOSE_CMD[@]}" stop downloader web
 stop_ec=$?
 set -e
 if [[ "${stop_ec}" -eq 0 ]]; then
-  echo "[ok] Downloader stopped (or was already stopped)."
+  echo "[ok] Downloader and web stopped (or were already stopped)."
 else
-  echo "[warning] Downloader stop returned ${stop_ec}; continuing because raw_backfill is the only intended writer now." >&2
+  echo "[warning] stop returned ${stop_ec}; continuing because raw_backfill is the only intended writer now." >&2
 fi
+
+FAILED_IDS_FILE="${TF2LS_RAW_BACKFILL_FAILED_IDS:-${REPO_ROOT}/maintenance_logs/raw_backfill_failed_ids.log}"
 
 BACKFILL_ARGS=()
 if [[ $# -gt 0 ]]; then
@@ -166,7 +197,16 @@ else
   BACKFILL_ARGS+=(--batch-size 200)
 fi
 
-echo "[2/3] Running raw events backfill (${BACKFILL_ARGS[*]})..."
+if _backfill_args_has_failed_ids_file "${BACKFILL_ARGS[@]}"; then
+  FAILED_IDS_FILE="${_FAILED_IDS_FROM_ARGS}"
+else
+  BACKFILL_ARGS+=(--failed-ids-file "${FAILED_IDS_FILE}")
+fi
+
+mkdir -p -- "$(dirname "${FAILED_IDS_FILE}")"
+touch -- "${FAILED_IDS_FILE}"
+
+echo "[2/4] Running raw events backfill (${BACKFILL_ARGS[*]})..."
 echo "      (Ctrl+C interrupts docker; SQLite keeps commits every --batch-size logs.)" >&2
 echo "      Compose command: ${compose_display}" >&2
 echo "      Full command: ${compose_display} run --rm downloader python -m app.raw_backfill ${BACKFILL_ARGS[*]}" >&2
@@ -189,7 +229,7 @@ cleanup_trap() {
   trap - INT TERM
   echo "" >&2
   echo "[info] Interrupted. Partial progress is preserved up to the last committed batch." >&2
-  echo "[info] Downloader is still stopped; when ready: ${compose_display} up -d downloader" >&2
+  echo "[info] Downloader and web are still stopped; when ready: ${compose_display} up -d web downloader" >&2
   echo "[info] Verbose log: ${TF2LS_MAINT_LOG_FILE}" >&2
   exit 130
 }
@@ -200,7 +240,7 @@ term_trap() {
   trap - INT TERM
   echo "" >&2
   echo "[info] Terminated during backfill." >&2
-  echo "[info] Downloader is still stopped; when ready: ${compose_display} up -d downloader" >&2
+  echo "[info] Downloader and web are still stopped; when ready: ${compose_display} up -d web downloader" >&2
   echo "[info] Verbose log: ${TF2LS_MAINT_LOG_FILE}" >&2
   exit 143
 }
@@ -221,25 +261,28 @@ if [[ "$bf_ec" -ne 0 ]]; then
   exit "$bf_ec"
 fi
 
-echo "[3/3] Starting downloader..."
+echo "[3/4] Starting web and downloader..."
 set +e
-"${COMPOSE_CMD[@]}" up -d downloader
+"${COMPOSE_CMD[@]}" up -d web downloader
 up_ec=$?
 set -e
 ended_at_epoch="$(date +%s)"
 elapsed=$((ended_at_epoch - started_at_epoch))
 
 if [[ "${up_ec}" -ne 0 ]]; then
-  echo "[error] Raw re-ingest succeeded, but restarting downloader failed with code ${up_ec}." >&2
+  echo "[error] Raw re-ingest succeeded, but restarting services failed with code ${up_ec}." >&2
   echo "[summary] Worked: raw_backfill re-parsed local zips into raw_events.db successfully." >&2
-  echo "[summary] Did not work: downloader restart failed; start it manually with: ${compose_display} up -d downloader" >&2
+  echo "[summary] Did not work: web/downloader restart failed; start manually with: ${compose_display} up -d web downloader" >&2
   echo "[summary] Elapsed: ${elapsed}s" >&2
   echo "[summary] Verbose log: ${TF2LS_MAINT_LOG_FILE}" >&2
+  echo "[summary] Failed log ids (if any): ${FAILED_IDS_FILE}" >&2
   exit "${up_ec}"
 fi
 
 echo "[summary] Raw re-ingest complete."
 echo "[summary] Worked: raw_backfill re-parsed local zips with the current parser."
-echo "[summary] Worked: downloader restarted successfully."
+echo "[summary] Worked: web and downloader restarted successfully."
 echo "[summary] Elapsed: ${elapsed}s"
 echo "[summary] Verbose log: ${TF2LS_MAINT_LOG_FILE}"
+echo "[summary] Failed log ids (if any): ${FAILED_IDS_FILE}"
+echo "[summary] Retry failures only: docker compose run --rm downloader python -m app.raw_backfill --retry-failed ${FAILED_IDS_FILE}"
