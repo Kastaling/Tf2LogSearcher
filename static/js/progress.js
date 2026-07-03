@@ -867,11 +867,12 @@ function renderProgress(data) {
   if (data.rate_logs_per_sec != null || data.rate_logs_per_sec_aggregated != null) {
     let rateText = '';
     if (data.rate_logs_per_sec_aggregated != null && data.rate_logs_per_sec != null) {
-      rateText = String(data.rate_logs_per_sec) + ' logs/s, avg ' + String(data.rate_logs_per_sec_aggregated);
+      rateText = fmtRateLogsPerSec(Number(data.rate_logs_per_sec)) + ' logs/s, avg ' +
+        fmtRateLogsPerSec(Number(data.rate_logs_per_sec_aggregated));
     } else if (data.rate_logs_per_sec_aggregated != null) {
-      rateText = String(data.rate_logs_per_sec_aggregated) + ' logs/s avg';
+      rateText = fmtRateLogsPerSec(Number(data.rate_logs_per_sec_aggregated)) + ' logs/s avg';
     } else {
-      rateText = String(data.rate_logs_per_sec) + ' logs/s';
+      rateText = fmtRateLogsPerSec(Number(data.rate_logs_per_sec)) + ' logs/s';
     }
     appendProgressRow(tbodyQueue, 'Download rate', rateText);
   }

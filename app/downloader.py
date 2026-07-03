@@ -55,6 +55,7 @@ from app.download_eta_checkpoint import (
     reconcile_aggregate_window,
     WRITE_GAP_THRESHOLD_SEC,
 )
+from app.rate_format import format_rate_logs_per_sec_display, sanitize_rate_for_api
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -270,7 +271,7 @@ def _log_stats_and_eta(logs_dir: Path, recent_writes: list[tuple[float, int]]) -
     rate_str = "N/A"
     burst_rate = rate_from_trailing_burst(recent_writes)
     if burst_rate is not None:
-        rate_str = f"{burst_rate:.1f} logs/s"
+        rate_str = f"{format_rate_logs_per_sec_display(burst_rate)} logs/s"
     logger.info(
         "LOGS_DIR: %s (%s files) | range %s–%s | remaining: %s | %s | ETA: %s",
         size_str, count, min_id, max_id, remaining, rate_str, eta_str,
@@ -433,8 +434,8 @@ def _write_progress_if_due(
         "total_bytes_human": _human_bytes(total_bytes),
         "remaining": remaining,
         "eta_human": eta_str,
-        "rate_logs_per_sec": round(recent_rate, 2) if recent_rate is not None else None,
-        "rate_logs_per_sec_aggregated": round(aggregated_rate, 2) if aggregated_rate is not None else None,
+        "rate_logs_per_sec": sanitize_rate_for_api(recent_rate),
+        "rate_logs_per_sec_aggregated": sanitize_rate_for_api(aggregated_rate),
         "backfill_complete": backfill_complete,
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "earliest_log_timestamp": earliest_ts,

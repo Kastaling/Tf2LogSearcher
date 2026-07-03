@@ -7,6 +7,25 @@ function fmtProgressNum(n) {
     return String(Math.trunc(n));
   }
 }
+
+/** Format logs/s with enough precision for very slow backfills (sub-1 rates). */
+function fmtRateLogsPerSec(n) {
+  if (n == null || typeof n !== 'number' || !Number.isFinite(n)) return '\u2014';
+  if (n <= 0) return '0';
+  if (n >= 100) return String(Math.round(n));
+  if (n >= 10) return String(Math.round(n * 10) / 10);
+  if (n >= 1) return String(Math.round(n * 100) / 100);
+  var text = n.toPrecision(3);
+  if (text.indexOf('e') !== -1 || text.indexOf('E') !== -1) {
+    var exp = Math.floor(Math.log10(n));
+    var decimals = Math.min(8, Math.max(3, -exp + 2));
+    text = n.toFixed(decimals);
+  }
+  if (text.indexOf('.') !== -1) {
+    text = text.replace(/0+$/, '').replace(/\.$/, '');
+  }
+  return text;
+}
 var VALID_LB_TYPES = {
   dpm: 1,
   kdr: 1,
