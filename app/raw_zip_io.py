@@ -5,6 +5,8 @@ import io
 import logging
 import time
 import zipfile
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from app.config import LOGS_TF_API_BASE, RETRY_ATTEMPTS
@@ -12,21 +14,41 @@ from app.config import LOGS_TF_API_BASE, RETRY_ATTEMPTS
 logger = logging.getLogger(__name__)
 
 
-def fetch_raw_log_zip_with_retry(log_id: int) -> bytes | None:
+class RawZipFetchOutcome(str, Enum):
+    OK = "ok"
+    NOT_AVAILABLE = "not_available"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class RawZipFetchResult:
+    data: bytes | None
+    outcome: RawZipFetchOutcome
+    status_code: int | None = None
+
+
+def fetch_raw_log_zip_with_retry(log_id: int) -> RawZipFetchResult:
     """
     Download log_{log_id}.log.zip from logs.tf.
-    Returns the raw zip bytes, or None on 404 or repeated failure.
-    URL: https://logs.tf/logs/log_{log_id}.log.zip
+
+    404/403 are permanent absences (no retries). 429/5xx/timeouts retry with backoff.
     """
     import requests
 
     url = f"{LOGS_TF_API_BASE}/logs/log_{log_id}.log.zip"
     last_exc = None
+    last_status: int | None = None
     for attempt in range(RETRY_ATTEMPTS):
         try:
             r = requests.get(url, timeout=30)
-            if r.status_code == 404:
-                return None
+            last_status = r.status_code
+            if r.status_code in (404, 403):
+                logger.info(
+                    "Raw zip log %s: not available (%s)",
+                    log_id,
+                    "404 Not Found" if r.status_code == 404 else "403 Forbidden",
+                )
+                return RawZipFetchResult(None, RawZipFetchOutcome.NOT_AVAILABLE, r.status_code)
             if r.status_code == 429:
                 retry_after = r.headers.get("Retry-After")
                 wait = int(retry_after) if retry_after and retry_after.isdigit() else 60
@@ -37,14 +59,14 @@ def fetch_raw_log_zip_with_retry(log_id: int) -> bytes | None:
                 time.sleep(30 * (attempt + 1))
                 continue
             r.raise_for_status()
-            return r.content
+            return RawZipFetchResult(r.content, RawZipFetchOutcome.OK, r.status_code)
         except requests.RequestException as e:
             last_exc = e
             logger.warning("Raw zip log %s attempt %s: %s", log_id, attempt + 1, e)
             time.sleep(30 * (attempt + 1))
     if last_exc:
         logger.warning("Raw zip log %s: giving up after %s attempts", log_id, RETRY_ATTEMPTS)
-    return None
+    return RawZipFetchResult(None, RawZipFetchOutcome.FAILED, last_status)
 
 
 def save_raw_log_zip(log_id: int, zip_bytes: bytes, raw_logs_dir: Path) -> Path | None:

@@ -43,13 +43,24 @@ from pathlib import Path
 
 from app.config import (
     BACKOFF_SEC,
+    DOWNLOADER_STATE_DIR,
     LOGS_DIR,
     MAX_REQUESTS_BEFORE_BACKOFF,
     RAW_EVENTS_DB_PATH,
     RAW_LOGS_DIR,
     REQUEST_DELAY_MS,
 )
-from app.raw_zip_io import extract_log_content_from_zip, fetch_raw_log_zip_with_retry, save_raw_log_zip
+from app.raw_zip_io import (
+    RawZipFetchOutcome,
+    extract_log_content_from_zip,
+    fetch_raw_log_zip_with_retry,
+    save_raw_log_zip,
+)
+from app.raw_unavailable import (
+    load_raw_unavailable,
+    mark_raw_unavailable,
+    try_save_raw_unavailable,
+)
 from app.raw_db import connect_raw_db, init_raw_db, replace_raw_events_for_log
 from app.raw_log_parser import parse_raw_log
 
@@ -146,8 +157,11 @@ def main() -> None:
         logger.info("Shard %s/%s: %s ID(s) after filter (was %s)", shard_index, shard_total, len(all_ids), before)
 
     if args.dry_run:
+        raw_unavailable = load_raw_unavailable(DOWNLOADER_STATE_DIR)
         missing = 0
         for lid in all_ids:
+            if lid in raw_unavailable:
+                continue
             if not (raw_dir / f"log_{lid}.log.zip").is_file():
                 missing += 1
         logger.info(
@@ -155,6 +169,9 @@ def main() -> None:
             missing,
         )
         return
+
+    raw_unavailable = load_raw_unavailable(DOWNLOADER_STATE_DIR)
+    raw_unavailable_dirty = False
 
     conn = connect_raw_db(db_path)
     try:
@@ -200,6 +217,10 @@ def main() -> None:
                     )
                 continue
 
+            if lid in raw_unavailable:
+                no_zip_on_server += 1
+                continue
+
             if limit is not None and fetch_attempts >= limit:
                 logger.info("--limit %s reached; stopping.", limit)
                 break
@@ -207,8 +228,23 @@ def main() -> None:
             fetch_attempts += 1
             _rate_limit_before_fetch(request_count)
 
-            zip_bytes = fetch_raw_log_zip_with_retry(lid)
-            if zip_bytes is None:
+            fetch_result = fetch_raw_log_zip_with_retry(lid)
+            if fetch_result.outcome == RawZipFetchOutcome.NOT_AVAILABLE:
+                no_zip_on_server += 1
+                if mark_raw_unavailable(raw_unavailable, lid):
+                    raw_unavailable_dirty = True
+                if examined % progress_every == 0:
+                    _log_progress(
+                        examined,
+                        len(all_ids),
+                        skipped_have_zip,
+                        fetch_attempts,
+                        fetch_ok,
+                        no_zip_on_server,
+                        t0,
+                    )
+                continue
+            if fetch_result.outcome != RawZipFetchOutcome.OK or fetch_result.data is None:
                 no_zip_on_server += 1
                 if examined % progress_every == 0:
                     _log_progress(
@@ -222,12 +258,12 @@ def main() -> None:
                     )
                 continue
 
-            saved = save_raw_log_zip(lid, zip_bytes, raw_dir)
+            saved = save_raw_log_zip(lid, fetch_result.data, raw_dir)
             if saved is None:
                 save_failed += 1
                 continue
 
-            content = extract_log_content_from_zip(zip_bytes)
+            content = extract_log_content_from_zip(fetch_result.data)
             if content is None:
                 logger.warning("Could not read raw log from zip for log %s", lid)
                 parse_failed += 1
@@ -280,11 +316,17 @@ def main() -> None:
 
         conn.commit()
     finally:
+        if raw_unavailable_dirty:
+            if try_save_raw_unavailable(DOWNLOADER_STATE_DIR, raw_unavailable):
+                raw_unavailable_dirty = False
         try:
             conn.rollback()
         except Exception:
             pass
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     elapsed = time.perf_counter() - t0
     logger.info(

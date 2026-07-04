@@ -42,7 +42,17 @@ from app.stats_db import (
 )
 from app.raw_db import connect_raw_db, init_raw_db, replace_raw_events_for_log
 from app.raw_log_parser import parse_raw_log
-from app.raw_zip_io import extract_log_content_from_zip, fetch_raw_log_zip_with_retry, save_raw_log_zip
+from app.raw_zip_io import (
+    RawZipFetchOutcome,
+    extract_log_content_from_zip,
+    fetch_raw_log_zip_with_retry,
+    save_raw_log_zip,
+)
+from app.raw_unavailable import (
+    load_raw_unavailable,
+    mark_raw_unavailable,
+    try_save_raw_unavailable,
+)
 from app.logs_tf import fetch_log_list, fetch_log_json, steamid3_to_steamid64
 from app.subscriptions import check_log_for_subscriptions
 from app.poisoned_logs import is_log_excluded, is_poisoned, purge_poisoned_logs
@@ -575,14 +585,30 @@ def _raw_zip_path(log_id: int, raw_logs_dir: Path) -> Path:
     return raw_logs_dir / f"log_{log_id}.log.zip"
 
 
+def _needs_raw_download(
+    log_id: int,
+    raw_path: Path,
+    raw_unavailable: set[int],
+    *,
+    raw_db_conn: sqlite3.Connection | None,
+) -> bool:
+    if raw_db_conn is None or not DOWNLOAD_RAW_ENABLED:
+        return False
+    if raw_path.is_file() or log_id in raw_unavailable:
+        return False
+    return True
+
+
 def _should_index_raw_for_log(
     json_path: Path,
     raw_path: Path,
+    log_id: int,
+    raw_unavailable: set[int],
 ) -> bool:
     """True when we still need to fetch/store raw for this log_id."""
     if not DOWNLOAD_RAW_ENABLED:
         return False
-    if raw_path.is_file():
+    if raw_path.is_file() or log_id in raw_unavailable:
         return False
     if DOWNLOAD_JSON_ENABLED and not json_path.is_file():
         return False
@@ -598,6 +624,8 @@ def try_raw_download_and_index(
     recent_writes: list[tuple[float, int]],
     progress_interval_ref: list[dict[str, int]],
     session_downloads_ref: list[int],
+    raw_unavailable: set[int],
+    raw_unavailable_dirty_ref: list[bool],
     state_dir: Path | None = None,
     session_start_time_ref: list[float] | None = None,
     last_eta_ckpt_save_ref: list[float] | None = None,
@@ -613,7 +641,7 @@ def try_raw_download_and_index(
         return False
     jp = logs_dir / f"{log_id}.json"
     rp = _raw_zip_path(log_id, raw_logs_dir)
-    if not _should_index_raw_for_log(jp, rp):
+    if not _should_index_raw_for_log(jp, rp, log_id, raw_unavailable):
         return False
 
     request_count_ref[0] += 1
@@ -622,10 +650,15 @@ def try_raw_download_and_index(
         time.sleep(BACKOFF_SEC)
     time.sleep(REQUEST_DELAY_MS / 1000.0)
 
-    zip_bytes = fetch_raw_log_zip_with_retry(log_id)
-    if zip_bytes is None:
+    fetch_result = fetch_raw_log_zip_with_retry(log_id)
+    if fetch_result.outcome == RawZipFetchOutcome.NOT_AVAILABLE:
+        if mark_raw_unavailable(raw_unavailable, log_id):
+            raw_unavailable_dirty_ref[0] = True
+        return False
+    if fetch_result.outcome != RawZipFetchOutcome.OK or fetch_result.data is None:
         progress_interval_ref[0]["raw_failed_zip"] += 1
         return False
+    zip_bytes = fetch_result.data
     saved = save_raw_log_zip(log_id, zip_bytes, raw_logs_dir)
     if saved is None:
         progress_interval_ref[0]["raw_failed_save"] += 1
@@ -678,6 +711,8 @@ def run_catch_up_newest(
     logs_dir: Path,
     state_dir: Path,
     skipped: set[int],
+    raw_unavailable: set[int],
+    raw_unavailable_dirty_ref: list[bool],
     request_count_ref: list[int],
     recent_writes: list[tuple[float, int]],
     last_progress_write_ref: list[float],
@@ -695,6 +730,7 @@ def run_catch_up_newest(
     logs = fetch_log_list(0, LIMIT)
     if not logs:
         logger.info("Phase 1: No logs at offset 0")
+        _flush_raw_unavailable_if_dirty(state_dir, raw_unavailable, raw_unavailable_dirty_ref)
         return 0
     logger.info("Phase 1: Got %s log IDs at offset 0", len(logs))
     downloaded = 0
@@ -711,7 +747,7 @@ def run_catch_up_newest(
         path = logs_dir / f"{log_id}.json"
         rp = _raw_zip_path(log_id, raw_logs_dir)
         need_json = DOWNLOAD_JSON_ENABLED and not path.is_file()
-        need_raw = DOWNLOAD_RAW_ENABLED and raw_db_conn is not None and not rp.is_file()
+        need_raw = _needs_raw_download(log_id, rp, raw_unavailable, raw_db_conn=raw_db_conn)
         if not need_json and not need_raw:
             continue
 
@@ -725,6 +761,8 @@ def run_catch_up_newest(
                 recent_writes,
                 progress_interval_ref,
                 session_downloads_ref,
+                raw_unavailable,
+                raw_unavailable_dirty_ref,
                 state_dir=state_dir,
                 session_start_time_ref=session_start_time_ref,
                 last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
@@ -786,6 +824,8 @@ def run_catch_up_newest(
                 recent_writes,
                 progress_interval_ref,
                 session_downloads_ref,
+                raw_unavailable,
+                raw_unavailable_dirty_ref,
                 state_dir=state_dir,
                 session_start_time_ref=session_start_time_ref,
                 last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
@@ -797,6 +837,7 @@ def run_catch_up_newest(
             save_skip_list(state_dir, skipped)
             logger.info("Skipped log %s (failed or invalid)", log_id)
     logger.info("Phase 1 done: downloaded %s new log(s) from offset 0", downloaded)
+    _flush_raw_unavailable_if_dirty(state_dir, raw_unavailable, raw_unavailable_dirty_ref)
     _log_stats_and_eta(logs_dir, recent_writes)
     _write_progress_if_due(
         logs_dir,
@@ -811,10 +852,22 @@ def run_catch_up_newest(
     return downloaded
 
 
+def _flush_raw_unavailable_if_dirty(
+    state_dir: Path,
+    raw_unavailable: set[int],
+    dirty_ref: list[bool],
+) -> None:
+    if dirty_ref[0]:
+        if try_save_raw_unavailable(state_dir, raw_unavailable):
+            dirty_ref[0] = False
+
+
 def run_backfill_from_offset(
     logs_dir: Path,
     state_dir: Path,
     skipped: set[int],
+    raw_unavailable: set[int],
+    raw_unavailable_dirty_ref: list[bool],
     next_offset: int,
     request_count_ref: list[int],
     recent_writes: list[tuple[float, int]],
@@ -836,6 +889,7 @@ def run_backfill_from_offset(
         if not logs:
             logger.info("No more logs at offset %s (reached end of API)", next_offset)
             save_next_offset(state_dir, next_offset)
+            _flush_raw_unavailable_if_dirty(state_dir, raw_unavailable, raw_unavailable_dirty_ref)
             _log_stats_and_eta(logs_dir, recent_writes)
             _write_progress_if_due(
                 logs_dir,
@@ -865,7 +919,7 @@ def run_backfill_from_offset(
             path = logs_dir / f"{log_id}.json"
             rp = _raw_zip_path(log_id, raw_logs_dir)
             need_json = DOWNLOAD_JSON_ENABLED and not path.is_file()
-            need_raw = DOWNLOAD_RAW_ENABLED and raw_db_conn is not None and not rp.is_file()
+            need_raw = _needs_raw_download(log_id, rp, raw_unavailable, raw_db_conn=raw_db_conn)
             if not need_json and not need_raw:
                 already_had += 1
                 continue
@@ -879,6 +933,8 @@ def run_backfill_from_offset(
                     recent_writes,
                     progress_interval_ref,
                     session_downloads_ref,
+                    raw_unavailable,
+                    raw_unavailable_dirty_ref,
                     state_dir=state_dir,
                     session_start_time_ref=session_start_time_ref,
                     last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
@@ -941,6 +997,8 @@ def run_backfill_from_offset(
                     recent_writes,
                     progress_interval_ref,
                     session_downloads_ref,
+                    raw_unavailable,
+                    raw_unavailable_dirty_ref,
                     state_dir=state_dir,
                     session_start_time_ref=session_start_time_ref,
                     last_eta_ckpt_save_ref=last_eta_ckpt_save_ref,
@@ -954,6 +1012,7 @@ def run_backfill_from_offset(
                 logger.info("Skipped log %s (failed or invalid)", log_id)
         next_offset += len(logs)
         save_next_offset(state_dir, next_offset)
+        _flush_raw_unavailable_if_dirty(state_dir, raw_unavailable, raw_unavailable_dirty_ref)
         _log_stats_and_eta(logs_dir, recent_writes)
         _write_progress_if_due(
             logs_dir,
@@ -968,16 +1027,21 @@ def run_backfill_from_offset(
         logger.info("Page done: offset now %s | downloaded=%s skipped=%s already_had=%s", next_offset, downloaded, skipped_this_page, already_had)
         if len(logs) < LIMIT:
             break
+    _flush_raw_unavailable_if_dirty(state_dir, raw_unavailable, raw_unavailable_dirty_ref)
     return next_offset
 
 
 def run_once(logs_dir: Path, state_dir: Path, skipped: set[int], next_offset: int) -> int:
     """Legacy helper: run backfill only (no Phase 1). Returns new next_offset."""
     request_count_ref = [0]
-    return run_backfill_from_offset(
+    raw_unavailable = load_raw_unavailable(state_dir)
+    raw_unavailable_dirty_ref = [False]
+    result = run_backfill_from_offset(
         logs_dir,
         state_dir,
         skipped,
+        raw_unavailable,
+        raw_unavailable_dirty_ref,
         next_offset,
         request_count_ref,
         [],
@@ -991,6 +1055,8 @@ def run_once(logs_dir: Path, state_dir: Path, skipped: set[int], next_offset: in
         None,
         None,
     )
+    _flush_raw_unavailable_if_dirty(state_dir, raw_unavailable, raw_unavailable_dirty_ref)
+    return result
 
 
 def main() -> None:
@@ -1102,8 +1168,15 @@ def main() -> None:
                     busy_attempts=ALIAS_FTS_CYCLE_BUSY_ATTEMPTS,
                 )
             skipped = load_skip_list(state_dir)
+            raw_unavailable = load_raw_unavailable(state_dir)
+            raw_unavailable_dirty_ref = [False]
             next_offset = load_next_offset(state_dir, logs_dir)
-            logger.info("Resuming: next_offset=%s skip_list_size=%s", next_offset, len(skipped))
+            logger.info(
+                "Resuming: next_offset=%s skip_list_size=%s raw_unavailable_size=%s",
+                next_offset,
+                len(skipped),
+                len(raw_unavailable),
+            )
             request_count_ref = [0]  # shared across Phase 1 and Phase 2 for backoff
             try:
                 # Phase 1: always check offset=0 for new logs first (even if we're millions of logs behind)
@@ -1111,6 +1184,8 @@ def main() -> None:
                     logs_dir,
                     state_dir,
                     skipped,
+                    raw_unavailable,
+                    raw_unavailable_dirty_ref,
                     request_count_ref,
                     recent_writes,
                     last_progress_write_ref,
@@ -1139,6 +1214,8 @@ def main() -> None:
                     logs_dir,
                     state_dir,
                     skipped,
+                    raw_unavailable,
+                    raw_unavailable_dirty_ref,
                     next_offset,
                     request_count_ref,
                     recent_writes,
@@ -1163,6 +1240,7 @@ def main() -> None:
                             "player_stats_agg flush failed; %d id(s) kept for a later cycle",
                             n_before,
                         )
+                _flush_raw_unavailable_if_dirty(state_dir, raw_unavailable, raw_unavailable_dirty_ref)
             except Exception as e:
                 logger.exception("Run failed: %s", e)
             logger.info("Cycle complete. Sleeping %s s until next run.", DOWNLOAD_INTERVAL_SEC)

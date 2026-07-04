@@ -13,7 +13,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.downloader import fetch_log_json_with_retry  # noqa: E402
-from app.raw_zip_io import fetch_raw_log_zip_with_retry, save_raw_log_zip  # noqa: E402
+from app.raw_zip_io import RawZipFetchOutcome, fetch_raw_log_zip_with_retry, save_raw_log_zip  # noqa: E402
 
 EXAMPLES_DIR = REPO_ROOT / "examples"
 
@@ -64,17 +64,18 @@ def fetch_one(
         else:
             if made_request and delay_sec > 0:
                 time.sleep(delay_sec)
-            zip_bytes = fetch_raw_log_zip_with_retry(log_id)
+            fetch_result = fetch_raw_log_zip_with_retry(log_id)
             made_request = True
-            if zip_bytes is None:
+            if fetch_result.outcome != RawZipFetchOutcome.OK or fetch_result.data is None:
+                reason = "not available on logs.tf" if fetch_result.outcome == RawZipFetchOutcome.NOT_AVAILABLE else "fetch error"
                 print(
-                    f"[{log_id}] raw zip not available (404 or fetch error)",
+                    f"[{log_id}] raw zip {reason}",
                     file=sys.stderr,
                 )
                 if require_raw:
                     ok = False
             else:
-                saved = save_raw_log_zip(log_id, zip_bytes, EXAMPLES_DIR)
+                saved = save_raw_log_zip(log_id, fetch_result.data, EXAMPLES_DIR)
                 if saved is None:
                     print(f"[{log_id}] could not save raw zip", file=sys.stderr)
                     ok = False
