@@ -1235,6 +1235,11 @@ def main() -> None:
         )
         pending_agg_steamids: set[str] = _load_pending_agg_steamids(state_dir)
         while True:
+            _write_progress_if_due(
+                logs_dir, state_dir, recent_writes, last_progress_write_ref,
+                progress_interval_ref, session_start_time_ref, session_downloads_ref,
+                last_eta_ckpt_save_ref, library_stats_ref,
+            )
             if chat_db_conn is not None and alias_fts_rebuild_pending(chat_db_conn):
                 logger.info(
                     "CHAT DB: Retrying alias FTS rebuild before this cycle (downloads wait until done or skipped)."
@@ -1322,6 +1327,14 @@ def main() -> None:
                 _flush_raw_unavailable_if_dirty(state_dir, raw_unavailable, raw_unavailable_dirty_ref)
             except Exception as e:
                 logger.exception("Run failed: %s", e)
+                # A failed list request can abort the cycle before either phase writes progress.
+                # Keep the wall-clock ETA and dashboard freshness current while retry pacing stays unchanged.
+                last_progress_write_ref[0] = 0.0
+                _write_progress_if_due(
+                    logs_dir, state_dir, recent_writes, last_progress_write_ref,
+                    progress_interval_ref, session_start_time_ref, session_downloads_ref,
+                    last_eta_ckpt_save_ref, library_stats_ref,
+                )
             logger.info("Cycle complete. Sleeping %s s until next run.", DOWNLOAD_INTERVAL_SEC)
             time.sleep(DOWNLOAD_INTERVAL_SEC)
     finally:

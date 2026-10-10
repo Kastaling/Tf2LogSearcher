@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from app import downloader, routes
 from app.eta_forecast import (
@@ -114,6 +117,52 @@ def test_progress_hides_old_burst_rate_during_timeout_stall(tmp_path) -> None:
     progress = json.loads((tmp_path / "state" / "progress.json").read_text(encoding="utf-8"))
     assert progress["rate_logs_per_sec"] is None
     assert progress["rate_logs_per_sec_aggregated"] is None
+
+
+def test_failed_list_cycle_still_refreshes_progress(tmp_path, monkeypatch) -> None:
+    class StopCycle(Exception):
+        pass
+
+    logs = tmp_path / "logs"
+    state = tmp_path / "state"
+    logs.mkdir()
+    state.mkdir()
+
+    def fail_db(*_args):
+        raise OSError("test")
+
+    def fail_list(*_args, **_kwargs):
+        raise ConnectionError("test")
+
+    def stop_sleep(*_args):
+        raise StopCycle()
+
+    monkeypatch.setattr(downloader, "LOGS_DIR", logs)
+    monkeypatch.setattr(downloader, "DOWNLOADER_STATE_DIR", state)
+    monkeypatch.setattr(downloader, "DOWNLOAD_RAW_ENABLED", False)
+    monkeypatch.setattr(downloader, "connect_chat_db", fail_db)
+    monkeypatch.setattr(downloader, "connect_stats_db", fail_db)
+    monkeypatch.setattr(downloader, "purge_poisoned_logs", lambda: None)
+    monkeypatch.setattr(downloader, "_log_dir_stats", lambda *_: (100, 1, 50, 50))
+    monkeypatch.setattr(downloader, "load_eta_checkpoint", lambda *_: (time.time(), 0, []))
+    monkeypatch.setattr(downloader, "_load_pending_agg_steamids", lambda *_: set())
+    monkeypatch.setattr(downloader, "load_skip_list", lambda *_: set())
+    monkeypatch.setattr(downloader, "load_raw_unavailable", lambda *_: set())
+    monkeypatch.setattr(downloader, "load_next_offset", lambda *_: 0)
+    monkeypatch.setattr(downloader, "run_catch_up_newest", fail_list)
+    monkeypatch.setattr(downloader.time, "sleep", stop_sleep)
+    writes = []
+    original = downloader._write_progress_if_due
+
+    def record_write(*args, **kwargs):
+        writes.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(downloader, "_write_progress_if_due", record_write)
+    with pytest.raises(StopCycle):
+        downloader.main()
+    assert len(writes) == 2  # Cycle start and failed-cycle heartbeat.
+    assert (state / "progress.json").is_file()
 
 
 def test_initial_library_scan_counts_only_numeric_json_files(tmp_path) -> None:
