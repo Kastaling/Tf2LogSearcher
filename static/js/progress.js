@@ -830,7 +830,7 @@ function renderProgress(data) {
     track.appendChild(fill);
     const pctLabel = document.createElement('div');
     pctLabel.className = 'download-progress-pct-label';
-    pctLabel.textContent = pct.toFixed(2) + '% complete';
+    pctLabel.textContent = pct.toFixed(2) + '% of log ID range traversed';
     barSection.appendChild(track);
     barSection.appendChild(pctLabel);
     wrap.appendChild(barSection);
@@ -859,22 +859,34 @@ function renderProgress(data) {
     );
   }
   if (data.remaining != null && data.remaining > 0) {
-    appendProgressRow(tbodyQueue, 'Remaining to log 1', fmtProgressNum(Number(data.remaining)));
+    appendProgressRow(tbodyQueue, 'ID span to log 1', fmtProgressNum(Number(data.remaining)));
   }
   if (data.eta_human) {
-    appendProgressRow(tbodyQueue, 'ETA', String(data.eta_human));
+    appendProgressRow(tbodyQueue, 'ETA to JSON log ID 1', String(data.eta_human));
+  }
+  if (data.eta_observation_hours != null && Number.isFinite(Number(data.eta_observation_hours))) {
+    const hours = Number(data.eta_observation_hours);
+    const windowText = hours >= 48 ? (hours / 24).toFixed(1) + 'd' : hours.toFixed(1) + 'h';
+    appendProgressRow(tbodyQueue, 'ETA observation', windowText + ' of wall-clock JSON progress');
+  }
+  if (data.eta_no_progress_hours != null && Number.isFinite(Number(data.eta_no_progress_hours))) {
+    appendProgressRow(
+      tbodyQueue, 'ETA caution',
+      'No older JSON ID in ' + Number(data.eta_no_progress_hours).toFixed(1) +
+        'h; estimate includes this pause and may change substantially'
+    );
   }
   if (data.rate_logs_per_sec != null || data.rate_logs_per_sec_aggregated != null) {
     let rateText = '';
     if (data.rate_logs_per_sec_aggregated != null && data.rate_logs_per_sec != null) {
-      rateText = fmtRateLogsPerSec(Number(data.rate_logs_per_sec)) + ' logs/s, avg ' +
-        fmtRateLogsPerSec(Number(data.rate_logs_per_sec_aggregated));
+      rateText = fmtRateLogsPerSec(Number(data.rate_logs_per_sec)) + ' logs/s recent, ' +
+        fmtRateLogsPerSec(Number(data.rate_logs_per_sec_aggregated)) + ' logs/s checkpoint avg';
     } else if (data.rate_logs_per_sec_aggregated != null) {
-      rateText = fmtRateLogsPerSec(Number(data.rate_logs_per_sec_aggregated)) + ' logs/s avg';
+      rateText = fmtRateLogsPerSec(Number(data.rate_logs_per_sec_aggregated)) + ' logs/s checkpoint avg';
     } else {
-      rateText = fmtRateLogsPerSec(Number(data.rate_logs_per_sec)) + ' logs/s';
+      rateText = fmtRateLogsPerSec(Number(data.rate_logs_per_sec)) + ' logs/s recent';
     }
-    appendProgressRow(tbodyQueue, 'Download rate', rateText);
+    appendProgressRow(tbodyQueue, 'Download throughput (JSON + raw)', rateText);
   }
   if (data.updated_at) {
     appendProgressRow(tbodyQueue, 'Last updated', formatUpdatedAt(data.updated_at));

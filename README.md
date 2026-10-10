@@ -42,6 +42,15 @@ View downloader logs:
 docker compose logs -f downloader
 ```
 
+The Log Library ETA estimates when the downloader's oldest saved JSON ID will
+reach log 1. It uses up to seven days of elapsed-time progress (including raw
+downloads, backoff, and downtime), not the download rates shown beside it.
+It needs at least six hours and 30 IDs of observed progress. A stall is included
+in the forecast and flagged separately; if too little progress has been measured
+or the status update is stale, it shows “Unavailable”. Estimates based on less
+than a full week are especially provisional. The ID-range percentage and ETA do
+not measure raw-log indexing or whether skipped/unavailable logs were recovered.
+
 ## Data Locations
 
 | Data | Default location |

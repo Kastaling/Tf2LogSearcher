@@ -1,6 +1,7 @@
 """Auto-downloader: fetch newest logs from logs.tf using offset cursor, skip list, and rate limiting."""
 import json
 import logging
+import os
 import sqlite3
 import sys
 import time
@@ -64,6 +65,12 @@ from app.download_eta_checkpoint import (
     rate_from_trailing_burst,
     reconcile_aggregate_window,
     WRITE_GAP_THRESHOLD_SEC,
+)
+from app.eta_forecast import (
+    forecast_frontier,
+    load_frontier_history,
+    record_frontier,
+    save_frontier_history,
 )
 from app.rate_format import format_rate_logs_per_sec_display, sanitize_rate_for_api
 
@@ -198,8 +205,10 @@ def _human_bytes(n: int) -> str:
 
 def _human_duration(seconds: float) -> str:
     """Format seconds as human-readable (e.g. 2d 3h 15m 30s)."""
-    if seconds <= 0 or not (seconds < 1e10):
+    if seconds <= 0:
         return "Complete"
+    if not (seconds < 1e10):
+        return "N/A"
     s = int(round(seconds))
     d, s = divmod(s, 86400)
     h, s = divmod(s, 3600)
@@ -216,40 +225,59 @@ def _human_duration(seconds: float) -> str:
     return " ".join(parts)
 
 
+def _human_eta(seconds: float) -> str:
+    """A coarse forecast; second-level precision is unjustified for a long backfill."""
+    if seconds <= 0:
+        return "Complete"
+    if not 0 < seconds < 1e10:
+        return "Unavailable"
+    days = seconds / 86400
+    if days >= 365:
+        return f"About {days / 365.25:.1f} years"
+    if days >= 30:
+        return f"About {days / 30.44:.1f} months"
+    if days >= 1:
+        return f"About {days:.0f} days"
+    if seconds < 3600:
+        return "Under 1 hour"
+    return f"About {seconds / 3600:.0f} hours"
+
+
 def _log_dir_stats(logs_dir: Path) -> tuple[int, int, int | None, int | None]:
     """Return (total_bytes, file_count, min_id, max_id). Only (id).json files."""
+    if not logs_dir.is_dir():
+        return 0, 0, None, None
     total = 0
-    ids: list[int] = []
-    for p in logs_dir.iterdir():
-        if not p.is_file() or p.suffix != ".json":
-            continue
-        stem = p.stem
-        if stem.isdigit():
-            total += p.stat().st_size
-            ids.append(int(stem))
-    return total, len(ids), min(ids) if ids else None, max(ids) if ids else None
+    count = 0
+    min_id: int | None = None
+    max_id: int | None = None
+    with os.scandir(logs_dir) as entries:
+        for entry in entries:
+            name = entry.name
+            if not name.endswith(".json") or not name[:-5].isdigit() or not entry.is_file():
+                continue
+            total += entry.stat().st_size
+            log_id = int(name[:-5])
+            count += 1
+            min_id = log_id if min_id is None else min(min_id, log_id)
+            max_id = log_id if max_id is None else max(max_id, log_id)
+    return total, count, min_id, max_id
 
 
-def _format_eta(recent_writes: list[tuple[float, int]], min_id: int | None) -> str:
-    """Compute ETA from gap-aware recent write rate. Target oldest = log 1."""
-    if min_id is None:
-        return "N/A (no logs yet)"
-    remaining = max(0, min_id - 1)
-    if remaining == 0:
-        return "Complete"
-    rate = rate_from_recent_segments(recent_writes)
-    if rate is None:
-        return "N/A (need more data)"
-    return _format_eta_from_rate(rate, remaining)
+LibraryStats = tuple[int, int, int | None, int | None]
 
 
-def _format_eta_from_rate(rate: float | None, remaining: int) -> str:
-    """Compute ETA string from an explicit rate (logs/s) and remaining count. Used for aggregated or recent rate."""
-    if remaining <= 0:
-        return "Complete"
-    if rate is None or rate <= 0:
-        return "N/A"
-    return _human_duration(remaining / rate)
+def _track_json_write(stats_ref: list[LibraryStats] | None, log_id: int, size: int) -> None:
+    """Keep progress counters current without rescanning millions of files."""
+    if stats_ref is None:
+        return
+    total, count, min_id, max_id = stats_ref[0]
+    stats_ref[0] = (
+        total + size,
+        count + 1,
+        log_id if min_id is None else min(min_id, log_id),
+        log_id if max_id is None else max(max_id, log_id),
+    )
 
 
 def _aggregated_rate_logs_per_sec(
@@ -269,22 +297,25 @@ def _aggregated_rate_logs_per_sec(
     return total_downloads / elapsed
 
 
-def _log_stats_and_eta(logs_dir: Path, recent_writes: list[tuple[float, int]]) -> None:
-    """Log LOGS_DIR total size, file count, min/max id, remaining logs, rate, and ETA."""
-    total_bytes, count, min_id, max_id = _log_dir_stats(logs_dir)
+def _log_library_stats(
+    logs_dir: Path,
+    recent_writes: list[tuple[float, int]],
+    stats_ref: list[LibraryStats] | None = None,
+) -> None:
+    """Log library size and the active download rate (not the wall-clock ETA rate)."""
+    total_bytes, count, min_id, max_id = stats_ref[0] if stats_ref is not None else _log_dir_stats(logs_dir)
     size_str = _human_bytes(total_bytes)
     if min_id is None:
-        logger.info("LOGS_DIR: %s (%s files) | ETA: %s", size_str, count, "N/A (no logs yet)")
+        logger.info("LOGS_DIR: %s (%s files)", size_str, count)
         return
     remaining = max(0, min_id - 1)
-    eta_str = _format_eta(recent_writes, min_id)
     rate_str = "N/A"
     burst_rate = rate_from_trailing_burst(recent_writes)
-    if burst_rate is not None:
+    if burst_rate is not None and recent_writes and 0 <= time.time() - recent_writes[-1][0] <= 900:
         rate_str = f"{format_rate_logs_per_sec_display(burst_rate)} logs/s"
     logger.info(
-        "LOGS_DIR: %s (%s files) | range %s–%s | remaining: %s | %s | ETA: %s",
-        size_str, count, min_id, max_id, remaining, rate_str, eta_str,
+        "LOGS_DIR: %s (%s files) | range %s–%s | ID span to 1: %s | active rate: %s",
+        size_str, count, min_id, max_id, remaining, rate_str,
     )
 
 
@@ -394,37 +425,50 @@ def _write_progress_if_due(
     session_start_time_ref: list[float],
     session_downloads_ref: list[int],
     last_eta_ckpt_save_ref: list[float],
+    library_stats_ref: list[LibraryStats] | None = None,
 ) -> None:
     """
     Write progress.json for the web UI at most every PROGRESS_UPDATE_INTERVAL_SEC.
     Uses atomic write (temp file + rename). All payload values are server-controlled (no user input).
-    ETA prefers long-run aggregated rate (persisted checkpoint) when available, else recent-window rate.
+    ETA uses the persisted wall-clock history of the lowest saved JSON log ID.
     """
     now = time.time()
     if last_progress_write_ref[0] > 0 and (now - last_progress_write_ref[0]) < PROGRESS_UPDATE_INTERVAL_SEC:
         return
-    total_bytes, count, min_id, max_id = _log_dir_stats(logs_dir)
+    total_bytes, count, min_id, max_id = (
+        library_stats_ref[0] if library_stats_ref is not None else _log_dir_stats(logs_dir)
+    )
     remaining = max(0, min_id - 1) if min_id is not None else 0
     backfill_complete = min_id is not None and min_id <= 1
-    recent_rate = rate_from_trailing_burst(recent_writes)
-    if recent_rate is None:
-        recent_rate = rate_from_recent_segments(recent_writes)
-    aggregated_rate = _aggregated_rate_logs_per_sec(
-        session_start_time_ref[0],
-        session_downloads_ref[0],
-        recent_writes,
+    # A persisted burst from hours ago is not current throughput during a timeout stall.
+    rate_is_current = bool(
+        recent_writes and 0 <= now - recent_writes[-1][0] <= max(900, 2 * PROGRESS_UPDATE_INTERVAL_SEC)
     )
-    preferred_rate = rate_from_recent_segments(recent_writes)
-    if preferred_rate is None:
-        preferred_rate = aggregated_rate if aggregated_rate is not None else recent_rate
-    if min_id is None:
+    recent_rate = None
+    aggregated_rate = None
+    if rate_is_current:
+        recent_rate = rate_from_trailing_burst(recent_writes)
+        if recent_rate is None:
+            recent_rate = rate_from_recent_segments(recent_writes)
+        aggregated_rate = _aggregated_rate_logs_per_sec(
+            session_start_time_ref[0],
+            session_downloads_ref[0],
+            recent_writes,
+        )
+    history = record_frontier(load_frontier_history(state_dir, now), now, min_id)
+    forecast = forecast_frontier(history, now)
+    if not DOWNLOAD_JSON_ENABLED:
+        eta_str = "Unavailable (JSON download disabled)"
+    elif min_id is None:
         eta_str = "N/A (no logs yet)"
     elif remaining == 0:
         eta_str = "Complete"
+    elif forecast.status in {"ready", "stalled"} and forecast.seconds is not None:
+        eta_str = _human_eta(forecast.seconds)
+    elif forecast.status == "warming_up":
+        eta_str = "Gathering wall-clock history"
     else:
-        eta_str = _format_eta_from_rate(preferred_rate, remaining)
-        if eta_str == "N/A" and recent_rate is not None:
-            eta_str = _format_eta_from_rate(recent_rate, remaining)
+        eta_str = "Unavailable (insufficient JSON progress)"
     earliest_ts = _earliest_log_timestamp(logs_dir, min_id)
     c = progress_interval_ref[0]
     progress_interval_ref[0] = _empty_progress_interval()
@@ -444,6 +488,15 @@ def _write_progress_if_due(
         "total_bytes_human": _human_bytes(total_bytes),
         "remaining": remaining,
         "eta_human": eta_str,
+        "eta_observation_hours": (
+            round(forecast.observation_hours, 1)
+            if DOWNLOAD_JSON_ENABLED and forecast.observation_hours is not None else None
+        ),
+        "eta_no_progress_hours": (
+            round(forecast.no_progress_hours, 1)
+            if DOWNLOAD_JSON_ENABLED and forecast.status == "stalled"
+            and forecast.no_progress_hours is not None else None
+        ),
         "rate_logs_per_sec": sanitize_rate_for_api(recent_rate),
         "rate_logs_per_sec_aggregated": sanitize_rate_for_api(aggregated_rate),
         "backfill_complete": backfill_complete,
@@ -477,6 +530,10 @@ def _write_progress_if_due(
         )
     except OSError as e:
         logger.warning("Could not write progress.json: %s", e)
+    try:
+        save_frontier_history(state_dir, history)
+    except OSError as e:
+        logger.warning("Could not save ETA frontier history: %s", e)
 
 
 def load_skip_list(state_dir: Path) -> set[int]:
@@ -724,6 +781,7 @@ def run_catch_up_newest(
     stats_db_conn: sqlite3.Connection | None = None,
     raw_db_conn: sqlite3.Connection | None = None,
     pending_agg_steamids: set[str] | None = None,
+    library_stats_ref: list[LibraryStats] | None = None,
 ) -> int:
     """Phase 1: Fetch offset=0 (newest logs). Download any we don't have. Does not change next_offset."""
     logger.info("Phase 1: Checking offset=0 for NEW logs (catch up newest first)")
@@ -736,6 +794,11 @@ def run_catch_up_newest(
     downloaded = 0
     raw_logs_dir = RAW_LOGS_DIR
     for entry in logs:
+        _write_progress_if_due(
+            logs_dir, state_dir, recent_writes, last_progress_write_ref,
+            progress_interval_ref, session_start_time_ref, session_downloads_ref,
+            last_eta_ckpt_save_ref, library_stats_ref,
+        )
         log_id = entry.get("id")
         if log_id is None:
             continue
@@ -800,6 +863,7 @@ def run_catch_up_newest(
                     logger.info("Indexed stats for log %s (%s player row(s))", log_id, n_stats)
                     _collect_pending_agg_steamids_from_log(data, pending_agg_steamids, log_id, state_dir)
             size_bytes = path.stat().st_size
+            _track_json_write(library_stats_ref, log_id, size_bytes)
             progress_interval_ref[0]["json_ok"] += 1
             _bump_download_tracking(
                 recent_writes,
@@ -838,7 +902,7 @@ def run_catch_up_newest(
             logger.info("Skipped log %s (failed or invalid)", log_id)
     logger.info("Phase 1 done: downloaded %s new log(s) from offset 0", downloaded)
     _flush_raw_unavailable_if_dirty(state_dir, raw_unavailable, raw_unavailable_dirty_ref)
-    _log_stats_and_eta(logs_dir, recent_writes)
+    _log_library_stats(logs_dir, recent_writes, library_stats_ref)
     _write_progress_if_due(
         logs_dir,
         state_dir,
@@ -848,6 +912,7 @@ def run_catch_up_newest(
         session_start_time_ref,
         session_downloads_ref,
         last_eta_ckpt_save_ref,
+        library_stats_ref,
     )
     return downloaded
 
@@ -880,6 +945,7 @@ def run_backfill_from_offset(
     stats_db_conn: sqlite3.Connection | None = None,
     raw_db_conn: sqlite3.Connection | None = None,
     pending_agg_steamids: set[str] | None = None,
+    library_stats_ref: list[LibraryStats] | None = None,
 ) -> int:
     """Phase 2: Continue from next_offset toward older logs (work toward 1st/oldest log). Returns new next_offset."""
     logger.info("Phase 2: Continuing backfill from offset=%s toward oldest logs", next_offset)
@@ -890,7 +956,7 @@ def run_backfill_from_offset(
             logger.info("No more logs at offset %s (reached end of API)", next_offset)
             save_next_offset(state_dir, next_offset)
             _flush_raw_unavailable_if_dirty(state_dir, raw_unavailable, raw_unavailable_dirty_ref)
-            _log_stats_and_eta(logs_dir, recent_writes)
+            _log_library_stats(logs_dir, recent_writes, library_stats_ref)
             _write_progress_if_due(
                 logs_dir,
                 state_dir,
@@ -900,6 +966,7 @@ def run_backfill_from_offset(
                 session_start_time_ref,
                 session_downloads_ref,
                 last_eta_ckpt_save_ref,
+                library_stats_ref,
             )
             return next_offset
         logger.info("Got %s log IDs from API (offset %s)", len(logs), next_offset)
@@ -907,6 +974,11 @@ def run_backfill_from_offset(
         skipped_this_page = 0
         already_had = 0
         for entry in logs:
+            _write_progress_if_due(
+                logs_dir, state_dir, recent_writes, last_progress_write_ref,
+                progress_interval_ref, session_start_time_ref, session_downloads_ref,
+                last_eta_ckpt_save_ref, library_stats_ref,
+            )
             log_id = entry.get("id")
             if log_id is None:
                 continue
@@ -973,6 +1045,7 @@ def run_backfill_from_offset(
                         logger.info("Indexed stats for log %s (%s player row(s))", log_id, n_stats)
                         _collect_pending_agg_steamids_from_log(data, pending_agg_steamids, log_id, state_dir)
                 size_bytes = path.stat().st_size
+                _track_json_write(library_stats_ref, log_id, size_bytes)
                 progress_interval_ref[0]["json_ok"] += 1
                 _bump_download_tracking(
                     recent_writes,
@@ -1013,7 +1086,7 @@ def run_backfill_from_offset(
         next_offset += len(logs)
         save_next_offset(state_dir, next_offset)
         _flush_raw_unavailable_if_dirty(state_dir, raw_unavailable, raw_unavailable_dirty_ref)
-        _log_stats_and_eta(logs_dir, recent_writes)
+        _log_library_stats(logs_dir, recent_writes, library_stats_ref)
         _write_progress_if_due(
             logs_dir,
             state_dir,
@@ -1023,6 +1096,7 @@ def run_backfill_from_offset(
             session_start_time_ref,
             session_downloads_ref,
             last_eta_ckpt_save_ref,
+            library_stats_ref,
         )
         logger.info("Page done: offset now %s | downloaded=%s skipped=%s already_had=%s", next_offset, downloaded, skipped_this_page, already_had)
         if len(logs) < LIMIT:
@@ -1142,6 +1216,9 @@ def main() -> None:
     except Exception as e:
         logger.warning("Poisoned log purge at startup failed (continuing): %s", e)
 
+    logger.info("Scanning the JSON library once for progress counters...")
+    library_stats_ref: list[LibraryStats] = [_log_dir_stats(logs_dir)]
+
     try:
         wall_start, total_dl, loaded_recent = load_eta_checkpoint(state_dir)
         recent_writes: list[tuple[float, int]] = loaded_recent
@@ -1197,6 +1274,7 @@ def main() -> None:
                     stats_db_conn,
                     raw_db_conn,
                     pending_agg_steamids=pending_agg_steamids,
+                    library_stats_ref=library_stats_ref,
                 )
                 if stats_db_conn is not None and pending_agg_steamids:
                     n_before = len(pending_agg_steamids)
@@ -1228,6 +1306,7 @@ def main() -> None:
                     stats_db_conn,
                     raw_db_conn,
                     pending_agg_steamids=pending_agg_steamids,
+                    library_stats_ref=library_stats_ref,
                 )
                 if stats_db_conn is not None and pending_agg_steamids:
                     n_before = len(pending_agg_steamids)

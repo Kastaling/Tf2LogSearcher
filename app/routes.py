@@ -1483,7 +1483,8 @@ async def api_download_progress(request: Request):
     # Return only the known payload keys (allowlist) so we never leak internal fields
     allowed = {
         "min_id", "max_id", "total_files",
-        "remaining", "eta_human", "rate_logs_per_sec", "rate_logs_per_sec_aggregated",
+        "remaining", "eta_human", "eta_observation_hours", "eta_no_progress_hours",
+        "rate_logs_per_sec", "rate_logs_per_sec_aggregated",
         "backfill_complete", "updated_at",
         "earliest_log_timestamp", "logs_downloaded_since_last_update",
         "download_json_enabled", "download_raw_enabled",
@@ -1493,6 +1494,21 @@ async def api_download_progress(request: Request):
         "raw_failed_extract_this_update", "raw_failed_index_this_update",
     }
     out = {k: data[k] for k in allowed if k in data}
+    stale = True
+    try:
+        updated = datetime.fromisoformat(str(out["updated_at"]).replace("Z", "+00:00"))
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        age_sec = (datetime.now(timezone.utc) - updated).total_seconds()
+        stale = age_sec < -60 or age_sec > 2 * 60 * 60
+    except (KeyError, ValueError, TypeError):
+        pass
+    if stale and not out.get("backfill_complete"):
+        out["eta_human"] = "Unavailable (progress is stale)"
+        out["eta_observation_hours"] = None
+        out["eta_no_progress_hours"] = None
+        out["rate_logs_per_sec"] = None
+        out["rate_logs_per_sec_aggregated"] = None
     return JSONResponse(out)
 
 

@@ -164,6 +164,7 @@
   <header>
     <h1>Request log viewer</h1>
     <p>Offline tool for <code>request_log.csv</code> from TF2 Log Searcher. Data stays on your machine — nothing is uploaded.</p>
+    <p class="meta">Logs are served from your local library at <code>/log/{id}</code> (page) and <code>/api/log/{id}</code> (JSON sections) — not fetched from logs.tf on each view.</p>
   </header>
   <main>
     <section class="panel privacy">
@@ -216,9 +217,10 @@
           <div>
             <label for="filterApiOnly">Show</label>
             <select id="filterApiOnly">
-              <option value="api">API searches only (recommended)</option>
+              <option value="api">API only (recommended)</option>
               <option value="all">All requests</option>
-              <option value="pages">Page loads only (/ and /results)</option>
+              <option value="pages">Page loads (/, /results, /log/…)</option>
+              <option value="log">Log detail (/log/… and /api/log/…)</option>
             </select>
           </div>
           <div>
@@ -319,6 +321,16 @@
 
       <section class="panel">
         <details>
+          <summary>API routes reference (what appears in the CSV)</summary>
+          <p class="meta" style="margin:0.5rem 0 0.75rem;">
+            Only routes that call <code>_log_request</code> in the app are recorded. Per-log paths are stored with the numeric ID in <code>endpoint</code> (e.g. <code>/api/log/347218</code>); charts group those as <code>/api/log/{id}</code>.
+          </p>
+          <dl class="glossary" id="apiReference"></dl>
+        </details>
+      </section>
+
+      <section class="panel">
+        <details>
           <summary>Column glossary (what each CSV field means)</summary>
           <dl class="glossary" id="glossary"></dl>
         </details>
@@ -369,7 +381,7 @@
 
   var GLOSSARY = {
     timestamp_utc: 'When the request finished (UTC, ISO format).',
-    endpoint: 'URL path that was hit (e.g. /api/search/stats).',
+    endpoint: 'URL path that was hit (e.g. /api/search/stats, /api/log/347218, /log/347218).',
     method: 'HTTP method (usually GET).',
     client_ip: 'Visitor IP as seen by the server (may be IPv4 or IPv6).',
     host: 'Hostname from the request (your site domain).',
@@ -390,6 +402,30 @@
     status_code: 'HTTP result: 200 OK, 400 bad input, 429 rate limited, 500 server error, etc.',
     duration_ms: 'Server time spent handling the request, in milliseconds.'
   };
+
+  var API_REFERENCE = [
+    { path: '/', logged: true, note: 'Home / search page (SPA shell).' },
+    { path: '/results', logged: true, note: 'Results page with embed meta tags.' },
+    { path: '/log/{id}', logged: true, note: 'Hosted log detail page (local JSON + raw; SPA shell). Invalid IDs log as 404.' },
+    { path: '/api/log/{id}', logged: true, note: 'Log detail JSON (summary, teams, events, etc.) from local cache/library.' },
+    { path: '/api/search/chat', logged: true, note: 'Chat search or global word leaderboard.' },
+    { path: '/api/search/stats', logged: true, note: 'Per-class stats for one player.' },
+    { path: '/api/search/logmatch', logged: true, note: 'Find logs containing given Steam IDs.' },
+    { path: '/api/search/coplayers', logged: true, note: 'Frequent teammates for a player.' },
+    { path: '/api/search/player-name', logged: true, note: 'Search players by name substring.' },
+    { path: '/api/player/profile', logged: true, note: 'Player profile aggregates (cached).' },
+    { path: '/api/leaderboard', logged: true, note: 'Stats leaderboard (heavy SQL; cached).' },
+    { path: '/api/leaderboard-weapons', logged: false, note: 'Weapon picker for weapon leaderboards (static list).' },
+    { path: '/api/avatar/{steamid64}', logged: false, note: 'Single Steam avatar URL (cache).' },
+    { path: '/api/avatars/batch', logged: false, note: 'Batch avatar URLs (cache + Steam).' },
+    { path: '/api/download-progress', logged: false, note: 'Downloader progress.json for dashboard.' },
+    { path: '/api/storage-stats', logged: false, note: 'Disk usage / library size stats.' },
+    { path: '/api/stats-index-counts', logged: false, note: 'Cheap index row-count proxies.' },
+    { path: '/api/chat-message-count', logged: false, note: 'Total chat messages indexed.' },
+    { path: '/api/raw-events-stats', logged: false, note: 'Raw events DB stats (when raw enabled).' },
+    { path: '/api/chat-subscriptions', logged: false, note: 'Discord webhook subscribe (POST).' },
+    { path: '/api/chat-subscriptions/deactivate', logged: false, note: 'Deactivate webhook via token link.' }
+  ];
 
   var PAGE_SIZE_DEFAULT = 50;
   var MAX_FILE_BYTES = 80 * 1024 * 1024;
@@ -424,6 +460,7 @@
     filterQuery: document.getElementById('filterQuery'),
     filterSummary: document.getElementById('filterSummary'),
     glossary: document.getElementById('glossary'),
+    apiReference: document.getElementById('apiReference'),
     tableBody: document.getElementById('tableBody'),
     btnPrev: document.getElementById('btnPrev'),
     btnNext: document.getElementById('btnNext'),
@@ -458,13 +495,34 @@
     return v == null ? '' : String(v).trim();
   }
 
+  function extractLogIdFromEndpoint(ep) {
+    var m = trim(ep).match(/^\/(?:api\/)?log\/(\d+)$/);
+    return m ? m[1] : null;
+  }
+
+  function normalizeEndpoint(ep) {
+    var p = trim(ep);
+    if (/^\/api\/log\/\d+$/.test(p)) return '/api/log/{id}';
+    if (/^\/log\/\d+$/.test(p)) return '/log/{id}';
+    return p;
+  }
+
   function isApiEndpoint(ep) {
     return trim(ep).indexOf('/api/') === 0;
   }
 
   function isPageEndpoint(ep) {
     var p = trim(ep);
-    return p === '/' || p === '/results';
+    return p === '/' || p === '/results' || /^\/log\/\d+$/.test(p);
+  }
+
+  function isLogDetailEndpoint(ep) {
+    var p = trim(ep);
+    return /^\/(?:api\/)?log\/\d+$/.test(p);
+  }
+
+  function isLogDetailApiEndpoint(ep) {
+    return /^\/api\/log\/\d+$/.test(trim(ep));
   }
 
   function parseIntSafe(v) {
@@ -511,6 +569,13 @@
 
     if (ep === '/') return 'Visited home page' + tail;
     if (ep === '/results') return 'Opened results page shell' + tail;
+    var logId = extractLogIdFromEndpoint(ep);
+    if (logId && ep.indexOf('/api/') === 0) {
+      return 'Loaded hosted log detail (JSON) for log #' + logId + tail;
+    }
+    if (logId) {
+      return 'Opened hosted log page for log #' + logId + tail;
+    }
     if (ep === '/api/search/chat') {
       var w = trim(r.word);
       var sid = trim(r.steamid);
@@ -616,10 +681,21 @@
     el.glossary.innerHTML = html;
   }
 
+  function buildApiReference() {
+    if (!el.apiReference) return;
+    var html = '';
+    API_REFERENCE.forEach(function (item) {
+      var badge = item.logged ? 'logged' : 'not in CSV';
+      html += '<dt><code>' + escapeHtml(item.path) + '</code> — ' + escapeHtml(badge) + '</dt>' +
+        '<dd>' + escapeHtml(item.note) + '</dd>';
+    });
+    el.apiReference.innerHTML = html;
+  }
+
   function populateEndpointFilter(rows) {
     var counts = Object.create(null);
     rows.forEach(function (r) {
-      var ep = trim(r.endpoint) || '(empty)';
+      var ep = normalizeEndpoint(trim(r.endpoint) || '(empty)');
       counts[ep] = (counts[ep] || 0) + 1;
     });
     var eps = Object.keys(counts).sort(function (a, b) {
@@ -640,6 +716,7 @@
   function computeOverview(rows) {
     var total = rows.length;
     var api = 0;
+    var logDetail = 0;
     var err = 0;
     var slow = 0;
     var durs = [];
@@ -650,6 +727,7 @@
         var d = parseIntSafe(r.duration_ms);
         if (d != null) durs.push(d);
       }
+      if (isLogDetailEndpoint(ep)) logDetail++;
       var sc = parseIntSafe(r.status_code);
       if (sc != null && sc >= 400) err++;
       var dm = parseIntSafe(r.duration_ms);
@@ -657,13 +735,14 @@
     });
     durs.sort(function (a, b) { return a - b; });
     var p95 = durs.length ? durs[Math.min(durs.length - 1, Math.floor(durs.length * 0.95))] : null;
-    return { total: total, api: api, err: err, slow: slow, p95: p95 };
+    return { total: total, api: api, logDetail: logDetail, err: err, slow: slow, p95: p95 };
   }
 
   function renderStats(overview) {
     var cards = [
       { val: overview.total, lbl: 'Total rows' },
       { val: overview.api, lbl: 'API requests' },
+      { val: overview.logDetail, lbl: 'Log detail (/log + /api/log)' },
       { val: overview.err, lbl: 'HTTP ≥ 400' },
       { val: overview.slow, lbl: 'Very slow (≥ 10s)' },
       { val: overview.p95 != null ? formatDuration(overview.p95) : '—', lbl: 'API duration p95' }
@@ -680,9 +759,10 @@
     var mode = el.filterApiOnly.value;
     if (mode === 'api' && !isApiEndpoint(ep)) return false;
     if (mode === 'pages' && !isPageEndpoint(ep)) return false;
+    if (mode === 'log' && !isLogDetailEndpoint(ep)) return false;
 
     var fEp = el.filterEndpoint.value;
-    if (fEp && (trim(r.endpoint) || '(empty)') !== fEp) return false;
+    if (fEp && normalizeEndpoint(trim(r.endpoint) || '(empty)') !== fEp) return false;
 
     var sc = parseIntSafe(r.status_code);
     var st = el.filterStatus.value;
@@ -719,9 +799,11 @@
 
     var q = trim(el.filterQuery.value).toLowerCase();
     if (q) {
+      var logId = extractLogIdFromEndpoint(ep);
       var hay = (
         r.timestamp_utc + ' ' + r.endpoint + ' ' + r.client_ip + ' ' + r.steamid + ' ' +
-        r.word + ' ' + r.steamids + ' ' + r.lb_type + ' ' + r.map_query + ' ' + r.user_agent
+        r.word + ' ' + r.steamids + ' ' + r.lb_type + ' ' + r.map_query + ' ' + r.user_agent +
+        (logId ? ' log ' + logId : '')
       ).toLowerCase();
       if (hay.indexOf(q) < 0) return false;
     }
@@ -739,8 +821,8 @@
     var errByEp = Object.create(null);
     indices.forEach(function (idx) {
       var r = state.rows[idx];
-      var ep = trim(r.endpoint) || '(empty)';
-      if (apiOnly && !isApiEndpoint(ep)) return;
+      var ep = normalizeEndpoint(trim(r.endpoint) || '(empty)');
+      if (apiOnly && !isApiEndpoint(trim(r.endpoint))) return;
       var d = parseIntSafe(r.duration_ms);
       if (d == null) return;
       if (!byEp[ep]) byEp[ep] = [];
@@ -970,11 +1052,11 @@
     });
   }
 
-  function profileDurationMetrics(indices) {
+  function endpointDurationMetrics(indices, endpointMatch) {
     var durs = [];
     indices.forEach(function (idx) {
       var r = state.rows[idx];
-      if (trim(r.endpoint) !== '/api/player/profile') return;
+      if (!endpointMatch(trim(r.endpoint))) return;
       if (parseIntSafe(r.status_code) !== 200) return;
       var d = parseIntSafe(r.duration_ms);
       if (d != null) durs.push(d);
@@ -989,6 +1071,14 @@
       p95: percentile(durs, 0.95),
       max: durs[durs.length - 1]
     };
+  }
+
+  function profileDurationMetrics(indices) {
+    return endpointDurationMetrics(indices, function (ep) { return ep === '/api/player/profile'; });
+  }
+
+  function logDetailApiDurationMetrics(indices) {
+    return endpointDurationMetrics(indices, isLogDetailApiEndpoint);
   }
 
   function indicesBeforeDeploy() {
@@ -1058,6 +1148,36 @@
       lines.push('');
     }
 
+    var logApi = logDetailApiDurationMetrics(indices);
+    var log404 = 0;
+    var logPage = 0;
+    indices.forEach(function (idx) {
+      var r = state.rows[idx];
+      var ep = trim(r.endpoint);
+      var sc = parseIntSafe(r.status_code);
+      if (isLogDetailApiEndpoint(ep)) {
+        if (sc === 404) log404++;
+      } else if (/^\/log\/\d+$/.test(ep)) {
+        logPage++;
+      }
+    });
+    if (logApi || log404 || logPage) {
+      lines.push('=== Hosted log detail (/api/log/{id}, local library) ===');
+      if (logApi) {
+        lines.push('- HTTP 200 JSON loads: n=' + logApi.n + ', avg=' + formatDuration(logApi.avg) +
+          ', p95=' + formatDuration(logApi.p95) + ', max=' + formatDuration(logApi.max));
+      } else {
+        lines.push('- HTTP 200 JSON loads: no matching rows');
+      }
+      lines.push('- HTTP 404 (log not in library or invalid id): ' + log404);
+      lines.push('- Hosted page shells (/log/{id}, HTTP 200): ' + logPage +
+        ' (page load is cheap; JSON API drives section build/cache)');
+      if (logApi && logApi.p95 >= 5000) {
+        lines.push('- Note: high /api/log p95 often means cold section cache rebuilds after deploy or fingerprint change.');
+      }
+      lines.push('');
+    }
+
     var err5 = 0;
     var err4 = 0;
     var rate429 = 0;
@@ -1102,7 +1222,7 @@
       var r = state.rows[idx];
       var sc = parseIntSafe(r.status_code);
       if (sc == null || sc < 400) return;
-      var ep = trim(r.endpoint) || '(empty)';
+      var ep = normalizeEndpoint(trim(r.endpoint) || '(empty)');
       if (!errByEp[ep]) errByEp[ep] = { n: 0, codes: Object.create(null) };
       errByEp[ep].n++;
       var c = String(sc);
@@ -1144,10 +1264,20 @@
     var lbRows = epStats.filter(function (r) {
       return r.endpoint === '/api/leaderboard';
     });
+    var logRows = epStats.filter(function (r) {
+      return r.endpoint === '/api/log/{id}';
+    });
     if (lbRows.length && lbRows[0].p95 >= 5000) {
       lines.push('=== Leaderboard note ===');
       lines.push('/api/leaderboard p95=' + formatDuration(lbRows[0].p95) +
         ' (n=' + lbRows[0].count + '). Heavy SQL/aggregate work; consider caching, stricter min_logs defaults, or pre-aggregates.');
+      lines.push('');
+    }
+
+    if (logRows.length && logRows[0].p95 >= 3000) {
+      lines.push('=== Log detail note ===');
+      lines.push('/api/log/{id} p95=' + formatDuration(logRows[0].p95) +
+        ' (n=' + logRows[0].count + '). Served from local files; tail latency is usually section cache miss or large raw parse.');
       lines.push('');
     }
 
@@ -1176,8 +1306,15 @@
     if (lbRows.length && lbRows[0].p95 >= 10000) {
       focus.push('Optimize /api/leaderboard (largest p95 in many deployments).');
     }
+    if (logRows.length && logRows[0].p95 >= 10000) {
+      focus.push('Profile /api/log/{id} section builders or warm log_detail_cache after deploy.');
+    }
+    if (log404 >= 5) {
+      focus.push('Many /api/log 404s — users hitting logs not yet downloaded or bad links.');
+    }
     var topEp = epStats[0];
-    if (topEp && topEp.p95 >= 5000 && topEp.endpoint !== '/api/leaderboard') {
+    if (topEp && topEp.p95 >= 5000 &&
+        topEp.endpoint !== '/api/leaderboard' && topEp.endpoint !== '/api/log/{id}') {
       focus.push('Profile ' + topEp.endpoint + ' (highest p95 among APIs).');
     }
     if (!focus.length) focus.push('No major red flags in filtered data; try widening filters or a longer time window.');
@@ -1274,7 +1411,7 @@
   function aggregateEndpoints(indices, limit) {
     var buckets = Object.create(null);
     indices.forEach(function (idx) {
-      var ep = trim(state.rows[idx].endpoint) || '(empty)';
+      var ep = normalizeEndpoint(trim(state.rows[idx].endpoint) || '(empty)');
       buckets[ep] = (buckets[ep] || 0) + 1;
     });
     var arr = Object.keys(buckets).map(function (k) {
@@ -1443,6 +1580,7 @@
   }
 
   buildGlossary();
+  buildApiReference();
   loadDeployMarkerFromStorage();
   renderDeployMarker();
 
