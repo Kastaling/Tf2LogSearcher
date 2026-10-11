@@ -230,6 +230,31 @@ Populate `player_names` from each log's `names` payload. This can run while the 
 docker compose run --rm downloader python -m app.player_names_backfill --batch-size 1000
 ```
 
+This job temporarily disables the fast latest-name lookup. Run the lookup job
+below afterward during a web/downloader maintenance stop.
+
+### Build Fast Latest-Name Lookup
+
+After upgrading an existing library, the leaderboard keeps using the legacy name query
+until the resumable latest-name lookup is populated. This maintenance job writes to
+`stats.db`: stop **both** web and every downloader variant first, then run it once.
+Do not run it merely to validate a code change.
+
+```bash
+docker compose stop web downloader downloader-json downloader-raw
+docker compose run --rm downloader python -m app.latest_names_backfill --batch-size 10000
+docker compose up -d web
+```
+
+Check your local Compose service names before running the stop command; only one
+downloader variant should be active. If interrupted, rerun the same command to resume.
+Use `--rebuild` only when intentionally replacing the lookup. Restart your chosen
+downloader variant after the job succeeds. The web app records slow requests (2 seconds
+or longer) by route template and exposes a `Server-Timing` duration header; neither
+includes the raw URL or search terms. Search cache misses are limited to six concurrent
+heavy builds; excess requests receive a retryable 503. Background cache warming has
+two daemon workers and a bounded queue.
+
 ## Map overview bounds (heatmaps)
 
 Top-down PNGs live in `static/map_overviews/`. To align Hammer world coordinates with each image, build the calibration bundle (needs `stats.db` and indexed `raw_events.db`):

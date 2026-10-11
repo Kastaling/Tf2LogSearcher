@@ -63,7 +63,7 @@ def test_cache_token_frozenset_empty_for_zero_parts() -> None:
 
 
 def test_in_memory_profile_cache_validates_zero_token(tmp_path) -> None:
-    """Stored (0,0,0) token must match stats_player_stats_cache_token validation."""
+    """Profile validation includes stats and chat-derived word generations."""
     sid = "76561198000000099"
     ck = (sid, "", "", "", "")
     token = (0, 0, 0)
@@ -71,13 +71,14 @@ def test_in_memory_profile_cache_validates_zero_token(tmp_path) -> None:
         "profile",
         ck,
         {"steamid64": sid},
-        stats_player_stats_cache_token_frozenset_from_parts(token),
+        (*token, hash(frozenset())),
     )
     stats_stub = tmp_path / "stats.db"
     stats_stub.write_bytes(b"x")
     with (
         patch("app.search_cache.STATS_DB_PATH", stats_stub),
-        patch("app.search_cache.stats_player_stats_cache_token", return_value=frozenset()),
+        patch("app.search_cache.stats_player_stats_cache_token_parts", return_value=token),
+        patch("app.search_cache.chat_player_fingerprint", return_value=frozenset()),
     ):
         assert cache_get("profile", ck) is not None
 
@@ -122,16 +123,17 @@ def test_invalidate_clears_in_memory_profile(profile_cache_conn, tmp_path) -> No
         "profile",
         ck,
         {"steamid64": sid, "cached": True},
-        stats_player_stats_cache_token_frozenset_from_parts(token),
+        (*token, hash(frozenset())),
     )
     stats_stub = tmp_path / "stats.db"
     stats_stub.write_bytes(b"x")
     with (
         patch("app.search_cache.STATS_DB_PATH", stats_stub),
         patch(
-            "app.search_cache.stats_player_stats_cache_token",
-            return_value=stats_player_stats_cache_token_frozenset_from_parts(token),
+            "app.search_cache.stats_player_stats_cache_token_parts",
+            return_value=token,
         ),
+        patch("app.search_cache.chat_player_fingerprint", return_value=frozenset()),
     ):
         assert cache_get("profile", ck) is not None
     conn.close()
@@ -274,19 +276,19 @@ def test_singleflight_build_coalesces_concurrent_misses(tmp_path) -> None:
 
     def worker() -> None:
         try:
-            with (
-                patch("app.search_cache.STATS_DB_PATH", stats_stub),
-                patch("app.search_cache.stats_player_stats_cache_token", return_value=token),
-            ):
-                results.append(singleflight_build("coplayers", ck, builder))
+            results.append(singleflight_build("coplayers", ck, builder))
         except BaseException as e:
             errors.append(e)
 
     threads = [threading.Thread(target=worker) for _ in range(4)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=5)
+    with (
+        patch("app.search_cache.STATS_DB_PATH", stats_stub),
+        patch("app.search_cache.stats_player_stats_cache_token", return_value=token),
+    ):
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
     assert not errors
     assert calls["n"] == 1
     assert len(results) == 4
@@ -356,25 +358,25 @@ def test_invalidate_profile_for_steamid_only_matching_player(tmp_path) -> None:
         "profile",
         (a, "", "", "", ""),
         {"who": "a"},
-        stats_player_stats_cache_token_frozenset_from_parts(tok_a),
+        (*tok_a, hash(frozenset())),
     )
     cache_set(
         "profile",
         (b, "cp", "", "", ""),
         {"who": "b"},
-        stats_player_stats_cache_token_frozenset_from_parts(tok_b),
+        (*tok_b, hash(frozenset())),
     )
     stats_stub = tmp_path / "stats.db"
     stats_stub.write_bytes(b"x")
 
-    def _token(_path: object, sid: str) -> frozenset[int]:
-        parts = tok_a if sid == a else tok_b
-        return stats_player_stats_cache_token_frozenset_from_parts(parts)
+    def _token(_path: object, sid: str) -> tuple[int, int, int]:
+        return tok_a if sid == a else tok_b
 
     invalidate_profile_for_steamid(a)
     assert cache_get("profile", (a, "", "", "", "")) is None
     with (
         patch("app.search_cache.STATS_DB_PATH", stats_stub),
-        patch("app.search_cache.stats_player_stats_cache_token", side_effect=_token),
+        patch("app.search_cache.stats_player_stats_cache_token_parts", side_effect=_token),
+        patch("app.search_cache.chat_player_fingerprint", return_value=frozenset()),
     ):
         assert cache_get("profile", (b, "cp", "", "", "")) is not None

@@ -898,6 +898,24 @@ def _configure_sqlite_leaderboard_read(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _leaderboard_total_logs(
+    conn: sqlite3.Connection, profile_sql: str, profile_params: list[Any]
+) -> int:
+    """Use the maintained count for the global scope; count filtered scopes normally."""
+    if not profile_sql.strip():
+        try:
+            row = conn.execute(
+                "SELECT row_count FROM stats_cache_generation WHERE name = 'logs'"
+            ).fetchone()
+            if row is not None:
+                return int(row[0])
+        except sqlite3.OperationalError:
+            pass  # Older database still initializing; retain the original count path.
+    return int(conn.execute(
+        f"SELECT COUNT(*) FROM logs l WHERE 1=1 {profile_sql}", tuple(profile_params)
+    ).fetchone()[0] or 0)
+
+
 def _stats_db_available_for_player(steamid64: str) -> bool:
     path = Path(STATS_DB_PATH)
     if not path.is_file():
@@ -917,6 +935,52 @@ def _stats_db_available_for_player(steamid64: str) -> bool:
             conn.close()
     except Exception:
         return False
+
+
+def _local_player_exists(steamid64: str) -> bool:
+    """Check the local index without hiding a database failure as a missing player."""
+    path = Path(STATS_DB_PATH)
+    if not path.is_file():
+        raise RuntimeError("Stats DB is unavailable.")
+    conn = _sqlite_connect_ro(path)
+    try:
+        return conn.execute(
+            "SELECT 1 FROM log_players WHERE steamid64 = ? LIMIT 1", (steamid64,)
+        ).fetchone() is not None
+    finally:
+        conn.close()
+
+
+def _local_matching_log_ids(steamids: list[str]) -> list[int]:
+    """Find locally indexed logs shared by every distinct player, newest ID first."""
+    unique_ids = list(dict.fromkeys(steamids))
+    if not unique_ids:
+        return []
+    path = Path(STATS_DB_PATH)
+    if not path.is_file():
+        raise RuntimeError("Stats DB is unavailable.")
+    placeholders = ",".join("?" for _ in unique_ids)
+    conn = _sqlite_connect_ro(path)
+    try:
+        if len(unique_ids) == 1:
+            rows = conn.execute(
+                "SELECT log_id FROM log_players WHERE steamid64 = ? ORDER BY log_id DESC",
+                (unique_ids[0],),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT log_id FROM log_players
+                WHERE steamid64 IN ({placeholders})
+                GROUP BY log_id
+                HAVING COUNT(DISTINCT steamid64) = ?
+                ORDER BY log_id DESC
+                """,
+                (*unique_ids, len(unique_ids)),
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+    finally:
+        conn.close()
 
 
 def _gamemode_sql_stats(gamemode: str) -> tuple[str, list[Any]]:
@@ -1042,11 +1106,13 @@ def chat_search_sqlite(
     date_from: date | None = None,
     date_to: date | None = None,
     map_query: str = "",
-) -> tuple[list[dict[str, Any]], int, str | None, frozenset[int]]:
+    count_only_log_ids: bool = False,
+) -> tuple[list[dict[str, Any]], int, str | None, frozenset[int] | int]:
     """
     Search chat in SQLite DB. Same return shape as ``chat_search``.
 
     ``log_ids_used`` is the set of log IDs where this player has chat rows in DB.
+    The HTTP route requests only its count to avoid allocating that set.
     """
     word = (word or "").strip()
     steamid = (steamid or "").strip()
@@ -1144,8 +1210,9 @@ def chat_search_sqlite(
             params = tuple(params_list)
         rows = conn.execute(sql, params).fetchall()
         log_rows = conn.execute(
-            "SELECT DISTINCT cm.log_id FROM chat_messages cm "
-            "INNER JOIN chat_logs cl ON cl.log_id = cm.log_id "
+            ("SELECT COUNT(DISTINCT cm.log_id) FROM chat_messages cm " if count_only_log_ids
+             else "SELECT DISTINCT cm.log_id FROM chat_messages cm ")
+            + "INNER JOIN chat_logs cl ON cl.log_id = cm.log_id "
             "WHERE cm.steamid3 = ?"
             + poisoned_log_exclusion_sql("cl"),
             (steamid3,),
@@ -1173,7 +1240,10 @@ def chat_search_sqlite(
     searched_name = results[0]["alias"].strip() if results else None
     if searched_name == "":
         searched_name = None
-    log_ids_used = frozenset(int(x[0]) for x in log_rows if x and x[0] is not None)
+    log_ids_used = (
+        int(log_rows[0][0] or 0) if count_only_log_ids else
+        frozenset(int(x[0]) for x in log_rows if x and x[0] is not None)
+    )
     return results, len(results), searched_name, log_ids_used
 
 
@@ -1263,7 +1333,8 @@ def chat_leaderboard_search_sqlite(
               agg.name,
               agg.occurrences,
               agg.logs_count,
-              COALESCE(per_log.log_id, latest_log.latest_log_id) AS top_log_id
+              COALESCE(per_log.log_id, latest_log.latest_log_id) AS top_log_id,
+              (SELECT COUNT(DISTINCT log_id) FROM matches) AS logs_searched
             FROM agg
             LEFT JOIN per_log
               ON per_log.steamid64 = agg.steamid64
@@ -1272,15 +1343,6 @@ def chat_leaderboard_search_sqlite(
               ON latest_log.steamid64 = agg.steamid64
             ORDER BY agg.occurrences DESC, agg.logs_count DESC, agg.name ASC
             LIMIT ?
-        """
-        logs_sql = f"""
-            SELECT COUNT(DISTINCT cm.log_id)
-            {from_clause}
-            WHERE {where_filter}
-              AND (? IS NULL OR cl.log_date_ts >= ?)
-              AND (? IS NULL OR cl.log_date_ts <= ?)
-              AND (? = '' OR instr(lower(cl.map), ?) > 0)
-              {poisoned_excl}
         """
         params: tuple[Any, ...] = (
             query_word,
@@ -1292,17 +1354,8 @@ def chat_leaderboard_search_sqlite(
             mq,
             CHAT_SEARCH_LEADERBOARD_MAX_ROWS,
         )
-        log_params: tuple[Any, ...] = (
-            query_word,
-            start_ts,
-            start_ts,
-            end_ts,
-            end_ts,
-            mq,
-            mq,
-        )
         out_rows = conn.execute(rows_sql, params).fetchall()
-        logs_searched = int(conn.execute(logs_sql, log_params).fetchone()[0] or 0)
+        logs_searched = int(out_rows[0][6] or 0) if out_rows else 0
     finally:
         conn.close()
 
@@ -1525,14 +1578,14 @@ def stats_search(
     date_from: date | None = None,
     date_to: date | None = None,
     map_query: str = "",
+    include_log_ids: bool = True,
 ) -> tuple[list[dict[str, Any]], frozenset[int]]:
-    """Stats by gamemode and classes. Uses stats DB when populated; else scans JSON files."""
+    """Stats by gamemode and classes from the local index."""
     sid64 = (steamid or "").strip()
     class_set = {c.strip().lower() for c in class_list if c.strip()}
     if not class_set:
         class_set = set(_LOGMATCH_CLASS_TYPES)
-    effective_class_list = sorted(class_set)
-    if _stats_db_available_for_player(sid64):
+    if _local_player_exists(sid64):
         try:
             path = Path(STATS_DB_PATH)
             conn = _sqlite_connect_ro(path)
@@ -1639,19 +1692,11 @@ def stats_search(
             alias_map = _lookup_aliases_from_chat_db(sid64_for_alias)
             for row, sid_s in zip(rows_out, sid64_for_alias, strict=True):
                 row["alias"] = alias_map.get(sid_s, "")
-            cache_ids = stats_log_ids_for_player(STATS_DB_PATH, sid64)
+            cache_ids = stats_log_ids_for_player(STATS_DB_PATH, sid64) if include_log_ids else frozenset()
             return rows_out, cache_ids
-        except Exception as e:
-            logger.warning("Stats DB search failed, using log files: %s", e)
-    return _stats_search_files(
-        steamid,
-        gamemode,
-        effective_class_list,
-        logs_dir,
-        date_from=date_from,
-        date_to=date_to,
-        map_query=map_query,
-    )
+        except sqlite3.Error as e:
+            raise RuntimeError("Stats DB search is temporarily unavailable.") from e
+    return [], frozenset()
 
 
 def _team_from_player_block(stats: Any) -> str | None:
@@ -1810,11 +1855,8 @@ def coplayers_search(
     in scope (from stats token on DB path, or distinct log files on file fallback).
     """
     sid64 = (steamid or "").strip()
-    if not _stats_db_available_for_player(sid64):
-        rows, log_ids_used = _coplayers_search_files(
-            steamid, logs_dir, gamemode=gamemode, map_query=map_query
-        )
-        return rows, len(log_ids_used)
+    if not _local_player_exists(sid64):
+        return [], 0
     try:
         path = Path(STATS_DB_PATH)
         conn = _sqlite_connect_ro(path)
@@ -1895,10 +1937,8 @@ def coplayers_search(
             row["name"] = alias_map.get(row["steamid64"], "")
         log_count, _, _ = stats_player_stats_cache_token_parts(STATS_DB_PATH, sid64)
         return rows, int(log_count)
-    except Exception as e:
-        logger.warning("Co-players DB search failed, using log files: %s", e)
-    rows, log_ids_used = _coplayers_search_files(steamid, logs_dir, gamemode=gamemode, map_query=map_query)
-    return rows, len(log_ids_used)
+    except sqlite3.Error as e:
+        raise RuntimeError("Co-players DB search is temporarily unavailable.") from e
 
 
 def _player_stats_row_logmatch(
@@ -1984,9 +2024,11 @@ def log_match(
     )
     steamid3s = [steamid64_to_steamid3(s) for s in steamids]
     steamid3_set = set(steamid3s)
-    log_ids = get_log_list_for_player(steamids[0])
+    log_ids = _local_matching_log_ids(steamids)
     results: list[dict[str, Any]] = []
-    matching_log_ids: set[int] = set()
+    # Cache validity follows the local index. A JSON file may be temporarily absent,
+    # but its index row still needs to be part of the cache fingerprint.
+    matching_log_ids: set[int] = {lid for lid in log_ids if not is_poisoned(lid)}
     for log_id in log_ids:
         path = logs_dir / f"{log_id}.json"
         if not path.exists():
@@ -2002,7 +2044,6 @@ def log_match(
         namesid = set(names.keys())
         if not steamid3_set.issubset(namesid):
             continue
-        matching_log_ids.add(log_id)
         info = logtext.get("info") or {}
         title = info.get("title") or ""
         map_name = info.get("map") or ""
@@ -3112,15 +3153,14 @@ def _profile_fetch_log_date_ts_by_log(
     """
     ``log_date_ts`` keyed by ``log_id`` for logs the player has chat in.
 
-    Uses ``idx_chat_messages_steamid64`` (distinct log ids) then PK lookups on
-    ``chat_logs``, instead of scanning every ``chat_logs`` row with EXISTS.
+    Uses the player index and one join to retrieve dates for distinct logs.
     """
     sid = (steamid64 or "").strip()
     if not sid:
         return {}
-    id_rows = conn.execute(
+    rows = conn.execute(
         """
-        SELECT DISTINCT cm.log_id
+        SELECT DISTINCT cm.log_id, cl.log_date_ts
         FROM chat_messages cm
         INNER JOIN chat_logs cl ON cl.log_id = cm.log_id
         WHERE cm.steamid64 = ?
@@ -3128,33 +3168,13 @@ def _profile_fetch_log_date_ts_by_log(
         + poisoned_log_exclusion_sql("cl"),
         (sid,),
     ).fetchall()
-    log_ids: list[int] = []
-    for row in id_rows:
+    out: dict[int, int | None] = {}
+    for log_id_raw, log_date_ts in rows:
         try:
-            lid = int(row[0])
+            log_id = int(log_id_raw)
         except (TypeError, ValueError):
             continue
-        log_ids.append(lid)
-    if not log_ids:
-        return {}
-    out: dict[int, int | None] = {}
-    for i in range(0, len(log_ids), _SQLITE_MAX_VARS):
-        chunk = log_ids[i : i + _SQLITE_MAX_VARS]
-        placeholders = ",".join("?" * len(chunk))
-        rows = conn.execute(
-            f"""
-            SELECT log_id, log_date_ts
-            FROM chat_logs
-            WHERE log_id IN ({placeholders})
-            """,
-            chunk,
-        ).fetchall()
-        for log_id_raw, log_date_ts in rows:
-            try:
-                log_id = int(log_id_raw)
-            except (TypeError, ValueError):
-                continue
-            out[log_id] = int(log_date_ts) if log_date_ts is not None else None
+        out[log_id] = int(log_date_ts) if log_date_ts is not None else None
     return out
 
 
@@ -3214,10 +3234,9 @@ def _profile_fetch_favorite_words(
         conn = _sqlite_connect_ro(path)
         try:
             conn.execute("PRAGMA cache_size=-32768")
-            log_date_ts_by_log = _profile_fetch_log_date_ts_by_log(conn, sid)
             rows = conn.execute(
                 """
-                SELECT cm.log_id, cm.message_idx, cm.msg
+                SELECT cm.log_id, cm.message_idx, cm.msg, cl.log_date_ts
                 FROM chat_messages cm
                 INNER JOIN chat_logs cl ON cl.log_id = cm.log_id
                 WHERE cm.steamid64 = ?
@@ -3236,18 +3255,21 @@ def _profile_fetch_favorite_words(
     if not rows:
         return []
 
+    log_date_ts_by_log: dict[int, int | None] = {}
     counts: Counter[str] = Counter()
     total_words = 0
     per_log_word: dict[str, dict[int, int]] = {}
     latest_log_for_word: dict[str, int] = {}
     latest_key_for_word: dict[str, tuple[int, int, int, int]] = {}
 
-    for log_id_raw, message_idx_raw, msg in rows:
+    for log_id_raw, message_idx_raw, msg, date_ts_raw in rows:
         try:
             log_id = int(log_id_raw)
             message_idx = int(message_idx_raw)
         except (TypeError, ValueError):
             continue
+        if log_id not in log_date_ts_by_log:
+            log_date_ts_by_log[log_id] = int(date_ts_raw) if date_ts_raw is not None else None
         if not msg:
             continue
         wcount = _profile_countable_words_in_message(msg)
@@ -3420,19 +3442,11 @@ def _stats_leaderboard_from_agg(
         ORDER BY {ord_clause}
         LIMIT ?
     """
-    count_fast_sql = f"""
-        SELECT COUNT(*)
-        FROM logs l
-        WHERE 1=1
-          {profile_sql}
-    """
     conn = _sqlite_connect_ro(path)
     _configure_sqlite_leaderboard_read(conn)
     conn.row_factory = sqlite3.Row
     try:
-        total_logs = int(
-            conn.execute(count_fast_sql, tuple(profile_params)).fetchone()[0] or 0
-        )
+        total_logs = _leaderboard_total_logs(conn, profile_sql, profile_params)
         cur = conn.execute(main_sql, (ml, LEADERBOARD_MAX_ROWS))
         raw_rows = cur.fetchall()
     finally:
@@ -3605,19 +3619,11 @@ def _stats_leaderboard_from_classkills_agg(
         ORDER BY {ord_clause}
         LIMIT ?
     """
-    count_fast_sql = f"""
-        SELECT COUNT(*)
-        FROM logs l
-        WHERE 1=1
-          {profile_sql}
-    """
     conn = _sqlite_connect_ro(path)
     _configure_sqlite_leaderboard_read(conn)
     conn.row_factory = sqlite3.Row
     try:
-        total_logs = int(
-            conn.execute(count_fast_sql, tuple(profile_params)).fetchone()[0] or 0
-        )
+        total_logs = _leaderboard_total_logs(conn, profile_sql, profile_params)
         cur = conn.execute(main_sql, (victim_class, ml, LEADERBOARD_MAX_ROWS))
         raw_rows = cur.fetchall()
     finally:
@@ -3719,19 +3725,11 @@ def _stats_leaderboard_from_weapons_agg(
         ORDER BY {ord_clause}
         LIMIT ?
     """
-    count_fast_sql = f"""
-        SELECT COUNT(*)
-        FROM logs l
-        WHERE 1=1
-          {profile_sql}
-    """
     conn = _sqlite_connect_ro(path)
     _configure_sqlite_leaderboard_read(conn)
     conn.row_factory = sqlite3.Row
     try:
-        total_logs = int(
-            conn.execute(count_fast_sql, tuple(profile_params)).fetchone()[0] or 0
-        )
+        total_logs = _leaderboard_total_logs(conn, profile_sql, profile_params)
         cur = conn.execute(main_sql, (weapon, ml, LEADERBOARD_MAX_ROWS))
         raw_rows = cur.fetchall()
     finally:
@@ -3931,20 +3929,11 @@ def stats_leaderboard(
         LIMIT ?
     """
 
-    count_fast_sql = f"""
-        SELECT COUNT(*)
-        FROM logs l
-        WHERE 1=1
-          {profile_sql}
-    """
-
     conn = _sqlite_connect_ro(path)
     _configure_sqlite_leaderboard_read(conn)
     conn.row_factory = sqlite3.Row
     try:
-        total_logs = int(
-            conn.execute(count_fast_sql, tuple(profile_params)).fetchone()[0] or 0
-        )
+        total_logs = _leaderboard_total_logs(conn, profile_sql, profile_params)
         cur = conn.execute(
             main_sql,
             tuple(scope_params) + (ml, LEADERBOARD_MAX_ROWS),
@@ -4718,29 +4707,25 @@ def player_profile(
 
 
 def log_match_matching_log_ids(steamids: list[str], logs_dir: str | Path) -> frozenset[int]:
-    """Return the set of log IDs that contain all given players (for cache invalidation without building full result)."""
-    logs_dir = Path(logs_dir)
-    if not steamids:
-        return frozenset()
-    steamid3s = [steamid64_to_steamid3(s) for s in steamids]
-    steamid3_set = set(steamid3s)
-    log_ids = get_log_list_for_player(steamids[0])
-    out: set[int] = set()
-    for log_id in log_ids:
-        path = logs_dir / f"{log_id}.json"
-        if not path.exists():
+    """Return locally indexed shared log IDs, excluding poisoned IDs."""
+    return frozenset(lid for lid in _local_matching_log_ids(steamids) if not is_poisoned(lid))
+
+
+def log_match_source_token(
+    steamids: list[str], logs_dir: str | Path
+) -> tuple[tuple[int, int, int], ...]:
+    """Track shared index rows and JSON file changes without parsing those files."""
+    directory = Path(logs_dir)
+    token: list[tuple[int, int, int]] = []
+    for lid in _local_matching_log_ids(steamids):
+        if is_poisoned(lid):
             continue
         try:
-            data = path.read_text(encoding="utf-8", errors="replace")
-            logtext = json.loads(data)
-        except (OSError, ValueError):
-            continue
-        if is_log_excluded(log_id, logtext):
-            continue
-        names = logtext.get("names") or {}
-        if steamid3_set.issubset(set(names.keys())):
-            out.add(log_id)
-    return frozenset(out)
+            stat = (directory / f"{lid}.json").stat()
+            token.append((lid, stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            token.append((lid, -1, -1))
+    return tuple(token)
 
 
 # Player-by-name search (chat DB): substring match on alias, bounded result size.

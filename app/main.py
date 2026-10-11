@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 # must come from Compose/Kubernetes env_file / environment. Explicit path avoids relying on CWD.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 from starlette.datastructures import Headers
 from starlette.responses import FileResponse, Response
@@ -161,6 +161,32 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Tf2LogSearcher", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def observe_request_duration(request: Request, call_next):
+    """Time all routes without recording raw URLs, queries, IPs, or player data."""
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", "<unmatched>")
+        logger.exception("Request failed: route=%s method=%s duration_ms=%s", route_path, request.method, elapsed_ms)
+        raise
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    response.headers["Server-Timing"] = f"app;dur={elapsed_ms}"
+    if elapsed_ms >= 2000:
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", "<unmatched>")
+        logger.warning(
+            "Slow request: route=%s method=%s status=%s duration_ms=%s",
+            route_path, request.method, response.status_code, elapsed_ms,
+        )
+    return response
+
+
 app.include_router(router)
 
 _static_dir = Path(__file__).resolve().parent.parent / "static"

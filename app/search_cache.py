@@ -2,17 +2,16 @@
 import logging
 import threading
 import time
-from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from app.chat_db import chat_log_fingerprint, local_chat_log_ids_for_player
+from app.chat_db import chat_log_fingerprint, chat_player_fingerprint
 from app.config import CHAT_DB_PATH, LOGS_DIR, STATS_DB_PATH
-from app.search.search import local_log_ids_for_player, log_match_matching_log_ids
-from app.stats_db import stats_db_fingerprint, stats_player_stats_cache_token
+from app.search.search import log_match_source_token
+from app.stats_db import stats_db_fingerprint, stats_player_stats_cache_token, stats_player_stats_cache_token_parts
 
 logger = logging.getLogger(__name__)
 
-# Cache entry: { "payload": {...}, "log_ids": frozenset[int], "created_at": float }
+# Cache entry: { "payload": {...}, "log_ids": version token, "created_at": float }
 CACHE_TTL_SEC = 86400 * 2  # 2 days fallback
 CACHE_MAX_ENTRIES = 2000
 
@@ -39,11 +38,10 @@ def _is_valid(entry: dict[str, Any], mode: str, key_tuple: tuple[Any, ...]) -> b
     try:
         if (time.time() - entry["created_at"]) > CACHE_TTL_SEC:
             return False
-        cached_ids: frozenset[int] = entry["log_ids"]
-        logs_dir = Path(LOGS_DIR)
+        cached_ids = entry["log_ids"]
         if mode == "chat":
             steamid64 = key_tuple[0]
-            current = local_chat_log_ids_for_player(steamid64, CHAT_DB_PATH)
+            current = chat_player_fingerprint(CHAT_DB_PATH, steamid64)
             if current != cached_ids:
                 return False
         elif mode == "chatlb" or mode == "playername":
@@ -56,25 +54,26 @@ def _is_valid(entry: dict[str, Any], mode: str, key_tuple: tuple[Any, ...]) -> b
                 return False
         elif mode == "stats" or mode == "coplayers":
             steamid64 = key_tuple[0]
-            stats_path = Path(STATS_DB_PATH)
+            stats_path = STATS_DB_PATH
             if stats_path.is_file():
                 current = stats_player_stats_cache_token(STATS_DB_PATH, steamid64)
             else:
-                current = local_log_ids_for_player(steamid64, logs_dir)
+                return False
             if current != cached_ids:
                 return False
         elif mode == "profile":
             steamid64 = key_tuple[0]
-            stats_path = Path(STATS_DB_PATH)
+            stats_path = STATS_DB_PATH
             if stats_path.is_file():
-                current = stats_player_stats_cache_token(STATS_DB_PATH, steamid64)
+                current = (*stats_player_stats_cache_token_parts(STATS_DB_PATH, steamid64),
+                           hash(chat_player_fingerprint(CHAT_DB_PATH, steamid64)))
             else:
-                current = frozenset()
+                return False
             if current != cached_ids:
                 return False
         elif mode == "logmatch":
             steamids_tuple = key_tuple[0]
-            current = log_match_matching_log_ids(list(steamids_tuple), logs_dir)
+            current = log_match_source_token(list(steamids_tuple), LOGS_DIR)
             if current != cached_ids:
                 return False
         return True
@@ -100,7 +99,12 @@ def get(mode: str, key_tuple: tuple[Any, ...]) -> dict[str, Any] | None:
         return None
 
     # 2. Validate outside the lock — may open SQLite connections.
-    if not _is_valid(entry, mode, key_tuple):
+    validation_started = time.perf_counter()
+    valid = _is_valid(entry, mode, key_tuple)
+    validation_ms = (time.perf_counter() - validation_started) * 1000
+    if validation_ms >= 500:
+        logger.warning("Slow cache validation: mode=%s duration_ms=%.0f", mode, validation_ms)
+    if not valid:
         # Entry is stale: remove it under the lock.
         with _cache_lock:
             # Guard against a concurrent set_ that may have replaced the entry
@@ -125,7 +129,7 @@ def get(mode: str, key_tuple: tuple[Any, ...]) -> dict[str, Any] | None:
         return entry["payload"]
 
 
-def set_(mode: str, key_tuple: tuple[Any, ...], payload: dict[str, Any], log_ids: frozenset[int]) -> None:
+def set_(mode: str, key_tuple: tuple[Any, ...], payload: dict[str, Any], log_ids: Any) -> None:
     """Store result in cache."""
     with _cache_lock:
         _evict_lru()
@@ -199,10 +203,14 @@ def singleflight_build(
             leader = True
 
     if not leader:
+        wait_started = time.perf_counter()
         while True:
             evt.wait(timeout=_SINGLEFLIGHT_WAIT_SEC)
             hit = get(mode, key_tuple)
             if hit is not None:
+                waited_ms = (time.perf_counter() - wait_started) * 1000
+                if waited_ms >= 500:
+                    logger.warning("Slow cache flight wait: mode=%s duration_ms=%.0f", mode, waited_ms)
                 return hit
             # Timed-out waiters must not become a new leader while this flight is still
             # registered (including the brief window after the leader finishes ``builder``
@@ -223,9 +231,13 @@ def singleflight_build(
                 _inflight_events.pop(k, None)
         return hit
 
+    build_started = time.perf_counter()
     try:
         return builder()
     finally:
+        built_ms = (time.perf_counter() - build_started) * 1000
+        if built_ms >= 500:
+            logger.warning("Slow cache build: mode=%s duration_ms=%.0f", mode, built_ms)
         # Signal before removing from tracking so blocked waiters wake while the
         # entry still exists; removal afterward prevents stale-event joins.
         evt.set()

@@ -72,6 +72,18 @@ def run_backfill(logs_dir: Path, db_path: Path, batch_size: int) -> None:
         raise
     logger.info("Writing player_names rows into %s", db_path)
 
+    # This job rewrites names directly, outside replace_stats_for_log's targeted
+    # latest-name maintenance. Make readers use the correct legacy query until
+    # app.latest_names_backfill is rerun after this job.
+    with conn:
+        conn.execute(
+            "UPDATE stats_cache_generation SET row_count = 0 "
+            "WHERE name = 'latest_names_ready'"
+        )
+        conn.execute(
+            "DELETE FROM stats_cache_generation WHERE name = 'latest_names_progress'"
+        )
+
     start = time.time()
     processed = 0
     names_rows_total = 0

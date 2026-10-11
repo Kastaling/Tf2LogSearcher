@@ -323,6 +323,25 @@ def init_chat_db(conn: sqlite3.Connection) -> None:
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS chat_cache_generation (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          generation INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO chat_cache_generation (id, generation) VALUES (1, 0);
+        CREATE TRIGGER IF NOT EXISTS chat_cache_logs_insert AFTER INSERT ON chat_logs BEGIN
+          UPDATE chat_cache_generation SET generation = generation + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS chat_cache_logs_delete AFTER DELETE ON chat_logs BEGIN
+          UPDATE chat_cache_generation SET generation = generation + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS chat_cache_logs_update AFTER UPDATE ON chat_logs BEGIN
+          UPDATE chat_cache_generation SET generation = generation + 1 WHERE id = 1;
+        END;
+        CREATE TABLE IF NOT EXISTS chat_player_generation (
+          steamid64 TEXT PRIMARY KEY,
+          generation INTEGER NOT NULL
+        );
         """
     )
     _init_fts_if_available(conn)
@@ -424,21 +443,52 @@ def chat_log_fingerprint(db_path: str | Path) -> frozenset[int]:
     """
     Lightweight cache fingerprint for chat DB contents.
 
-    Encodes (row_count, max_log_id) as a frozenset for compatibility with cache API.
+    Reads one metadata row. The triggers advance it in the same transaction as
+    chat-log changes, including purges and re-imports.
     """
     path = Path(db_path)
     if not path.is_file():
         return frozenset()
     conn = sqlite3.connect(str(path), timeout=30)
     try:
-        row = conn.execute(
-            "SELECT COUNT(*), COALESCE(MAX(log_id), 0) FROM chat_logs"
-        ).fetchone()
+        try:
+            row = conn.execute("SELECT generation FROM chat_cache_generation WHERE id = 1").fetchone()
+        except sqlite3.OperationalError:
+            # During rolling startup the downloader may not have installed the new table yet.
+            legacy = conn.execute("SELECT COUNT(*), COALESCE(MAX(log_id), 0) FROM chat_logs").fetchone()
+            return frozenset((-1, int(legacy[0]), int(legacy[1])))
     finally:
         conn.close()
-    count = int(row[0] or 0) if row else 0
-    max_id = int(row[1] or 0) if row else 0
-    return frozenset((count, max_id))
+    return frozenset((int(row[0]),)) if row else frozenset()
+
+
+def chat_player_fingerprint(db_path: str | Path, steamid64: str) -> frozenset[int]:
+    """A single indexed lookup for a player's chat cache version."""
+    path = Path(db_path)
+    if not path.is_file():
+        return frozenset()
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
+    try:
+        row = conn.execute(
+            "SELECT generation FROM chat_player_generation WHERE steamid64 = ?",
+            (steamid64,),
+        ).fetchone()
+        return frozenset((int(row[0]),)) if row else frozenset()
+    except sqlite3.OperationalError:
+        return local_chat_log_ids_for_player(steamid64, path)
+    finally:
+        conn.close()
+
+
+def bump_chat_player_generations(conn: sqlite3.Connection, steamids: set[str]) -> None:
+    """Advance affected players in the caller's per-log transaction."""
+    conn.executemany(
+        """
+        INSERT INTO chat_player_generation (steamid64, generation) VALUES (?, 1)
+        ON CONFLICT(steamid64) DO UPDATE SET generation = generation + 1
+        """,
+        ((sid,) for sid in steamids if sid),
+    )
 
 
 def _extract_chat_rows(log_id: int, logtext: dict[str, Any]) -> tuple[int | None, str, list[tuple[Any, ...]]]:
@@ -489,9 +539,17 @@ def replace_chat_for_log(
     """
     from app.poisoned_logs import extract_uploader_steamid64, is_log_excluded
 
+    previous_players = {
+        str(row[0]) for row in conn.execute(
+            "SELECT DISTINCT steamid64 FROM chat_messages WHERE log_id = ? AND steamid64 IS NOT NULL",
+            (log_id,),
+        ) if row[0]
+    }
+
     if is_log_excluded(log_id, logtext):
         conn.execute("DELETE FROM chat_messages WHERE log_id = ?", (log_id,))
         conn.execute("DELETE FROM chat_logs WHERE log_id = ?", (log_id,))
+        bump_chat_player_generations(conn, previous_players)
         return 0
     ts = int(time.time()) if imported_at_ts is None else int(imported_at_ts)
     log_date_ts, map_name, rows = _extract_chat_rows(log_id, logtext)
@@ -517,4 +575,7 @@ def replace_chat_for_log(
             """,
             rows,
         )
+    bump_chat_player_generations(
+        conn, previous_players | {str(row[3]) for row in rows if row[3]}
+    )
     return len(rows)

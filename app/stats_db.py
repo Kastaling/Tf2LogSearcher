@@ -402,6 +402,12 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_pn_steamid64 ON player_names(steamid64);
         CREATE INDEX IF NOT EXISTS idx_pn_date_ts ON player_names(date_ts);
+        CREATE TABLE IF NOT EXISTS player_latest_names (
+          steamid64 TEXT PRIMARY KEY,
+          alias TEXT NOT NULL,
+          log_id INTEGER NOT NULL,
+          date_ts INTEGER
+        );
 
         CREATE TABLE IF NOT EXISTS player_stats_agg (
           steamid64        TEXT PRIMARY KEY,
@@ -438,6 +444,56 @@ def init_stats_db(conn: sqlite3.Connection) -> None:
     _migrate_player_stats_agg_total_deaths_killstreak(conn)
     _migrate_player_classkills_agg(conn)
     _migrate_player_weapons_agg(conn)
+    _init_stats_cache_generation(conn)
+
+
+def _init_stats_cache_generation(conn: sqlite3.Connection) -> None:
+    """Install small, transactional version counters without rebuilding large indexes."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS stats_cache_generation ("
+        "name TEXT PRIMARY KEY, generation INTEGER NOT NULL, row_count INTEGER NOT NULL DEFAULT 0)"
+    )
+    if conn.execute("SELECT 1 FROM stats_cache_generation WHERE name = 'logs'").fetchone() is None:
+        count = int(conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0])
+        conn.execute(
+            "INSERT OR IGNORE INTO stats_cache_generation(name, generation, row_count) VALUES ('logs', 0, ?)",
+            (count,),
+        )
+    conn.execute(
+        "INSERT OR IGNORE INTO stats_cache_generation(name, generation) "
+        "VALUES ('aggregate', 0), ('names', 0), ('latest_names_ready', 0)"
+    )
+    conn.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS stats_cache_logs_insert AFTER INSERT ON logs BEGIN
+          UPDATE stats_cache_generation SET generation = generation + 1, row_count = row_count + 1
+          WHERE name = 'logs';
+        END;
+        CREATE TRIGGER IF NOT EXISTS stats_cache_logs_delete AFTER DELETE ON logs BEGIN
+          UPDATE stats_cache_generation SET generation = generation + 1, row_count = row_count - 1
+          WHERE name = 'logs';
+        END;
+        CREATE TRIGGER IF NOT EXISTS stats_cache_logs_update AFTER UPDATE ON logs BEGIN
+          UPDATE stats_cache_generation SET generation = generation + 1 WHERE name = 'logs';
+        END;
+        CREATE TRIGGER IF NOT EXISTS stats_cache_names_insert AFTER INSERT ON player_names BEGIN
+          UPDATE stats_cache_generation SET generation = generation + 1 WHERE name = 'names';
+        END;
+        CREATE TRIGGER IF NOT EXISTS stats_cache_names_delete AFTER DELETE ON player_names BEGIN
+          UPDATE stats_cache_generation SET generation = generation + 1 WHERE name = 'names';
+        END;
+        CREATE TRIGGER IF NOT EXISTS stats_cache_names_update AFTER UPDATE ON player_names BEGIN
+          UPDATE stats_cache_generation SET generation = generation + 1 WHERE name = 'names';
+        END;
+        """
+    )
+    conn.commit()
+
+
+def _advance_aggregate_generation(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "UPDATE stats_cache_generation SET generation = generation + 1 WHERE name = 'aggregate'"
+    )
 
 
 def _migrate_player_stats_agg_total_deaths_killstreak(conn: sqlite3.Connection) -> None:
@@ -1107,8 +1163,23 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
     """
     from app.poisoned_logs import is_log_excluded
 
+    previous_name_players: set[str] = set()
+    if conn.execute("SELECT 1 FROM logs WHERE log_id = ?", (log_id,)).fetchone():
+        previous_name_players = {
+            str(row[0]) for row in conn.execute(
+                "SELECT steamid64 FROM log_players WHERE log_id = ?", (log_id,)
+            ) if row[0]
+        }
+        # player_names has no log foreign key. Use its (steamid64, log_id)
+        # primary key to remove old names without scanning the whole table.
+        conn.executemany(
+            "DELETE FROM player_names WHERE steamid64 = ? AND log_id = ?",
+            ((sid, log_id) for sid in previous_name_players),
+        )
+
     if is_log_excluded(log_id, logtext):
         conn.execute("DELETE FROM logs WHERE log_id = ?", (log_id,))
+        _refresh_latest_names_for_players(conn, previous_name_players)
         return 0
     conn.execute("DELETE FROM logs WHERE log_id = ?", (log_id,))
     data = extract_log_stats(log_id, logtext)
@@ -1283,7 +1354,47 @@ def replace_stats_for_log(conn: sqlite3.Connection, log_id: int, logtext: dict[s
             [(r["steamid64"], r["alias"], r["log_id"], r["date_ts"]) for r in nr],
         )
 
+        conn.executemany(
+            """
+            INSERT INTO player_latest_names (steamid64, alias, log_id, date_ts)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(steamid64) DO UPDATE SET
+              alias = excluded.alias, log_id = excluded.log_id, date_ts = excluded.date_ts
+            WHERE COALESCE(excluded.date_ts, 0) > COALESCE(player_latest_names.date_ts, 0)
+               OR (COALESCE(excluded.date_ts, 0) = COALESCE(player_latest_names.date_ts, 0)
+                   AND excluded.log_id >= player_latest_names.log_id)
+            """,
+            (
+                (r["steamid64"], r["alias"], r["log_id"], r["date_ts"])
+                for r in nr if str(r["alias"] or "").strip()
+            ),
+        )
+
+    # A re-import can remove or replace the previous winning alias. Repair only
+    # affected players; new logs take the constant-time upsert path above.
+    _refresh_latest_names_for_players(conn, previous_name_players)
+
     return len(pr)
+
+
+def _refresh_latest_names_for_players(conn: sqlite3.Connection, steamids: set[str]) -> None:
+    for sid in steamids:
+        row = conn.execute(
+            """
+            SELECT alias, log_id, date_ts FROM player_names
+            WHERE steamid64 = ? AND COALESCE(TRIM(alias), '') != ''
+            ORDER BY COALESCE(date_ts, 0) DESC, log_id DESC LIMIT 1
+            """,
+            (sid,),
+        ).fetchone()
+        if row is None:
+            conn.execute("DELETE FROM player_latest_names WHERE steamid64 = ?", (sid,))
+        else:
+            conn.execute(
+                "INSERT OR REPLACE INTO player_latest_names (steamid64, alias, log_id, date_ts) "
+                "VALUES (?, ?, ?, ?)",
+                (sid, str(row[0]), int(row[1]), row[2]),
+            )
 
 
 def _player_stats_agg_healspread_subquery_sql(healer_in_clause: str = "") -> str:
@@ -1652,6 +1763,8 @@ def rebuild_player_stats_agg(conn: sqlite3.Connection) -> int:
         )
     rebuild_player_classkills_agg(conn)
     rebuild_player_weapons_agg(conn)
+    _advance_aggregate_generation(conn)
+    conn.commit()
     row = conn.execute("SELECT COUNT(*) FROM player_stats_agg").fetchone()
     return int(row[0] or 0) if row else 0
 
@@ -1673,6 +1786,7 @@ def refresh_player_stats_agg_for_steamids(conn: sqlite3.Connection, steamids: Se
         _refresh_player_stats_agg_for_steamids_impl(conn, uniq, ts)
         _refresh_player_classkills_agg_for_steamids_impl(conn, uniq, ts)
         _refresh_player_weapons_agg_for_steamids_impl(conn, uniq, ts)
+        _advance_aggregate_generation(conn)
         conn.execute(f"RELEASE SAVEPOINT {_PSA_SAVEPOINT}")
     except Exception:
         conn.execute(f"ROLLBACK TO SAVEPOINT {_PSA_SAVEPOINT}")
@@ -1869,8 +1983,7 @@ def stats_db_fingerprint(db_path: str | Path) -> frozenset[int]:
     """
     Lightweight fingerprint for stats DB contents.
 
-    Encodes (logs row count, max log_id, max imported_at) so cache invalidates when a log is
-    re-imported (same count / max id) or when ``player_stats_agg``-relevant data changes.
+    Reads metadata counters instead of scanning the logs table on every cache hit.
     """
     path = Path(db_path)
     if not path.is_file():
@@ -1879,17 +1992,22 @@ def stats_db_fingerprint(db_path: str | Path) -> frozenset[int]:
         conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
         try:
             conn.execute("PRAGMA busy_timeout=10000")
-            row = conn.execute(
-                "SELECT COUNT(*), COALESCE(MAX(log_id), 0), COALESCE(MAX(imported_at), 0) FROM logs"
-            ).fetchone()
+            rows = conn.execute(
+                "SELECT name, generation FROM stats_cache_generation "
+                "WHERE name IN ('logs', 'aggregate', 'names')"
+            ).fetchall()
         finally:
             conn.close()
     except Exception:
         return frozenset()
-    count = int(row[0] or 0) if row else 0
-    max_id = int(row[1] or 0) if row else 0
-    max_imp = int(row[2] or 0) if row else 0
-    return frozenset((count, max_id, max_imp))
+    versions = {str(name): int(generation) for name, generation in rows}
+    if len(versions) != 3:
+        return frozenset()
+    return frozenset({
+        versions['logs'],
+        (1 << 60) + versions['aggregate'],
+        (2 << 60) + versions['names'],
+    })
 
 
 def stats_player_stats_cache_token_parts(
@@ -1995,6 +2113,7 @@ def lookup_player_names(
     Returns {steamid64: alias}. Missing = no name found.
     Chunks queries to stay under SQLite variable limit.
     """
+    started = time.perf_counter()
     path = Path(db_path)
     if not path.is_file() or not steamid64s:
         return {}
@@ -2003,27 +2122,38 @@ def lookup_player_names(
         return {}
     out: dict[str, str] = {}
     _max_vars = 900
+    latest_ready = False
     try:
         conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10.0)
         try:
             conn.execute("PRAGMA busy_timeout=10000")
+            try:
+                ready_row = conn.execute(
+                    "SELECT row_count FROM stats_cache_generation WHERE name = 'latest_names_ready'"
+                ).fetchone()
+                latest_ready = bool(ready_row and int(ready_row[0]))
+            except sqlite3.OperationalError:
+                latest_ready = False
             for i in range(0, len(uniq), _max_vars):
                 batch = uniq[i : i + _max_vars]
                 ph = ",".join("?" * len(batch))
-                sql = f"""
-                    SELECT steamid64, alias
-                    FROM (
-                        SELECT steamid64, alias,
-                               ROW_NUMBER() OVER (
-                                 PARTITION BY steamid64
-                                 ORDER BY COALESCE(date_ts, 0) DESC, log_id DESC
-                               ) AS rn
-                        FROM player_names
-                        WHERE steamid64 IN ({ph})
-                          AND COALESCE(TRIM(alias), '') != ''
-                    )
-                    WHERE rn = 1
-                """
+                if latest_ready:
+                    sql = f"SELECT steamid64, alias FROM player_latest_names WHERE steamid64 IN ({ph})"
+                else:
+                    sql = f"""
+                        SELECT steamid64, alias
+                        FROM (
+                            SELECT steamid64, alias,
+                                   ROW_NUMBER() OVER (
+                                     PARTITION BY steamid64
+                                     ORDER BY COALESCE(date_ts, 0) DESC, log_id DESC
+                                   ) AS rn
+                            FROM player_names
+                            WHERE steamid64 IN ({ph})
+                              AND COALESCE(TRIM(alias), '') != ''
+                        )
+                        WHERE rn = 1
+                    """
                 for sid64, alias in conn.execute(sql, batch).fetchall():
                     sid_s = str(sid64).strip()
                     alias_s = str(alias or "").strip()
@@ -2031,6 +2161,14 @@ def lookup_player_names(
                         out[sid_s] = alias_s
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        logger.warning("Player-name lookup failed: %s", exc)
         return out
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        if elapsed_ms >= 500:
+            logger.warning(
+                "Slow player-name lookup: count=%s fast_lookup=%s duration_ms=%.0f",
+                len(uniq), latest_ready, elapsed_ms,
+            )
     return out

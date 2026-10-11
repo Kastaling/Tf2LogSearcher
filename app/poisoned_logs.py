@@ -318,8 +318,19 @@ def purge_poisoned_from_chat_db(conn: sqlite3.Connection) -> int:
         return 0
     placeholders = ",".join("?" * len(ids))
     try:
+        players = {
+            str(row[0]) for row in conn.execute(
+                f"SELECT DISTINCT steamid64 FROM chat_messages WHERE log_id IN ({placeholders}) "
+                "AND steamid64 IS NOT NULL",
+                tuple(ids),
+            ) if row[0]
+        }
         conn.execute(f"DELETE FROM chat_messages WHERE log_id IN ({placeholders})", tuple(ids))
         cur = conn.execute(f"DELETE FROM chat_logs WHERE log_id IN ({placeholders})", tuple(ids))
+        if players:
+            from app.chat_db import bump_chat_player_generations
+
+            bump_chat_player_generations(conn, players)
         return int(cur.rowcount)
     except sqlite3.Error as e:
         logger.warning("poisoned chat purge failed: %s", e)
@@ -338,15 +349,20 @@ def purge_poisoned_from_stats_db(conn: sqlite3.Connection) -> int:
     placeholders = ",".join("?" * len(ids))
     try:
         rows = conn.execute(
-            f"SELECT DISTINCT steamid64 FROM log_players WHERE log_id IN ({placeholders})",
+            f"SELECT steamid64, log_id FROM log_players WHERE log_id IN ({placeholders})",
             tuple(ids),
         ).fetchall()
-        steamids = [str(r[0]) for r in rows if r and r[0]]
+        steamids = sorted({str(r[0]) for r in rows if r and r[0]})
+        conn.executemany(
+            "DELETE FROM player_names WHERE steamid64 = ? AND log_id = ?",
+            ((str(sid), int(lid)) for sid, lid in rows if sid and lid is not None),
+        )
         cur = conn.execute(f"DELETE FROM logs WHERE log_id IN ({placeholders})", tuple(ids))
         n = int(cur.rowcount)
         if steamids:
-            from app.stats_db import flush_player_stats_agg
+            from app.stats_db import _refresh_latest_names_for_players, flush_player_stats_agg
 
+            _refresh_latest_names_for_players(conn, set(steamids))
             flush_player_stats_agg(conn, steamids)
         return n
     except sqlite3.Error as e:

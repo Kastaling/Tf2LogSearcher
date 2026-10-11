@@ -40,6 +40,7 @@ def init_profile_cache_db(conn: sqlite3.Connection) -> None:
           token_count INTEGER NOT NULL,
           token_max_log_id INTEGER NOT NULL,
           token_sum_imported_at INTEGER NOT NULL,
+          token_chat_generation INTEGER NOT NULL DEFAULT -1,
           built_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS coplayers_cache (
@@ -55,6 +56,9 @@ def init_profile_cache_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(profile_cache)")}
+    if "token_chat_generation" not in columns:
+        conn.execute("ALTER TABLE profile_cache ADD COLUMN token_chat_generation INTEGER NOT NULL DEFAULT -1")
     conn.commit()
 
 
@@ -92,14 +96,16 @@ def _read_cached_payload(
     table: str,
     where_sql: str,
     where_params: tuple[Any, ...],
-    current_token: tuple[int, int, int],
+    current_token: tuple[int, ...],
     log_label: str,
 ) -> dict[str, Any] | None:
     cur_cnt, cur_max, cur_sum = (int(current_token[0]), int(current_token[1]), int(current_token[2]))
+    cur_chat = int(current_token[3]) if len(current_token) > 3 else -1
+    chat_column = ", token_chat_generation" if table == "profile_cache" else ""
     try:
         row = conn.execute(
             f"""
-            SELECT payload_json, token_count, token_max_log_id, token_sum_imported_at, built_at
+            SELECT payload_json, token_count, token_max_log_id, token_sum_imported_at, built_at{chat_column}
             FROM {table}
             WHERE {where_sql}
             """,
@@ -110,7 +116,7 @@ def _read_cached_payload(
         return None
     if not row:
         return None
-    payload_json, tok_cnt, tok_max, tok_sum, built_at = row
+    payload_json, tok_cnt, tok_max, tok_sum, built_at = row[:5]
     try:
         age = time.time() - int(built_at)
     except (TypeError, ValueError):
@@ -118,6 +124,8 @@ def _read_cached_payload(
     if age > PROFILE_CACHE_MAX_AGE_SEC:
         return None
     if (int(tok_cnt), int(tok_max), int(tok_sum)) != (cur_cnt, cur_max, cur_sum):
+        return None
+    if table == "profile_cache" and int(row[5]) != cur_chat:
         return None
     if not payload_json:
         return None
@@ -159,13 +167,13 @@ def _write_cached_payload(
 def get_default_profile_cache(
     conn: sqlite3.Connection,
     steamid64: str,
-    current_token: tuple[int, int, int],
+    current_token: tuple[int, ...],
 ) -> dict[str, Any] | None:
     """
     Return cached profile dict when present, within max age, and token matches ``current_token``.
 
-    ``current_token`` must be ``(log_count, max_log_id, sum_imported_at)`` from
-    ``stats_player_stats_cache_token_parts`` (not a frozenset — order is semantic).
+    ``current_token`` is the ordered stats tuple plus the chat generation for
+    route callers. The three-field form remains for legacy callers and tests.
     """
     sid = (steamid64 or "").strip()
     if not _STEAMID64_RE.fullmatch(sid):
@@ -184,7 +192,7 @@ def set_default_profile_cache(
     conn: sqlite3.Connection,
     steamid64: str,
     payload: dict[str, Any],
-    token: tuple[int, int, int],
+    token: tuple[int, ...],
 ) -> bool:
     """Upsert default profile payload. Returns False if validation or size checks fail."""
     sid = (steamid64 or "").strip()
@@ -203,6 +211,7 @@ def set_default_profile_cache(
         )
         return False
     tok_cnt, tok_max, tok_sum = (int(token[0]), int(token[1]), int(token[2]))
+    tok_chat = int(token[3]) if len(token) > 3 else -1
     now = int(time.time())
     return _write_cached_payload(
         conn,
@@ -213,9 +222,10 @@ def set_default_profile_cache(
             "token_count",
             "token_max_log_id",
             "token_sum_imported_at",
+            "token_chat_generation",
             "built_at",
         ),
-        (sid, payload_json, tok_cnt, tok_max, tok_sum, now),
+        (sid, payload_json, tok_cnt, tok_max, tok_sum, tok_chat, now),
         f"profile_cache/{sid}",
     )
 

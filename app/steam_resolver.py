@@ -51,6 +51,7 @@ def resolve_to_steamid64(
     api_key: str | None,
     *,
     vanity_rl_client_ip: str | None = None,
+    allow_network: bool = True,
 ) -> tuple[str | None, str | None]:
     """
     Resolve arbitrary Steam user input to a 17-digit SteamID64.
@@ -91,12 +92,12 @@ def resolve_to_steamid64(
         vm = _VANITY_URL_RE.search(raw)
         if vm:
             vanity = vm.group(1)
-            return _resolve_vanity(vanity, api_key, vanity_rl_client_ip=vanity_rl_client_ip)
+            return _resolve_vanity(vanity, api_key, vanity_rl_client_ip=vanity_rl_client_ip, allow_network=allow_network)
         return None, "Could not parse Steam profile URL. Use a URL like https://steamcommunity.com/profiles/76561197960265728 or https://steamcommunity.com/id/YourName"
 
     # 4) Standalone vanity name
     if _VANITY_NAME_RE.match(raw):
-        return _resolve_vanity(raw, api_key, vanity_rl_client_ip=vanity_rl_client_ip)
+        return _resolve_vanity(raw, api_key, vanity_rl_client_ip=vanity_rl_client_ip, allow_network=allow_network)
 
     # 5) Might be a URL we didn't match (e.g. store.steampowered.com) or malformed
     if raw.startswith("http://") or raw.startswith("https://"):
@@ -111,6 +112,7 @@ def _resolve_vanity(
     api_key: str | None,
     *,
     vanity_rl_client_ip: str | None = None,
+    allow_network: bool = True,
 ) -> tuple[str | None, str | None]:
     """Call Steam Web API ResolveVanityURL. API key is never logged or returned."""
     if not api_key:
@@ -127,6 +129,8 @@ def _resolve_vanity(
             if exp > now:
                 return sid_cached, None
         _vanity_cache_prune(now)
+    if not allow_network:
+        return None, "Vanity name is not cached."
     # ``None`` skips RL (e.g. CLI); empty string still limits as "unknown" in rate_limit.
     if vanity_rl_client_ip is not None:
         from app.rate_limit import steam_vanity_retry_after_if_limited

@@ -3,8 +3,10 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import re
 import sqlite3
+import threading
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -42,7 +44,7 @@ from app.avatar_db import (
     set_cached_avatar,
     set_cached_avatars_bulk,
 )
-from app.chat_db import chat_log_fingerprint, count_chat_messages
+from app.chat_db import chat_log_fingerprint, chat_player_fingerprint, count_chat_messages
 from app.raw_db import count_raw_library_rows
 from app.stats_db import (
     count_stats_index_rows,
@@ -80,10 +82,10 @@ from app.search.search import (
     normalize_leaderboard_weapon,
     STATS_SEARCH_DEFAULT_CLASSES,
     chat_leaderboard_search_sqlite,
-    chat_search,
     chat_search_sqlite,
     coplayers_search,
     log_match,
+    log_match_source_token,
     player_name_search_sqlite,
     player_profile,
     stats_leaderboard,
@@ -118,6 +120,21 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _AVATAR_BATCH_MAX = 100
+_SEARCH_BUILD_SLOTS = threading.BoundedSemaphore(6)
+
+
+class SearchAtCapacity(RuntimeError):
+    """No heavy-search worker slot is available right now."""
+
+
+def _run_search_build(builder, *args, **kwargs):
+    """Bound concurrent CPU/SQLite-heavy cache misses across search routes."""
+    if not _SEARCH_BUILD_SLOTS.acquire(blocking=False):
+        raise SearchAtCapacity("Search is temporarily at capacity. Please retry shortly.")
+    try:
+        return builder(*args, **kwargs)
+    finally:
+        _SEARCH_BUILD_SLOTS.release()
 
 
 async def _fetch_steam_avatar_urls(steamid64s: list[str]) -> dict[str, str]:
@@ -239,12 +256,64 @@ def _profile_views_payload(request: Request, steamid64: str) -> dict[str, int] |
     return {"total": total, "unique": unique}
 
 
-_PREFETCH_MAX = 20  # cap how many profiles to warm per trigger
+_PREFETCH_MAX = 8  # cap how many profiles to warm per trigger
 _PREFETCH_GAMEMODE_DEFAULT = ""  # warm unfiltered profiles only
+_PREFETCH_QUEUE_MAX = 32
+_prefetch_queue: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=_PREFETCH_QUEUE_MAX)
+_prefetch_lock = threading.Lock()
+_prefetch_pending: set[tuple[str, str]] = set()
+_prefetch_started = False
+
+
+def _profile_token_parts(steamid64: str) -> tuple[int, int, int, int]:
+    """Profile also depends on chat-derived favorite words, not just stats rows."""
+    return (*stats_player_stats_cache_token_parts(STATS_DB_PATH, steamid64),
+            hash(chat_player_fingerprint(CHAT_DB_PATH, steamid64)))
+
+
+def _schedule_prefetch(kind: str, steamid64: str) -> None:
+    """Bound and deduplicate low-priority cache warming across requests."""
+    global _prefetch_started
+    sid = (steamid64 or "").strip()
+    if not re.fullmatch(r"\d{17}", sid):
+        return
+    key = (kind, sid)
+    with _prefetch_lock:
+        if key in _prefetch_pending or len(_prefetch_pending) >= _PREFETCH_QUEUE_MAX + 2:
+            return
+        _prefetch_pending.add(key)
+        if not _prefetch_started:
+            for index in range(2):
+                threading.Thread(
+                    target=_prefetch_worker,
+                    daemon=True,
+                    name=f"cache-prefetch-{index}",
+                ).start()
+            _prefetch_started = True
+        try:
+            _prefetch_queue.put_nowait(key)
+        except queue.Full:
+            _prefetch_pending.discard(key)
+
+
+def _prefetch_worker() -> None:
+    while True:
+        kind, sid = _prefetch_queue.get()
+        try:
+            if kind == "coplayers":
+                _prefetch_coplayers_background(sid)
+            else:
+                _prefetch_profiles_background([sid])
+        except Exception:
+            logger.exception("Background cache prefetch failed: kind=%s", kind)
+        finally:
+            with _prefetch_lock:
+                _prefetch_pending.discard((kind, sid))
+            _prefetch_queue.task_done()
 
 
 def _persist_default_profile_disk(
-    steamid64: str, profile: dict[str, Any], token: tuple[int, int, int]
+    steamid64: str, profile: dict[str, Any], token: tuple[int, ...]
 ) -> None:
     """Write default-scope profile to disk cache (best-effort)."""
     try:
@@ -257,7 +326,7 @@ def _persist_default_profile_disk(
         pass
 
 
-def _load_default_profile_disk(steamid64: str, token: tuple[int, int, int]) -> dict[str, Any] | None:
+def _load_default_profile_disk(steamid64: str, token: tuple[int, ...]) -> dict[str, Any] | None:
     """Read default-scope profile from disk when token matches (best-effort)."""
     try:
         conn = connect_profile_cache_db(PROFILE_CACHE_DB_PATH)
@@ -306,14 +375,7 @@ def _load_default_coplayers_disk(
 
 def _maybe_prefetch_coplayers_for_profile(steamid64: str) -> None:
     """Background-warm default co-players after a profile view (best-effort)."""
-    import threading
-
-    threading.Thread(
-        target=_prefetch_coplayers_background,
-        args=(steamid64,),
-        daemon=True,
-        name="coplayers-prefetch-profile",
-    ).start()
+    _schedule_prefetch("coplayers", steamid64)
 
 
 def _prefetch_coplayers_background(steamid64: str) -> None:
@@ -340,16 +402,20 @@ def _prefetch_coplayers_background(steamid64: str) -> None:
         )
         return
     try:
-        rows, logs_searched = coplayers_search(sid64, LOGS_DIR, gamemode=gm, map_query=mq)
-        token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, sid64)
-        payload = {"rows": rows, "logs_searched": logs_searched}
-        cache_set(
-            "coplayers",
-            ck,
-            payload,
-            stats_player_stats_cache_token_frozenset_from_parts(token_parts),
-        )
-        _persist_default_coplayers_disk(sid64, gm, mq, payload, token_parts)
+        def _build() -> dict[str, Any]:
+            rows, logs_searched = _run_search_build(coplayers_search, sid64, LOGS_DIR, gamemode=gm, map_query=mq)
+            token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, sid64)
+            payload = {"rows": rows, "logs_searched": logs_searched}
+            cache_set(
+                "coplayers",
+                ck,
+                payload,
+                stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+            )
+            _persist_default_coplayers_disk(sid64, gm, mq, payload, token_parts)
+            return payload
+
+        singleflight_build("coplayers", ck, _build)
     except Exception:
         pass
 
@@ -367,27 +433,25 @@ def _prefetch_profiles_background(steamid64s: list[str]) -> None:
         ck = default_profile_cache_key(sid64)
         if cache_get("profile", ck) is not None:
             continue
-        token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, sid64)
+        token_parts = _profile_token_parts(sid64)
         disk = _load_default_profile_disk(sid64, token_parts)
         if disk is not None:
             cache_set(
                 "profile",
                 ck,
                 disk,
-                stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+                token_parts,
             )
             continue
         try:
-            profile, _ = player_profile(sid64, gamemode=gm)
-            # Fresh token after build (profile fetch can take minutes; ingest may advance token).
-            token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, sid64)
-            cache_set(
-                "profile",
-                ck,
-                profile,
-                stats_player_stats_cache_token_frozenset_from_parts(token_parts),
-            )
-            _persist_default_profile_disk(sid64, profile, token_parts)
+            def _build() -> dict[str, Any]:
+                profile, _ = _run_search_build(player_profile, sid64, gamemode=gm)
+                token_parts = _profile_token_parts(sid64)
+                cache_set("profile", ck, profile, token_parts)
+                _persist_default_profile_disk(sid64, profile, token_parts)
+                return profile
+
+            singleflight_build("profile", ck, _build)
         except Exception:
             pass
 
@@ -476,11 +540,8 @@ def _resolve_steamid64_for_api(
 
 
 def _resolve_steamid64_for_embed(request: Request, steamid_in: str) -> tuple[str | None, str | None]:
-    """OG/meta card: same vanity RL as APIs; on limit, behave like unresolved (generic title/desc)."""
-    sid, err, rl = _resolve_steamid64_for_api(request, steamid_in)
-    if rl is not None:
-        return None, None
-    return sid, err
+    """Build social previews using only local parsing and the in-process vanity cache."""
+    return resolve_to_steamid64(steamid_in, STEAM_WEB_API_KEY, allow_network=False)
 
 
 def _log_request(
@@ -651,7 +712,7 @@ def _api_search_chat_impl(
     result_count = 0
     try:
         if is_leaderboard:
-            rows, result_count, logs_searched = chat_leaderboard_search_sqlite(
+            rows, result_count, logs_searched = _run_search_build(chat_leaderboard_search_sqlite,
                 word,
                 CHAT_DB_PATH,
                 date_from=date_from,
@@ -667,35 +728,24 @@ def _api_search_chat_impl(
             }
             cache_set("chatlb", cache_key, payload, chat_log_fingerprint(CHAT_DB_PATH))
         else:
-            try:
-                results, result_count, searched_user_name, log_ids_used = chat_search_sqlite(
-                    word,
-                    steamid64,
-                    CHAT_DB_PATH,
-                    date_from=date_from,
-                    date_to=date_to,
-                    map_query=map_query,
-                )
-            except Exception as db_err:
-                # Safety fallback: preserve legacy behavior if DB is unavailable/corrupt.
-                logger.warning("SQLite chat search failed; falling back to JSON scan: %s", db_err)
-                results, result_count, searched_user_name, log_ids_used = chat_search(
-                    word,
-                    steamid64,
-                    LOGS_DIR,
-                    date_from=date_from,
-                    date_to=date_to,
-                    map_query=map_query,
-                )
+            results, result_count, searched_user_name, logs_searched = _run_search_build(chat_search_sqlite,
+                word,
+                steamid64,
+                CHAT_DB_PATH,
+                date_from=date_from,
+                date_to=date_to,
+                map_query=map_query,
+                count_only_log_ids=True,
+            )
             payload = {
                 "leaderboard": False,
                 "results": results,
                 "total": result_count,
                 "searched_user_name": searched_user_name,
                 "resolved_steamid64": steamid64,
-                "logs_searched": len(log_ids_used),
+                "logs_searched": logs_searched,
             }
-            cache_set("chat", cache_key, payload, log_ids_used)
+            cache_set("chat", cache_key, payload, chat_player_fingerprint(CHAT_DB_PATH, steamid64))
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
             request,
@@ -710,6 +760,13 @@ def _api_search_chat_impl(
             map_query=map_query,
         )
         return JSONResponse(payload)
+    except (RuntimeError, sqlite3.Error, OSError) as e:
+        if not isinstance(e, SearchAtCapacity):
+            logger.warning("Chat index unavailable: %s", e)
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/search/chat", 503, duration_ms, word=word, steamid=steamid64)
+        message = str(e) if isinstance(e, SearchAtCapacity) else "Chat index is temporarily unavailable."
+        return JSONResponse({"results": [], "total": 0, "error": message}, status_code=503)
     except Exception as e:
         status_code = 500
         duration_ms = int((time.perf_counter() - start) * 1000)
@@ -738,7 +795,8 @@ async def api_search_chat(
     map_query: str = Form(""),
 ):
     """Chat search: Steam ID (any format) required; word optional."""
-    return _api_search_chat_impl(
+    return await asyncio.to_thread(
+        _api_search_chat_impl,
         request,
         (word or "").strip(),
         (steamid or "").strip(),
@@ -758,7 +816,8 @@ async def api_search_chat_get(
     map_query: str = Query(""),
 ):
     """GET variant for shareable links; same response as POST."""
-    return _api_search_chat_impl(
+    return await asyncio.to_thread(
+        _api_search_chat_impl,
         request,
         (word or "").strip(),
         (steamid or "").strip(),
@@ -848,7 +907,7 @@ def _api_search_stats_impl(
         )
         return JSONResponse(cached)
     try:
-        rows, log_ids_used = stats_search(
+        rows, _log_ids_used = _run_search_build(stats_search,
             steamid64,
             gm,
             class_list,
@@ -856,6 +915,7 @@ def _api_search_stats_impl(
             date_from=date_from,
             date_to=date_to,
             map_query=map_query,
+            include_log_ids=False,
         )
         payload = {"rows": rows}
         cache_set("stats", cache_key, payload, stats_player_stats_cache_token(STATS_DB_PATH, steamid64))
@@ -874,6 +934,10 @@ def _api_search_stats_impl(
             map_query=map_query,
         )
         return JSONResponse(payload)
+    except (RuntimeError, sqlite3.Error) as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/search/stats", 503, duration_ms, steamid=steamid64, gamemode=gm)
+        return JSONResponse({"rows": [], "error": str(e)}, status_code=503)
     except Exception as e:
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
@@ -960,7 +1024,7 @@ def _api_search_coplayers_impl(
     try:
 
         def _build_coplayers_payload() -> dict[str, Any]:
-            rows, logs_searched = coplayers_search(
+            rows, logs_searched = _run_search_build(coplayers_search,
                 steamid64, LOGS_DIR, gamemode=gm, map_query=map_query
             )
             token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, steamid64)
@@ -980,14 +1044,8 @@ def _api_search_coplayers_impl(
         payload["resolved_steamid64"] = steamid64
         _sids_to_warm = [r["steamid64"] for r in payload.get("rows", []) if r.get("steamid64")]
         if _sids_to_warm:
-            import threading
-
-            threading.Thread(
-                target=_prefetch_profiles_background,
-                args=(_sids_to_warm,),
-                daemon=True,
-                name="profile-prefetch-coplayers",
-            ).start()
+            for sid in _sids_to_warm[:_PREFETCH_MAX]:
+                _schedule_prefetch("profile", sid)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
             request,
@@ -1000,6 +1058,10 @@ def _api_search_coplayers_impl(
             map_query=map_query,
         )
         return JSONResponse(payload)
+    except (RuntimeError, sqlite3.Error) as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/search/coplayers", 503, duration_ms, steamid=steamid64, gamemode=gm)
+        return JSONResponse({"rows": [], "error": str(e)}, status_code=503)
     except Exception as e:
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
@@ -1021,7 +1083,7 @@ async def api_search_coplayers(
     gamemode: str = Form(""),
     map_query: str = Form(""),
 ):
-    return _api_search_coplayers_impl(request, steamid or "", gamemode or "", map_query or "")
+    return await asyncio.to_thread(_api_search_coplayers_impl, request, steamid or "", gamemode or "", map_query or "")
 
 
 @router.get("/api/search/coplayers")
@@ -1031,7 +1093,7 @@ async def api_search_coplayers_get(
     gamemode: str = Query(""),
     map_query: str = Query(""),
 ):
-    return _api_search_coplayers_impl(request, steamid or "", gamemode or "", map_query or "")
+    return await asyncio.to_thread(_api_search_coplayers_impl, request, steamid or "", gamemode or "", map_query or "")
 
 
 def _api_search_player_name_impl(request: Request, q_raw: str) -> JSONResponse:
@@ -1248,7 +1310,8 @@ async def api_search_stats(
     date_to: str = Form(""),
     map_query: str = Form(""),
 ):
-    return _api_search_stats_impl(
+    return await asyncio.to_thread(
+        _api_search_stats_impl,
         request,
         steamid or "",
         gamemode or "hl",
@@ -1269,7 +1332,8 @@ async def api_search_stats_get(
     date_to: str = Query(""),
     map_query: str = Query(""),
 ):
-    return _api_search_stats_impl(
+    return await asyncio.to_thread(
+        _api_search_stats_impl,
         request,
         steamid or "",
         gamemode or "hl",
@@ -1289,6 +1353,8 @@ def _api_search_logmatch_impl(request: Request, steamids: str, map_query_raw: st
         return JSONResponse({"results": [], "total": 0, "error": "Map filter is too long."}, status_code=400)
     if not raw_list:
         return JSONResponse({"results": [], "total": 0, "error": "At least one Steam ID is required."}, status_code=400)
+    if len(raw_list) > 20:
+        return JSONResponse({"results": [], "total": 0, "error": "Use at most 20 Steam IDs."}, status_code=400)
     sid_list: list[str] = []
     for i, raw in enumerate(raw_list):
         steamid64, resolve_error, vanity_rl = _resolve_steamid64_for_api(request, raw)
@@ -1337,11 +1403,11 @@ def _api_search_logmatch_impl(request: Request, steamids: str, map_query_raw: st
     status_code = 200
     result_count = 0
     try:
-        results, result_count, matching_log_ids, head_to_head = log_match(
+        results, result_count, _matching_log_ids, head_to_head = _run_search_build(log_match,
             sid_list, LOGS_DIR, search_inputs=raw_list, map_query=map_query
         )
         payload = {"results": results, "total": result_count, "head_to_head": head_to_head}
-        cache_set("logmatch", (sid_tuple, map_query.lower()), payload, matching_log_ids)
+        cache_set("logmatch", (sid_tuple, map_query.lower()), payload, log_match_source_token(sid_list, LOGS_DIR))
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
             request,
@@ -1353,6 +1419,10 @@ def _api_search_logmatch_impl(request: Request, steamids: str, map_query_raw: st
             map_query=map_query,
         )
         return JSONResponse(payload)
+    except (RuntimeError, sqlite3.Error) as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        _log_request(request, "/api/search/logmatch", 503, duration_ms, steamids=",".join(sid_list), map_query=map_query)
+        return JSONResponse({"results": [], "total": 0, "error": str(e)}, status_code=503)
     except Exception as e:
         status_code = 500
         duration_ms = int((time.perf_counter() - start) * 1000)
@@ -1816,14 +1886,14 @@ def _api_profile_impl(
         date_to=date_to,
         map_query=map_query,
     ):
-        token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, steamid64)
+        token_parts = _profile_token_parts(steamid64)
         disk_profile = _load_default_profile_disk(steamid64, token_parts)
         if disk_profile is not None:
             cache_set(
                 "profile",
                 cache_key,
                 disk_profile,
-                stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+                token_parts,
             )
             cached = disk_profile
     if cached is not None:
@@ -1869,19 +1939,19 @@ def _api_profile_impl(
     try:
 
         def _build_profile_payload() -> dict[str, Any]:
-            built, _log_ids = player_profile(
+            built, _log_ids = _run_search_build(player_profile,
                 steamid64,
                 gamemode=gm,
                 date_from=date_from,
                 date_to=date_to,
                 map_query=map_query,
             )
-            token_parts = stats_player_stats_cache_token_parts(STATS_DB_PATH, steamid64)
+            token_parts = _profile_token_parts(steamid64)
             cache_set(
                 "profile",
                 cache_key,
                 built,
-                stats_player_stats_cache_token_frozenset_from_parts(token_parts),
+                token_parts,
             )
             if is_default_profile_scope(
                 gamemode=gm,
@@ -2096,7 +2166,7 @@ def _api_leaderboard_impl(
         )
         return rl
     try:
-        rows, total_logs = stats_leaderboard(
+        rows, total_logs = _run_search_build(stats_leaderboard,
             lt,
             stat_scope=ss,
             weapon=weapon_key,
@@ -2118,14 +2188,8 @@ def _api_leaderboard_impl(
         cache_set("leaderboard", cache_key, payload, stats_db_fingerprint(STATS_DB_PATH))
         _lb_sids = [r["steamid64"] for r in rows if r.get("steamid64")]
         if _lb_sids:
-            import threading
-
-            threading.Thread(
-                target=_prefetch_profiles_background,
-                args=(_lb_sids,),
-                daemon=True,
-                name="profile-prefetch-leaderboard",
-            ).start()
+            for sid in _lb_sids[:_PREFETCH_MAX]:
+                _schedule_prefetch("profile", sid)
         duration_ms = int((time.perf_counter() - start) * 1000)
         _log_request(
             request,
@@ -2231,7 +2295,7 @@ async def results_page(request: Request):
 
     Discord/Twitter/Slack do not execute JS; embeds require server-rendered meta tags.
     """
-    return await _serve_results_with_embed(request)
+    return await asyncio.to_thread(_serve_results_with_embed_sync, request)
 
 
 def _escape_meta(s: str) -> str:
@@ -2593,7 +2657,7 @@ def _with_static_asset_versions(html: str) -> str:
     return _STATIC_ASSET_REF_RE.sub(repl, html)
 
 
-async def _serve_results_with_embed(request: Request) -> HTMLResponse:
+def _serve_results_with_embed_sync(request: Request) -> HTMLResponse:
     start = time.perf_counter()
     static_path = Path(__file__).resolve().parent.parent / "static" / "index.html"
     try:
