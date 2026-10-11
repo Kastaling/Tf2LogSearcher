@@ -1134,7 +1134,7 @@ def chat_search_sqlite(
           n.alias AS next_alias,
           n.msg AS next_msg,
           n.team AS next_team
-        FROM chat_messages AS cm
+        FROM chat_messages AS cm INDEXED BY idx_chat_messages_steamid3
         JOIN chat_logs AS cl ON cl.log_id = cm.log_id
         LEFT JOIN chat_messages AS p
           ON p.log_id = cm.log_id
@@ -1163,55 +1163,31 @@ def chat_search_sqlite(
 
     conn = sqlite3.connect(str(db_path), timeout=30)
     try:
-        has_fts = has_word and _sqlite_has_chat_fts(conn)
-        if has_fts:
-            fts_q = _fts_phrase_query(word)
-            sql = (
-                base_select
-                + """
-                JOIN chat_messages_fts AS fts ON fts.rowid = cm.id
-                """
-                + where_tail.replace("WHERE cm.steamid3 = ?", "WHERE cm.steamid3 = ? AND fts.msg MATCH ?")
-            )
-            params_list: list[Any] = [
-                steamid3,
-                fts_q,
-                start_ts,
-                start_ts,
-                end_ts,
-                end_ts,
-                map_q,
-                map_q,
-            ]
-            if CHAT_SEARCH_MAX_RESULTS_STEAMID is not None:
-                params_list.append(CHAT_SEARCH_MAX_RESULTS_STEAMID)
-            params = tuple(params_list)
-        else:
-            sql = (
-                base_select
-                + where_tail.replace(
-                    "WHERE cm.steamid3 = ?",
-                    "WHERE cm.steamid3 = ? AND (? = '' OR instr(lower(cm.msg), ?) > 0)",
-                )
-            )
-            params_list = [
-                steamid3,
-                word_lower,
-                word_lower,
-                start_ts,
-                start_ts,
-                end_ts,
-                end_ts,
-                map_q,
-                map_q,
-            ]
-            if CHAT_SEARCH_MAX_RESULTS_STEAMID is not None:
-                params_list.append(CHAT_SEARCH_MAX_RESULTS_STEAMID)
-            params = tuple(params_list)
+        # A global FTS phrase scan is pathological for common terms even when this
+        # Steam ID has no rows. Start from the indexed player slice instead.
+        sql = base_select + where_tail.replace(
+            "WHERE cm.steamid3 = ?",
+            "WHERE cm.steamid3 = ? AND (? = '' OR instr(lower(cm.msg), ?) > 0)",
+        )
+        params_list: list[Any] = [
+            steamid3,
+            word_lower,
+            word_lower,
+            start_ts,
+            start_ts,
+            end_ts,
+            end_ts,
+            map_q,
+            map_q,
+        ]
+        if CHAT_SEARCH_MAX_RESULTS_STEAMID is not None:
+            params_list.append(CHAT_SEARCH_MAX_RESULTS_STEAMID)
+        params = tuple(params_list)
         rows = conn.execute(sql, params).fetchall()
         log_rows = conn.execute(
-            ("SELECT COUNT(DISTINCT cm.log_id) FROM chat_messages cm " if count_only_log_ids
-             else "SELECT DISTINCT cm.log_id FROM chat_messages cm ")
+            ("SELECT COUNT(DISTINCT cm.log_id) FROM chat_messages cm INDEXED BY idx_chat_messages_steamid3 "
+             if count_only_log_ids else
+             "SELECT DISTINCT cm.log_id FROM chat_messages cm INDEXED BY idx_chat_messages_steamid3 ")
             + "INNER JOIN chat_logs cl ON cl.log_id = cm.log_id "
             "WHERE cm.steamid3 = ?"
             + poisoned_log_exclusion_sql("cl"),

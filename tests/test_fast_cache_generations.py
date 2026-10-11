@@ -73,6 +73,7 @@ def test_latest_name_backfill_and_reimport(tmp_path) -> None:
     assert lookup_player_names(path, [SID64])[SID64] == "New"
     conn.close()
 
+
     assert backfill_latest_names(path, batch_size=1) == 2
     assert backfill_latest_names(path, batch_size=1) == 0
     conn = connect_stats_db(path)
@@ -84,6 +85,17 @@ def test_latest_name_backfill_and_reimport(tmp_path) -> None:
         replace_stats_for_log(conn, 2, _log("Changed", 50))
     assert lookup_player_names(path, [SID64])[SID64] == "Old"
     assert stats_db_fingerprint(path) != before
+    conn.close()
+
+
+def test_repeat_stats_init_skips_completed_imported_at_scan(tmp_path) -> None:
+    conn = connect_stats_db(tmp_path / "stats.db")
+    init_stats_db(conn)
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    init_stats_db(conn)
+    conn.set_trace_callback(None)
+    assert not any("lp.imported_at != l.imported_at" in sql for sql in statements)
     conn.close()
 
 

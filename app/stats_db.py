@@ -683,6 +683,15 @@ def _migrate_log_players_imported_at(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(log_players)").fetchall()}
     need_column = "imported_at" not in cols
 
+    # The cache-generation table is installed only after this migration has
+    # completed. Subsequent startups can skip the full log_players/logs drift
+    # join: all supported ingest paths maintain imported_at on new rows.
+    if not need_column and conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'stats_cache_generation'"
+    ).fetchone():
+        return
+
     conn.execute("BEGIN IMMEDIATE")
     try:
         if need_column:
