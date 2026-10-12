@@ -6,6 +6,7 @@ import logging
 import re
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,9 @@ _cached_mtime: float | None = None
 _cached_ids: frozenset[int] = frozenset()
 _cached_uploaders: frozenset[str] = frozenset()
 _cached_uploader_log_ids: frozenset[int] = frozenset()
+_uploader_refresh_pending = False
+_uploader_refresh_next_at = 0.0
+_UPLOADER_REFRESH_RETRY_SEC = 300
 
 
 def _parse_log_ids_payload(data: Any) -> frozenset[int]:
@@ -94,7 +98,8 @@ def _refresh_uploader_log_ids_cache(uploaders: frozenset[str]) -> frozenset[int]
     ids = _fetch_log_ids_for_uploaders(uploaders)
     global _cached_uploader_log_ids
     with _lock:
-        _cached_uploader_log_ids = ids
+        if uploaders == _cached_uploaders:
+            _cached_uploader_log_ids = ids
     if ids:
         logger.info(
             "Poisoned uploader cache refreshed: %s uploader(s), %s log id(s)",
@@ -107,12 +112,23 @@ def _refresh_uploader_log_ids_cache(uploaders: frozenset[str]) -> frozenset[int]
 def _schedule_uploader_log_id_refresh(uploaders: frozenset[str]) -> None:
     if not uploaders:
         return
+    global _uploader_refresh_pending, _uploader_refresh_next_at
+    with _lock:
+        now = time.monotonic()
+        if _uploader_refresh_pending or now < _uploader_refresh_next_at:
+            return
+        _uploader_refresh_pending = True
+        _uploader_refresh_next_at = now + _UPLOADER_REFRESH_RETRY_SEC
 
     def _run() -> None:
+        global _uploader_refresh_pending
         try:
             _refresh_uploader_log_ids_cache(uploaders)
         except Exception:
             logger.exception("Background poisoned uploader log-id refresh failed")
+        finally:
+            with _lock:
+                _uploader_refresh_pending = False
 
     threading.Thread(
         target=_run,
@@ -152,7 +168,7 @@ def _load_blocklist_from_disk() -> tuple[frozenset[int], frozenset[str]]:
 
 
 def _reload_blocklist_if_needed() -> None:
-    global _cached_mtime, _cached_ids, _cached_uploaders, _cached_uploader_log_ids
+    global _cached_mtime, _cached_ids, _cached_uploaders, _cached_uploader_log_ids, _uploader_refresh_next_at
     path = Path(POISONED_LOG_IDS_PATH)
     try:
         mtime = path.stat().st_mtime if path.is_file() else -1.0
@@ -166,6 +182,7 @@ def _reload_blocklist_if_needed() -> None:
         _cached_mtime = mtime
         if _cached_uploaders != prev_uploaders:
             _cached_uploader_log_ids = frozenset()
+            _uploader_refresh_next_at = 0.0
         uploaders_to_refresh = _cached_uploaders
     if uploaders_to_refresh:
         _schedule_uploader_log_id_refresh(uploaders_to_refresh)
@@ -189,7 +206,7 @@ def excluded_log_ids() -> frozenset[int]:
     """
     All log IDs excluded from search/SQL: explicit ``log_ids`` plus logs.tf IDs for blocked uploaders.
 
-    Uploader SteamID64s are resolved to log IDs at purge/refresh time — search only filters by log_id.
+    Uploader SteamID64s are resolved in the background, never on the request path.
     """
     _reload_blocklist_if_needed()
     with _lock:
@@ -197,7 +214,7 @@ def excluded_log_ids() -> frozenset[int]:
         ids = _cached_ids
         uploader_ids = _cached_uploader_log_ids
     if uploaders and not uploader_ids:
-        uploader_ids = _refresh_uploader_log_ids_cache(uploaders)
+        _schedule_uploader_log_id_refresh(uploaders)
     return ids | uploader_ids
 
 

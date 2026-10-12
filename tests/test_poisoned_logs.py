@@ -8,6 +8,7 @@ import pytest
 
 from app.chat_db import connect_chat_db, init_chat_db, replace_chat_for_log
 from app.poisoned_logs import (
+    excluded_log_ids,
     extract_uploader_steamid64,
     is_log_excluded,
     is_poisoned,
@@ -83,6 +84,24 @@ def test_poisoned_exclusion_sql(poisoned_file, monkeypatch) -> None:
     assert "3944070" in frag and "5001" in frag
     assert "9000" in frag and "9001" in frag
     assert "uploader_steamid64" not in frag
+
+
+def test_unresolved_uploader_does_not_fetch_on_search_path(poisoned_file, monkeypatch) -> None:
+    poisoned_file.write_text(
+        json.dumps({"log_ids": [5001], "uploader_steamid64": ["76561199166026236"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.poisoned_logs._cached_mtime", None)
+    monkeypatch.setattr("app.poisoned_logs._cached_uploader_log_ids", frozenset())
+    scheduled = []
+    monkeypatch.setattr("app.poisoned_logs._schedule_uploader_log_id_refresh", scheduled.append)
+
+    def fail_if_fetched(_uploaders):
+        raise AssertionError("search must not fetch poisoned uploader IDs over the network")
+
+    monkeypatch.setattr("app.poisoned_logs._fetch_log_ids_for_uploaders", fail_if_fetched)
+    assert excluded_log_ids() == frozenset({5001})
+    assert scheduled
 
 
 def test_replace_chat_skips_poisoned_log(poisoned_file) -> None:
