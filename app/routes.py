@@ -1562,6 +1562,8 @@ async def api_download_progress(request: Request):
         "logs_json_failed_this_update",
         "raw_failed_zip_this_update", "raw_failed_save_this_update",
         "raw_failed_extract_this_update", "raw_failed_index_this_update",
+        "last_json_downloaded_id", "last_json_downloaded_at",
+        "last_json_failed_id", "last_json_failed_at",
     }
     out = {k: data[k] for k in allowed if k in data}
     stale = True

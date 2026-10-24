@@ -891,6 +891,14 @@ function renderProgress(data) {
   if (data.updated_at) {
     appendProgressRow(tbodyQueue, 'Last updated', formatUpdatedAt(data.updated_at));
   }
+  if (data.last_json_downloaded_id != null) {
+    const when = data.last_json_downloaded_at ? ' at ' + formatUpdatedAt(data.last_json_downloaded_at) : '';
+    appendProgressRow(tbodyQueue, 'Last JSON log saved', fmtProgressNum(Number(data.last_json_downloaded_id)) + when);
+  }
+  if (data.last_json_failed_id != null) {
+    const when = data.last_json_failed_at ? ' at ' + formatUpdatedAt(data.last_json_failed_at) : '';
+    appendProgressRow(tbodyQueue, 'Last JSON fetch failure', fmtProgressNum(Number(data.last_json_failed_id)) + when);
+  }
   if (data.earliest_log_timestamp != null) {
     const earliestStr = formatEarliestLogDate(data.earliest_log_timestamp);
     if (earliestStr) appendProgressRow(tbodyQueue, 'Earliest log', earliestStr);

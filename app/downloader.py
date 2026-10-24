@@ -322,7 +322,7 @@ def _log_library_stats(
 PROGRESS_FILENAME = "progress.json"
 
 
-def _empty_progress_interval() -> dict[str, int]:
+def _empty_progress_interval() -> dict[str, Any]:
     """Counters reset each progress.json write (DOWNLOADER interval)."""
     return {
         "json_ok": 0,
@@ -332,6 +332,10 @@ def _empty_progress_interval() -> dict[str, int]:
         "raw_failed_save": 0,
         "raw_failed_extract": 0,
         "raw_failed_index": 0,
+        "last_json_downloaded_id": None,
+        "last_json_downloaded_at": None,
+        "last_json_failed_id": None,
+        "last_json_failed_at": None,
     }
 
 
@@ -471,6 +475,14 @@ def _write_progress_if_due(
         eta_str = "Unavailable (insufficient JSON progress)"
     earliest_ts = _earliest_log_timestamp(logs_dir, min_id)
     c = progress_interval_ref[0]
+    previous_activity: dict[str, Any] = {}
+    previous_progress_path = state_dir / PROGRESS_FILENAME
+    try:
+        previous = json.loads(previous_progress_path.read_text(encoding="utf-8"))
+        if isinstance(previous, dict):
+            previous_activity = previous
+    except (OSError, ValueError):
+        pass
     progress_interval_ref[0] = _empty_progress_interval()
     json_ok = int(c.get("json_ok", 0))
     raw_ok = int(c.get("raw_ok", 0))
@@ -512,6 +524,24 @@ def _write_progress_if_due(
         "raw_failed_save_this_update": rf_save,
         "raw_failed_extract_this_update": rf_ex,
         "raw_failed_index_this_update": rf_idx,
+        "last_json_downloaded_id": (
+            c.get("last_json_downloaded_id")
+            if c.get("last_json_downloaded_id") is not None
+            else previous_activity.get("last_json_downloaded_id")
+        ),
+        "last_json_downloaded_at": (
+            c.get("last_json_downloaded_at")
+            or previous_activity.get("last_json_downloaded_at")
+        ),
+        "last_json_failed_id": (
+            c.get("last_json_failed_id")
+            if c.get("last_json_failed_id") is not None
+            else previous_activity.get("last_json_failed_id")
+        ),
+        "last_json_failed_at": (
+            c.get("last_json_failed_at")
+            or previous_activity.get("last_json_failed_at")
+        ),
     }
     try:
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -865,6 +895,10 @@ def run_catch_up_newest(
             size_bytes = path.stat().st_size
             _track_json_write(library_stats_ref, log_id, size_bytes)
             progress_interval_ref[0]["json_ok"] += 1
+            progress_interval_ref[0]["last_json_downloaded_id"] = log_id
+            progress_interval_ref[0]["last_json_downloaded_at"] = datetime.now(
+                timezone.utc
+            ).isoformat(timespec="seconds")
             _bump_download_tracking(
                 recent_writes,
                 log_id,
@@ -897,6 +931,10 @@ def run_catch_up_newest(
             )
         else:
             progress_interval_ref[0]["json_failed"] += 1
+            progress_interval_ref[0]["last_json_failed_id"] = log_id
+            progress_interval_ref[0]["last_json_failed_at"] = datetime.now(
+                timezone.utc
+            ).isoformat(timespec="seconds")
             skipped.add(log_id)
             save_skip_list(state_dir, skipped)
             logger.info("Skipped log %s (failed or invalid)", log_id)
@@ -1047,6 +1085,10 @@ def run_backfill_from_offset(
                 size_bytes = path.stat().st_size
                 _track_json_write(library_stats_ref, log_id, size_bytes)
                 progress_interval_ref[0]["json_ok"] += 1
+                progress_interval_ref[0]["last_json_downloaded_id"] = log_id
+                progress_interval_ref[0]["last_json_downloaded_at"] = datetime.now(
+                    timezone.utc
+                ).isoformat(timespec="seconds")
                 _bump_download_tracking(
                     recent_writes,
                     log_id,
@@ -1079,6 +1121,10 @@ def run_backfill_from_offset(
                 )
             else:
                 progress_interval_ref[0]["json_failed"] += 1
+                progress_interval_ref[0]["last_json_failed_id"] = log_id
+                progress_interval_ref[0]["last_json_failed_at"] = datetime.now(
+                    timezone.utc
+                ).isoformat(timespec="seconds")
                 skipped.add(log_id)
                 save_skip_list(state_dir, skipped)
                 skipped_this_page += 1
